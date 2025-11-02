@@ -1,0 +1,41 @@
+.status-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.status-icon {
+  font-size: 1rem;
+}
+
+.status-text {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.status-connected {
+  border-color: rgba(0, 255, 0, 0.3);
+}
+
+.status-connecting {
+  border-color: rgba(255, 255, 0, 0.3);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-disconnected {
+  border-color: rgba(255, 0, 0, 0.3);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+

@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Godoty Command Protocol",
+  "description": "JSON-based command protocol for communication between Tauri app and Godot plugin",
+  "definitions": {
+    "CreateNodeCommand": {
+      "type": "object",
+      "required": ["action", "type", "name"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "create_node"
+        },
+        "type": {
+          "type": "string",
+          "description": "Godot node type (e.g., CharacterBody2D, Sprite2D, CollisionShape2D)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name for the new node"
+        },
+        "parent": {
+          "type": ["string", "null"],
+          "description": "Parent node path. Null means root or selected node"
+        },
+        "properties": {
+          "type": "object",
+          "description": "Properties to set on the node",
+          "additionalProperties": true
+        }
+      }
+    },
+    "DeleteNodeCommand": {
+      "type": "object",
+      "required": ["action", "path"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "delete_node"
+        },
+        "path": {
+          "type": "string",
+          "description": "Node path to delete"
+        }
+      }
+    },
+    "ModifyNodeCommand": {
+      "type": "object",
+      "required": ["action", "path", "properties"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "modify_node"
+        },
+        "path": {
+          "type": "string",
+          "description": "Node path to modify"
+        },
+        "properties": {
+          "type": "object",
+          "description": "Properties to update",
+          "additionalProperties": true
+        }
+      }
+    },
+    "AttachScriptCommand": {
+      "type": "object",
+      "required": ["action", "path", "script_content"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "attach_script"
+        },
+        "path": {
+          "type": "string",
+          "description": "Node path to attach script to"
+        },
+        "script_content": {
+          "type": "string",
+          "description": "GDScript code content"
+        },
+        "script_path": {
+          "type": ["string", "null"],
+          "description": "Optional file path to save the script"
+        }
+      }
+    },
+    "CreateSceneCommand": {
+      "type": "object",
+      "required": ["action", "name", "root_type"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "create_scene"
+        },
+        "name": {
+          "type": "string",
+          "description": "Scene name"
+        },
+        "root_type": {
+          "type": "string",
+          "description": "Root node type"
+        },
+        "save_path": {
+          "type": ["string", "null"],
+          "description": "Path to save the scene file"
+        }
+      }
+    },
+    "GetSceneInfoCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "get_scene_info"
+        }
+      }
+    },
+    "Response": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["success", "error"]
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable message"
+        },
+        "data": {
+          "type": "object",
+          "description": "Additional response data",
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/definitions/CreateNodeCommand" },
+    { "$ref": "#/definitions/DeleteNodeCommand" },
+    { "$ref": "#/definitions/ModifyNodeCommand" },
+    { "$ref": "#/definitions/AttachScriptCommand" },
+    { "$ref": "#/definitions/CreateSceneCommand" },
+    { "$ref": "#/definitions/GetSceneInfoCommand" }
+  ]
+}
+
