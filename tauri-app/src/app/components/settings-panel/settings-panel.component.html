@@ -1,0 +1,52 @@
+<div class="settings-panel-container">
+  <h2>⚙️ Settings</h2>
+
+  <div class="settings-section">
+    <h3>OpenRouter API Key</h3>
+    <div *ngIf="editingKey" class="api-key-edit">
+      <input
+        type="password"
+        [(ngModel)]="tempKey"
+        placeholder="sk-or-..."
+        class="api-key-input"
+      />
+      <div class="button-group">
+        <button (click)="handleSave()" class="save-button">
+          💾 Save
+        </button>
+        <button (click)="handleCancel()" class="cancel-button">
+          ❌ Cancel
+        </button>
+      </div>
+    </div>
+    <div *ngIf="!editingKey" class="api-key-display">
+      <div class="api-key-status">
+        {{ apiKey ? '✅ Configured' : '❌ Not configured' }}
+      </div>
+      <button (click)="editingKey = true" class="edit-button">
+        ✏️ Edit
+      </button>
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <h3>Connection</h3>
+    <button (click)="handleReconnect()" class="reconnect-button">
+      🔄 Reconnect to Godot
+    </button>
+    <p class="info-text">
+      Make sure the Godoty plugin is enabled in your Godot project and the editor is running.
+    </p>
+  </div>
+
+  <div class="settings-section">
+    <h3>About</h3>
+    <p class="info-text">
+      Godoty AI Assistant helps you build games in Godot using natural language commands.
+    </p>
+    <p class="info-text">
+      Version: 0.1.0
+    </p>
+  </div>
+</div>
+

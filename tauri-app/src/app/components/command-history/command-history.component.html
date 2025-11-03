@@ -1,0 +1,22 @@
+<div class="command-history-container">
+  <h2>📜 Command History</h2>
+  <div class="history-list">
+    <p *ngIf="commands.length === 0" class="empty-message">
+      No commands yet. Start by typing a command above!
+    </p>
+    <div
+      *ngFor="let command of commands"
+      [class]="'history-item status-' + command.status"
+    >
+      <div class="history-header">
+        <span class="status-icon">{{ getStatusIcon(command.status) }}</span>
+        <span class="timestamp">{{ formatTime(command.timestamp) }}</span>
+      </div>
+      <div class="command-input">{{ command.input }}</div>
+      <div *ngIf="command.response" class="command-response">
+        <strong>Response:</strong> {{ command.response }}
+      </div>
+    </div>
+  </div>
+</div>
+

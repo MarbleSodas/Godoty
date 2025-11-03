@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use reqwest::Client;
 
 #[derive(Serialize, Deserialize)]
@@ -26,6 +26,7 @@ struct Choice {
     message: ChatMessage,
 }
 
+#[derive(Clone)]
 pub struct AIProcessor {
     api_key: String,
     client: Client,
@@ -75,7 +76,7 @@ Example output: [
 ]"#;
 
         let request = ChatRequest {
-            model: "gpt-4".to_string(),
+            model: "openai/gpt-4".to_string(),
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
@@ -88,11 +89,13 @@ Example output: [
             ],
             temperature: 0.7,
         };
-        
+
         let response = self.client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post("https://openrouter.ai/api/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://github.com/godoty/godoty")
+            .header("X-Title", "Godoty AI Assistant")
             .json(&request)
             .send()
             .await?;

@@ -1,0 +1,25 @@
+<div class="app-container">
+  <header class="app-header">
+    <h1>🎮 Godoty AI Assistant</h1>
+    <app-status-panel [status]="connectionStatus"></app-status-panel>
+  </header>
+
+  <main class="app-main">
+    <div class="left-panel">
+      <app-command-input
+        [disabled]="connectionStatus !== 'connected' || !apiKey"
+        (submitCommand)="handleCommandSubmit($event)"
+      ></app-command-input>
+      <app-command-history [commands]="commands"></app-command-history>
+    </div>
+
+    <div class="right-panel">
+      <app-settings-panel
+        [apiKey]="apiKey"
+        (saveApiKey)="handleSaveApiKey($event)"
+        (reconnect)="connectToGodot()"
+      ></app-settings-panel>
+    </div>
+  </main>
+</div>
+

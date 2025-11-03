@@ -4,17 +4,17 @@
   "version": "0.1.0",
   "identifier": "com.godoty.app",
   "build": {
-    "beforeDevCommand": "bun run dev",
-    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "bun run start",
+    "devUrl": "http://localhost:4200",
     "beforeBuildCommand": "bun run build",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist/browser"
   },
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "Godoty AI Assistant",
+        "width": 1200,
+        "height": 800
       }
     ],
     "security": {

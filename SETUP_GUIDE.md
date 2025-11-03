@@ -193,9 +193,16 @@ Edit `tauri-app/src-tauri/src/ai.rs` to customize the system prompt and improve 
 - Look for messages starting with "Godoty:"
 
 **Tauri App:**
-- Open DevTools in the Tauri window (Ctrl+Shift+I / Cmd+Option+I)
-- Check the console for JavaScript errors
-- Rust logs appear in the terminal where you ran `bun tauri dev`
+
+For detailed debugging instructions, see [DEVELOPMENT.md](DEVELOPMENT.md#debugging-the-tauri-application).
+
+Quick debugging tips:
+- **Frontend (Angular):** Open DevTools in the Tauri window
+  - Windows/Linux: `Ctrl + Shift + I` or `F12`
+  - macOS: `Cmd + Option + I`
+- **Backend (Rust):** Check the terminal where you ran `bun run tauri dev`
+- **WebSocket:** Use DevTools Network tab, filter by "WS"
+- **Build Issues:** Run `cd src-tauri && cargo clean` then rebuild
 
 ## Next Steps
 

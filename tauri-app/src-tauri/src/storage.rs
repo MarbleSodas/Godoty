@@ -2,14 +2,15 @@ use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Default)]
 pub struct Storage {
     api_key: Option<String>,
 }
 
 impl Storage {
     pub fn new() -> Self {
-        let mut storage = Self::default();
+        let mut storage = Self {
+            api_key: None,
+        };
         // Try to load API key from file
         if let Ok(key) = storage.load_api_key_from_file() {
             storage.api_key = Some(key);

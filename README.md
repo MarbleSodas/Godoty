@@ -81,8 +81,17 @@ godoty/
 ### Running in Development Mode
 
 1. Start the Godot Editor with the plugin enabled
-2. Run the Tauri app: `cd tauri-app && bun tauri dev`
+2. Run the Tauri app: `cd tauri-app && bun run tauri dev`
 3. The app will automatically connect to the Godot plugin
+
+### Debugging
+
+For comprehensive debugging instructions, see [DEBUGGING.md](DEBUGGING.md).
+
+Quick debugging tips:
+- **Frontend:** Press `Ctrl+Shift+I` (Windows/Linux) or `Cmd+Option+I` (macOS) to open DevTools
+- **Backend:** Check terminal output where you ran `bun run tauri dev`
+- **WebSocket:** Use DevTools Network tab, filter by "WS"
 
 ### Testing
 
@@ -94,6 +103,14 @@ bun test
 # Test Godot plugin
 # Run Godot with test scenes in godot-plugin/tests/
 ```
+
+## Documentation
+
+- [README.md](README.md) - Project overview (this file)
+- [SETUP_GUIDE.md](SETUP_GUIDE.md) - Installation and setup instructions
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Development guide and architecture
+- [DEBUGGING.md](DEBUGGING.md) - Comprehensive debugging guide
+- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick reference for common tasks
 
 ## Command Protocol
 

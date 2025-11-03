@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
@@ -8,6 +7,7 @@ use tokio::sync::Mutex;
 
 type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+#[derive(Clone)]
 pub struct WebSocketClient {
     stream: Arc<Mutex<WsStream>>,
 }

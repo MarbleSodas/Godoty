@@ -120,7 +120,7 @@ godoty/
 
 3. **Update the AI prompt** in `tauri-app/src-tauri/src/ai.rs` to include the new command
 
-### Debugging
+### Debugging the Godot Plugin
 
 - Use `print()` statements in GDScript
 - Check Godot's Output tab
@@ -130,23 +130,29 @@ godoty/
 
 ### Frontend Development
 
-The frontend is built with React and TypeScript.
+The frontend is built with Angular and TypeScript.
 
 **Running in development mode:**
 ```bash
 cd tauri-app
-bun tauri dev
+bun run tauri dev
 ```
 
+This command will:
+1. Start the Angular dev server on `http://localhost:4200`
+2. Launch the Tauri application window
+3. Enable hot-reload for both frontend and backend changes
+
 **Key files:**
-- `src/App.tsx` - Main application component
-- `src/components/` - Reusable React components
-- `src/*.css` - Component styles
+- `src/app/` - Angular application components
+- `src/main.ts` - Application entry point
+- `src/styles.css` - Global styles
+- `angular.json` - Angular configuration
 
 **Adding new UI features:**
-1. Create a new component in `src/components/`
-2. Import and use it in `App.tsx`
-3. Add styles in a corresponding `.css` file
+1. Create a new component using Angular CLI: `bun run ng generate component my-component`
+2. Import and use it in your app module or standalone components
+3. Add styles in the component's CSS file
 
 ### Backend Development
 
@@ -183,6 +189,234 @@ The backend is written in Rust.
    
    const result = await invoke<string>("my_command", { param: "value" });
    ```
+
+### Debugging the Tauri Application
+
+#### Development Mode Debugging
+
+**1. Running in Debug Mode:**
+```bash
+cd tauri-app
+bun run tauri dev
+```
+
+This runs the app with:
+- Debug symbols enabled
+- Console logging active
+- Hot-reload for instant feedback
+- DevTools available
+
+**2. Frontend Debugging (Angular):**
+
+Open the browser DevTools in the Tauri window:
+- **Windows/Linux:** Press `Ctrl + Shift + I` or `F12`
+- **macOS:** Press `Cmd + Option + I`
+
+The DevTools provide:
+- **Console:** View JavaScript logs, errors, and warnings
+- **Network:** Monitor API calls and WebSocket connections
+- **Elements:** Inspect DOM and styles
+- **Sources:** Set breakpoints in TypeScript code
+- **Application:** View local storage and session data
+
+**3. Backend Debugging (Rust):**
+
+Rust logs appear in the terminal where you ran `bun run tauri dev`.
+
+Add debug logging in your Rust code:
+```rust
+println!("Debug: {}", variable);
+eprintln!("Error: {}", error);
+```
+
+For structured logging, use the `log` crate:
+```rust
+use log::{info, warn, error, debug};
+
+info!("Application started");
+debug!("Processing command: {:?}", command);
+error!("Failed to connect: {}", err);
+```
+
+**4. WebSocket Debugging:**
+
+Monitor WebSocket connections:
+- Open DevTools → Network tab
+- Filter by "WS" (WebSocket)
+- Click on the connection to see messages
+- View sent/received frames in real-time
+
+**5. Debugging with VS Code:**
+
+Create `.vscode/launch.json`:
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Tauri Development Debug",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path=./src-tauri/Cargo.toml",
+          "--no-default-features"
+        ]
+      },
+      "preLaunchTask": "ui:dev"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Tauri Production Debug",
+      "cargo": {
+        "args": [
+          "build",
+          "--release",
+          "--manifest-path=./src-tauri/Cargo.toml"
+        ]
+      },
+      "preLaunchTask": "ui:build"
+    }
+  ]
+}
+```
+
+Install the required VS Code extensions:
+- [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb)
+- [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
+
+Set breakpoints in Rust code and press `F5` to start debugging.
+
+#### Production Build Debugging
+
+**1. Build in Debug Mode:**
+```bash
+cd tauri-app
+bun run tauri build --debug
+```
+
+This creates a debug build with:
+- Debug symbols included
+- Optimizations disabled
+- Faster compilation
+- Larger binary size
+
+The output will be in `src-tauri/target/debug/bundle/`
+
+**2. Build in Release Mode:**
+```bash
+cd tauri-app
+bun run tauri build
+```
+
+This creates an optimized production build in `src-tauri/target/release/bundle/`
+
+**3. Testing the Built Application:**
+
+After building, test the standalone application:
+- **Windows:** Run the `.exe` from `src-tauri/target/release/bundle/nsis/`
+- **macOS:** Open the `.app` from `src-tauri/target/release/bundle/macos/`
+- **Linux:** Run the AppImage from `src-tauri/target/release/bundle/appimage/`
+
+**4. Debugging Production Issues:**
+
+Enable logging in production builds by setting environment variables:
+
+**Windows (PowerShell):**
+```powershell
+$env:RUST_LOG="debug"
+.\tauri-app.exe
+```
+
+**macOS/Linux:**
+```bash
+RUST_LOG=debug ./tauri-app
+```
+
+View logs:
+- **Windows:** Check `%APPDATA%\com.godoty.app\logs\`
+- **macOS:** Check `~/Library/Logs/com.godoty.app/`
+- **Linux:** Check `~/.local/share/com.godoty.app/logs/`
+
+#### Common Debugging Scenarios
+
+**1. Application Won't Start:**
+- Check terminal for Rust compilation errors
+- Verify Angular dev server started on port 4200
+- Check for port conflicts
+- Review `tauri.conf.json` configuration
+
+**2. Frontend Not Loading:**
+- Verify `beforeDevCommand` in `tauri.conf.json` is correct
+- Check that `devUrl` points to `http://localhost:4200`
+- Ensure Angular dev server is running
+- Check browser console for errors
+
+**3. Backend Commands Failing:**
+- Check Rust terminal output for errors
+- Verify command is registered in `invoke_handler`
+- Check command name matches between frontend and backend
+- Review parameter types and serialization
+
+**4. WebSocket Connection Issues:**
+- Verify Godot plugin is running
+- Check firewall settings
+- Confirm port 9001 is not blocked
+- Review WebSocket frames in DevTools
+
+**5. Build Failures:**
+- Clear build cache: `cd src-tauri && cargo clean`
+- Update dependencies: `bun install && cargo update`
+- Check Rust version: `rustc --version` (should be 1.70+)
+- Verify all required system dependencies are installed
+
+#### Performance Profiling
+
+**1. Frontend Performance:**
+- Use Chrome DevTools Performance tab
+- Record and analyze runtime performance
+- Check for memory leaks in Memory tab
+- Use Lighthouse for overall performance audit
+
+**2. Backend Performance:**
+- Use `cargo flamegraph` for CPU profiling
+- Add timing logs around critical sections
+- Monitor memory usage with system tools
+- Use `cargo bench` for benchmarking
+
+#### Useful Commands
+
+```bash
+# Check Rust code for errors without building
+cd tauri-app/src-tauri
+cargo check
+
+# Run Rust tests
+cargo test
+
+# Format Rust code
+cargo fmt
+
+# Lint Rust code
+cargo clippy
+
+# Build frontend only
+cd tauri-app
+bun run build
+
+# Run Angular tests
+bun run test
+
+# Clean all build artifacts
+cd src-tauri
+cargo clean
+cd ..
+rm -rf dist node_modules
+bun install
+```
 
 ### AI Integration
 

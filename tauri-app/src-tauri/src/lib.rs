@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 use tauri::State;
-use serde::{Deserialize, Serialize};
 
 mod websocket;
 mod ai;
@@ -19,10 +18,9 @@ struct AppState {
 
 #[tauri::command]
 async fn connect_to_godot(state: State<'_, AppState>) -> Result<String, String> {
-    let mut ws_client = state.ws_client.lock().unwrap();
-
     match WebSocketClient::connect("ws://127.0.0.1:9001").await {
         Ok(client) => {
+            let mut ws_client = state.ws_client.lock().unwrap();
             *ws_client = Some(client);
             Ok("Connected to Godot".to_string())
         }
@@ -36,24 +34,29 @@ async fn process_command(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // Get API key
-    let storage = state.storage.lock().unwrap();
-    let api_key = storage.get_api_key().ok_or("API key not configured")?;
-    drop(storage);
+    let api_key = {
+        let storage = state.storage.lock().unwrap();
+        storage.get_api_key().ok_or("API key not configured")?
+    };
 
-    // Initialize AI processor if needed
-    let mut ai_processor = state.ai_processor.lock().unwrap();
-    if ai_processor.is_none() {
-        *ai_processor = Some(AIProcessor::new(&api_key));
-    }
-    let processor = ai_processor.as_ref().unwrap();
+    // Initialize AI processor if needed and get a clone
+    let processor = {
+        let mut ai_processor = state.ai_processor.lock().unwrap();
+        if ai_processor.is_none() {
+            *ai_processor = Some(AIProcessor::new(&api_key));
+        }
+        ai_processor.as_ref().unwrap().clone()
+    };
 
     // Process command with AI
     let commands = processor.process_input(&input).await
         .map_err(|e| format!("AI processing failed: {}", e))?;
 
     // Send commands to Godot
-    let ws_client = state.ws_client.lock().unwrap();
-    let client = ws_client.as_ref().ok_or("Not connected to Godot")?;
+    let client = {
+        let ws_client = state.ws_client.lock().unwrap();
+        ws_client.as_ref().ok_or("Not connected to Godot")?.clone()
+    };
 
     let mut results = Vec::new();
     for cmd in commands {
