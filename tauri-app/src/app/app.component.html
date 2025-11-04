@@ -1,22 +1,48 @@
 <div class="app-container">
   <header class="app-header">
-    <h1>🎮 Godoty AI Assistant</h1>
-    <app-status-panel [status]="connectionStatus"></app-status-panel>
+    <div class="header-left">
+      <h1>🎮 Godoty AI Assistant</h1>
+    </div>
+    <div class="header-controls">
+      <app-status-panel [status]="connectionStatus"></app-status-panel>
+    </div>
   </header>
 
   <main class="app-main">
     <div class="left-panel">
-      <app-command-input
-        [disabled]="connectionStatus !== 'connected' || !apiKey"
+      <!-- Chat Selector Dropdown -->
+      <app-chat-selector
+        [sessions]="chatSessions"
+        [activeSession]="activeSession"
+        (selectSession)="handleSelectSession($event)"
+        (createSession)="handleQuickCreateSession()"
+      ></app-chat-selector>
+
+      <!-- Chat View with Integrated Input -->
+      <app-chat-view
+        [session]="activeSession"
+        [isProcessing]="isProcessing"
+        [processingStatus]="processingStatus"
+        [disabled]="connectionStatus !== 'connected' || !apiKey || !projectPath || isProcessing"
         (submitCommand)="handleCommandSubmit($event)"
-      ></app-command-input>
-      <app-command-history [commands]="commands"></app-command-history>
+      ></app-chat-view>
     </div>
 
     <div class="right-panel">
+      <app-session-manager
+        [sessions]="chatSessions"
+        [activeSessionId]="activeSession?.id || null"
+        (createSession)="handleCreateSession($event)"
+        (selectSession)="handleSelectSession($event)"
+        (deleteSession)="handleDeleteSession($event)"
+        (clearAllSessions)="handleClearAllSessions()"
+      ></app-session-manager>
+
       <app-settings-panel
         [apiKey]="apiKey"
+        [projectPath]="projectPath"
         (saveApiKey)="handleSaveApiKey($event)"
+        (saveProjectPath)="handleSaveProjectPath($event)"
         (reconnect)="connectToGodot()"
       ></app-settings-panel>
     </div>

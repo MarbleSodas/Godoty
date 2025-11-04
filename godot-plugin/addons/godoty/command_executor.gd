@@ -2,9 +2,9 @@ extends Node
 
 var editor_plugin: EditorPlugin
 
-func execute_command(command: Dictionary) -> Dictionary:
+func execute_command(command: Dictionary):
 	var action = command.get("action", "")
-	
+
 	match action:
 		"create_node":
 			return _create_node(command)
@@ -15,7 +15,7 @@ func execute_command(command: Dictionary) -> Dictionary:
 		"attach_script":
 			return _attach_script(command)
 		"create_scene":
-			return _create_scene(command)
+			return await _create_scene(command)
 		"get_scene_info":
 			return _get_scene_info(command)
 		_:
@@ -29,18 +29,22 @@ func _create_node(command: Dictionary) -> Dictionary:
 	var node_name = command.get("name", "")
 	var parent_path = command.get("parent", null)
 	var properties = command.get("properties", {})
-	
+
 	if node_type.is_empty():
 		return {"status": "error", "message": "Node type is required"}
 	if node_name.is_empty():
 		return {"status": "error", "message": "Node name is required"}
-	
+
 	# Get editor interface
 	var editor_interface = editor_plugin.get_editor_interface()
 	var edited_scene = editor_interface.get_edited_scene_root()
-	
+
 	if not edited_scene:
-		return {"status": "error", "message": "No scene is currently open"}
+		return {
+			"status": "error",
+			"message": "No scene is currently open. Please create a scene first using create_scene command.",
+			"suggestion": "Use create_scene before create_node"
+		}
 	
 	# Create the node
 	var new_node = _instantiate_node_by_type(node_type)
@@ -79,15 +83,19 @@ func _create_node(command: Dictionary) -> Dictionary:
 
 func _delete_node(command: Dictionary) -> Dictionary:
 	var node_path = command.get("path", "")
-	
+
 	if node_path.is_empty():
 		return {"status": "error", "message": "Node path is required"}
-	
+
 	var editor_interface = editor_plugin.get_editor_interface()
 	var edited_scene = editor_interface.get_edited_scene_root()
-	
+
 	if not edited_scene:
-		return {"status": "error", "message": "No scene is currently open"}
+		return {
+			"status": "error",
+			"message": "No scene is currently open. Please create or open a scene first.",
+			"suggestion": "Use create_scene or open an existing scene"
+		}
 	
 	var node = edited_scene.get_node_or_null(node_path)
 	if not node:
@@ -107,15 +115,19 @@ func _delete_node(command: Dictionary) -> Dictionary:
 func _modify_node(command: Dictionary) -> Dictionary:
 	var node_path = command.get("path", "")
 	var properties = command.get("properties", {})
-	
+
 	if node_path.is_empty():
 		return {"status": "error", "message": "Node path is required"}
-	
+
 	var editor_interface = editor_plugin.get_editor_interface()
 	var edited_scene = editor_interface.get_edited_scene_root()
-	
+
 	if not edited_scene:
-		return {"status": "error", "message": "No scene is currently open"}
+		return {
+			"status": "error",
+			"message": "No scene is currently open. Please create or open a scene first.",
+			"suggestion": "Use create_scene or open an existing scene"
+		}
 	
 	var node = edited_scene.get_node_or_null(node_path)
 	if not node:
@@ -152,10 +164,14 @@ func _attach_script(command: Dictionary) -> Dictionary:
 	
 	var editor_interface = editor_plugin.get_editor_interface()
 	var edited_scene = editor_interface.get_edited_scene_root()
-	
+
 	if not edited_scene:
-		return {"status": "error", "message": "No scene is currently open"}
-	
+		return {
+			"status": "error",
+			"message": "No scene is currently open. Please create or open a scene first.",
+			"suggestion": "Use create_scene or open an existing scene"
+		}
+
 	var node = edited_scene.get_node_or_null(node_path)
 	if not node:
 		return {"status": "error", "message": "Node not found: %s" % node_path}
@@ -219,15 +235,29 @@ func _create_scene(command: Dictionary) -> Dictionary:
 	# Open in editor
 	var editor_interface = editor_plugin.get_editor_interface()
 	if save_path:
-		editor_interface.open_scene_from_path(save_path)
+		var open_err = editor_interface.open_scene_from_path(save_path)
+		if open_err != OK:
+			return {"status": "error", "message": "Failed to open scene: %s" % error_string(open_err)}
+
+		# Wait a frame to ensure the scene is loaded
+		await editor_plugin.get_tree().process_frame
+
+		# Verify the scene is actually open
+		var opened_scene = editor_interface.get_edited_scene_root()
+		if not opened_scene or opened_scene.name != scene_name:
+			return {
+				"status": "error",
+				"message": "Scene created but failed to open properly. Please open %s manually." % save_path
+			}
 	else:
 		editor_interface.edit_node(root_node)
-	
+
 	return {
 		"status": "success",
-		"message": "Created scene: %s" % scene_name,
+		"message": "Created and opened scene: %s" % scene_name,
 		"data": {
-			"save_path": save_path if save_path else "unsaved"
+			"save_path": save_path if save_path else "unsaved",
+			"scene_name": scene_name
 		}
 	}
 

@@ -1,0 +1,81 @@
+<div class="chat-view-container">
+  <div *ngIf="!session" class="empty-state-wrapper">
+    <div class="empty-state">
+      <div class="empty-icon">💬</div>
+      <h3>No Active Session</h3>
+      <p>Start a new conversation to begin</p>
+    </div>
+
+    <!-- Input shown even without session -->
+    <div class="chat-input-container">
+      <form (ngSubmit)="handleSubmit($event)" class="chat-input-form">
+        <textarea
+          [(ngModel)]="input"
+          name="commandInput"
+          placeholder="Type your message to start a new conversation..."
+          [disabled]="disabled"
+          rows="1"
+          class="chat-input-textarea"
+        ></textarea>
+        <button type="submit" [disabled]="disabled || !input.trim()" class="chat-send-button">
+          <span class="send-icon">{{ disabled ? '⏸' : '🚀' }}</span>
+        </button>
+      </form>
+      <p *ngIf="disabled" class="chat-warning-text">
+        ⚠️ Please configure your API key and ensure Godot is connected
+      </p>
+    </div>
+  </div>
+
+  <div *ngIf="session" class="chat-session">
+    <!-- Messages Container -->
+    <div class="messages-container" #messagesContainer (scroll)="onScroll()">
+      <div *ngIf="session.messages.length === 0" class="no-messages">
+        <div class="no-messages-icon">✨</div>
+        <p class="no-messages-text">No messages yet. Start the conversation!</p>
+      </div>
+
+      <app-chat-message
+        *ngFor="let message of session.messages"
+        [message]="message"
+        [showThoughts]="true"
+      ></app-chat-message>
+
+      <!-- Processing Indicator -->
+      <div *ngIf="isProcessing" class="processing-indicator">
+        <div class="processing-avatar">🤖</div>
+        <div class="processing-content">
+          <div class="processing-dots">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+          <div class="processing-status" *ngIf="processingStatus">
+            <span class="status-text">{{ getProcessingStatusText() }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Integrated Command Input -->
+    <div class="chat-input-container">
+      <form (ngSubmit)="handleSubmit($event)" class="chat-input-form">
+        <textarea
+          [(ngModel)]="input"
+          name="commandInput"
+          placeholder="Type your message..."
+          [disabled]="disabled"
+          rows="1"
+          class="chat-input-textarea"
+        ></textarea>
+        <button type="submit" [disabled]="disabled || !input.trim()" class="chat-send-button">
+          <span class="send-icon">{{ disabled ? '⏸' : '🚀' }}</span>
+        </button>
+      </form>
+      <p *ngIf="disabled" class="chat-warning-text">
+        ⚠️ Please configure your API key and ensure Godot is connected
+      </p>
+    </div>
+  </div>
+</div>
+

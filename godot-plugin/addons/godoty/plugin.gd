@@ -56,13 +56,13 @@ func _exit_tree():
 func _on_command_received(command: Dictionary):
 	print("Godoty: Received command: ", command)
 	_update_dock_status("Executing: %s" % command.get("action", "unknown"))
-	
-	# Execute command
-	var result = command_executor.execute_command(command)
-	
+
+	# Execute command (await if it's async)
+	var result = await command_executor.execute_command(command)
+
 	# Send response back
 	websocket_server.send_response(result)
-	
+
 	# Update dock
 	if result.status == "success":
 		_update_dock_status("✓ %s" % result.get("message", "Success"))
@@ -77,8 +77,8 @@ func _update_dock_status(message: String):
 		dock.update_status(message)
 
 func get_editor_interface() -> EditorInterface:
-	return get_editor_interface()
+	return super.get_editor_interface()
 
 func get_undo_redo() -> EditorUndoRedoManager:
-	return get_undo_redo()
+	return super.get_undo_redo()
 

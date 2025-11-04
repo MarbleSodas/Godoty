@@ -1,0 +1,60 @@
+<div class="chat-selector-container">
+  <!-- Current Session Display (Always Visible) -->
+  <div class="current-session" (click)="toggleDropdown()">
+    <div class="session-header">
+      <div class="session-icon">💬</div>
+      <div class="session-info">
+        <div class="session-title">
+          {{ activeSession?.title || 'No Active Session' }}
+        </div>
+        <div class="session-meta" *ngIf="activeSession">
+          <span class="meta-count">{{ activeSession.messages.length }} messages</span>
+          <span class="meta-separator">•</span>
+          <span class="meta-time">{{ formatDate(activeSession.updated_at) }}</span>
+        </div>
+      </div>
+      <div class="dropdown-toggle">
+        <span class="toggle-icon" [class.expanded]="isExpanded">▼</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dropdown Session List (Collapsible) -->
+  <div class="session-dropdown" *ngIf="isExpanded" [@slideDown]>
+    <div class="dropdown-header">
+      <span class="dropdown-title">All Conversations</span>
+      <button class="btn-new-chat" (click)="handleCreateSession()" title="New Chat">
+        <span class="icon">➕</span>
+        <span class="label">New Chat</span>
+      </button>
+    </div>
+
+    <div class="session-list">
+      <div *ngIf="sessions.length === 0" class="empty-state">
+        <p>No conversations yet</p>
+      </div>
+
+      <div
+        *ngFor="let session of sessions"
+        class="session-item"
+        [class.active]="session.id === activeSession?.id"
+        (click)="handleSelectSession(session.id)"
+      >
+        <div class="session-item-icon">💬</div>
+        <div class="session-item-content">
+          <div class="session-item-title">{{ session.title }}</div>
+          <div class="session-item-preview">{{ getSessionPreview(session) }}</div>
+          <div class="session-item-meta">
+            <span class="meta-messages">{{ session.messages.length }} msgs</span>
+            <span class="meta-separator">•</span>
+            <span class="meta-time">{{ formatDate(session.updated_at) }}</span>
+          </div>
+        </div>
+        <div class="session-item-indicator" *ngIf="session.id === activeSession?.id">
+          <span class="active-dot"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+

@@ -1,0 +1,89 @@
+<div class="chat-message"
+     [class.user-message]="message.role === 'user'"
+     [class.assistant-message]="message.role === 'assistant'"
+     [class.processing]="isProcessing()">
+  <div class="message-header">
+    <div class="message-info">
+      <span class="role-icon">{{ getRoleIcon() }}</span>
+      <span class="role-label">{{ getRoleLabel() }}</span>
+      <span class="timestamp">{{ formatTimestamp(message.timestamp) }}</span>
+    </div>
+    <div class="message-badges">
+      <!-- Status Badge -->
+      <span *ngIf="message.status"
+            class="badge status-badge"
+            [ngClass]="getStatusClass()"
+            [class.animated]="isProcessing()">
+        <span class="status-icon">{{ getStatusIcon() }}</span>
+        <span class="status-label">{{ getStatusLabel() }}</span>
+      </span>
+
+      <!-- Thought Process Badge -->
+      <span *ngIf="message.thought_process && message.thought_process.length > 0"
+            class="badge thought-badge"
+            (click)="toggleThoughts()">
+        💭 {{ message.thought_process.length }} thoughts
+      </span>
+
+      <!-- Context Badge -->
+      <span *ngIf="message.context_used"
+            class="badge context-badge"
+            (click)="toggleContext()">
+        📚 Context
+      </span>
+    </div>
+  </div>
+
+  <div class="message-content">
+    <span [class.streaming]="message.isStreaming">{{ message.content }}</span>
+
+    <!-- Streaming Indicator -->
+    <span *ngIf="message.isStreaming" class="streaming-cursor">▊</span>
+  </div>
+
+  <!-- Thought Process Section -->
+  <div *ngIf="message.thought_process && message.thought_process.length > 0 && thoughtsExpanded" class="thought-process">
+    <div class="section-header">
+      <span class="section-icon">💭</span>
+      <span class="section-title">Thought Process</span>
+    </div>
+    <div class="thought-list">
+      <div *ngFor="let thought of message.thought_process" class="thought-item">
+        <div class="thought-number">Step {{ thought.step_number }}</div>
+        <div class="thought-description">{{ thought.description }}</div>
+        <div class="thought-reasoning">{{ thought.reasoning }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Context Information Section -->
+  <div *ngIf="message.context_used && contextExpanded" class="context-info">
+    <div class="section-header">
+      <span class="section-icon">📚</span>
+      <span class="section-title">Context Used</span>
+    </div>
+    <div class="context-details">
+      <div class="context-item">
+        <span class="context-label">Godot Docs:</span>
+        <span class="context-value">{{ message.context_used.godot_docs_used ? '✓ Used' : '✗ Not used' }}</span>
+      </div>
+      <div class="context-item">
+        <span class="context-label">Previous Messages:</span>
+        <span class="context-value">{{ message.context_used.previous_messages_count }}</span>
+      </div>
+      <div class="context-item">
+        <span class="context-label">Context Size:</span>
+        <span class="context-value">{{ (message.context_used.total_context_size / 1024).toFixed(2) }} KB</span>
+      </div>
+      <div *ngIf="message.context_used.project_files_referenced.length > 0" class="context-item">
+        <span class="context-label">Files Referenced:</span>
+        <div class="file-list">
+          <div *ngFor="let file of message.context_used.project_files_referenced" class="file-item">
+            📄 {{ file }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+

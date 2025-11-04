@@ -1,0 +1,129 @@
+import { Component, Input } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { ChatMessage, MessageStatus } from '../../models/command.model';
+
+@Component({
+  selector: 'app-chat-message',
+  standalone: true,
+  imports: [CommonModule],
+  templateUrl: './chat-message.component.html',
+  styleUrls: ['./chat-message.component.css']
+})
+export class ChatMessageComponent {
+  @Input() message!: ChatMessage;
+  @Input() showThoughts: boolean = true;
+
+  thoughtsExpanded: boolean = false;
+  contextExpanded: boolean = false;
+
+  formatTimestamp(timestamp: number): string {
+    return new Date(timestamp * 1000).toLocaleTimeString();
+  }
+
+  toggleThoughts(): void {
+    this.thoughtsExpanded = !this.thoughtsExpanded;
+  }
+
+  toggleContext(): void {
+    this.contextExpanded = !this.contextExpanded;
+  }
+
+  getRoleIcon(): string {
+    switch (this.message.role) {
+      case 'user':
+        return '👤';
+      case 'assistant':
+        return '🤖';
+      case 'system':
+        return '⚙️';
+      default:
+        return '💬';
+    }
+  }
+
+  getStatusIcon(): string {
+    if (!this.message.status) return '';
+
+    switch (this.message.status) {
+      case 'sending':
+        return '⏳';
+      case 'sent':
+        return '✓';
+      case 'thinking':
+        return '💭';
+      case 'generating':
+        return '⚡';
+      case 'streaming':
+        return '📝';
+      case 'complete':
+        return '✓✓';
+      case 'error':
+        return '❌';
+      default:
+        return '';
+    }
+  }
+
+  getStatusLabel(): string {
+    if (!this.message.status) return '';
+
+    switch (this.message.status) {
+      case 'sending':
+        return 'Sending';
+      case 'sent':
+        return 'Sent';
+      case 'thinking':
+        return 'Thinking';
+      case 'generating':
+        return 'Generating';
+      case 'streaming':
+        return 'Streaming';
+      case 'complete':
+        return 'Complete';
+      case 'error':
+        return 'Error';
+      default:
+        return '';
+    }
+  }
+
+  getStatusClass(): string {
+    if (!this.message.status) return '';
+
+    switch (this.message.status) {
+      case 'sending':
+      case 'sent':
+        return 'status-sent';
+      case 'thinking':
+      case 'generating':
+      case 'streaming':
+        return 'status-processing';
+      case 'complete':
+        return 'status-complete';
+      case 'error':
+        return 'status-error';
+      default:
+        return '';
+    }
+  }
+
+  isProcessing(): boolean {
+    return this.message.status === 'thinking' ||
+           this.message.status === 'generating' ||
+           this.message.status === 'streaming';
+  }
+
+  getRoleLabel(): string {
+    switch (this.message.role) {
+      case 'user':
+        return 'You';
+      case 'assistant':
+        return 'Godoty AI';
+      case 'system':
+        return 'System';
+      default:
+        return 'Unknown';
+    }
+  }
+}
+

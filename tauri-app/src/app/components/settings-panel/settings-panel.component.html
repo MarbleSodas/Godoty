@@ -30,6 +30,37 @@
   </div>
 
   <div class="settings-section">
+    <h3>Godot Project Path</h3>
+    <div *ngIf="editingPath" class="project-path-edit">
+      <input
+        type="text"
+        [(ngModel)]="tempPath"
+        placeholder="C:/path/to/godot/project"
+        class="project-path-input"
+      />
+      <div class="button-group">
+        <button (click)="handleSavePath()" class="save-button">
+          💾 Save
+        </button>
+        <button (click)="handleCancelPath()" class="cancel-button">
+          ❌ Cancel
+        </button>
+      </div>
+    </div>
+    <div *ngIf="!editingPath" class="project-path-display">
+      <div class="project-path-status">
+        {{ projectPath ? '✅ ' + projectPath : '❌ Not configured' }}
+      </div>
+      <button (click)="editingPath = true" class="edit-button">
+        ✏️ Edit
+      </button>
+    </div>
+    <p class="info-text">
+      Set the path to your Godot project folder (where project.godot is located).
+    </p>
+  </div>
+
+  <div class="settings-section">
     <h3>Connection</h3>
     <button (click)="handleReconnect()" class="reconnect-button">
       🔄 Reconnect to Godot

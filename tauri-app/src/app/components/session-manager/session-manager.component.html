@@ -1,0 +1,65 @@
+<div class="session-manager-container">
+  <div class="manager-header">
+    <h3>💬 Chat Sessions</h3>
+    <div class="header-actions">
+      <button class="btn-new" (click)="handleCreateSession()" title="New Session">
+        ➕
+      </button>
+      <button class="btn-clear" (click)="handleClearAll()" title="Clear All" *ngIf="sessions.length > 0">
+        🗑️
+      </button>
+    </div>
+  </div>
+
+  <div class="sessions-list">
+    <div *ngIf="sessions.length === 0" class="empty-sessions">
+      <p>No sessions yet</p>
+      <button class="btn-create-first" (click)="handleCreateSession()">
+        Create First Session
+      </button>
+    </div>
+
+    <div
+      *ngFor="let session of sessions"
+      class="session-item"
+      [class.active]="session.id === activeSessionId"
+      (click)="handleSelectSession(session.id)"
+    >
+      <div class="session-content">
+        <div class="session-title">{{ session.title }}</div>
+        <div class="session-preview">{{ getSessionPreview(session) }}</div>
+        <div class="session-meta">
+          <span class="meta-time">{{ formatDate(session.updated_at) }}</span>
+          <span class="meta-messages">{{ session.messages.length }} msgs</span>
+        </div>
+      </div>
+      <button
+        class="btn-delete"
+        (click)="handleDeleteSession(session.id, $event)"
+        title="Delete Session"
+      >
+        ✕
+      </button>
+    </div>
+  </div>
+
+  <!-- New Session Dialog -->
+  <div *ngIf="showNewSessionDialog" class="dialog-overlay" (click)="cancelCreateSession()">
+    <div class="dialog-content" (click)="$event.stopPropagation()">
+      <h3>Create New Session</h3>
+      <input
+        type="text"
+        [(ngModel)]="newSessionTitle"
+        placeholder="Session title (optional)"
+        class="session-title-input"
+        (keyup.enter)="confirmCreateSession()"
+        autofocus
+      />
+      <div class="dialog-actions">
+        <button class="btn-cancel" (click)="cancelCreateSession()">Cancel</button>
+        <button class="btn-confirm" (click)="confirmCreateSession()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
