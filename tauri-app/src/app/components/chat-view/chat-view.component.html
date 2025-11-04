@@ -36,7 +36,7 @@
       </div>
 
       <app-chat-message
-        *ngFor="let message of session.messages"
+        *ngFor="let message of session.messages; trackBy: trackByMessageId"
         [message]="message"
         [showThoughts]="true"
       ></app-chat-message>

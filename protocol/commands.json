@@ -117,6 +117,51 @@
         }
       }
     },
+    ,
+    "InspectSceneFileCommand": {
+      "type": "object",
+      "required": ["action", "path"],
+      "properties": {
+        "action": { "type": "string", "const": "inspect_scene_file" },
+        "path": { "type": "string", "description": "Path to .tscn scene file (res:// or absolute)" }
+      }
+    },
+    "GetCurrentSceneDetailedCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "get_current_scene_detailed" }
+      }
+    },
+    "StartDebugCaptureCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "start_debug_capture" }
+      }
+    },
+    "StopDebugCaptureCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "stop_debug_capture" }
+      }
+    },
+    "ClearDebugOutputCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "clear_debug_output" }
+      }
+    },
+    "GetDebugOutputCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "get_debug_output" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 }
+      }
+    },
     "Response": {
       "type": "object",
       "required": ["status"],
@@ -143,7 +188,13 @@
     { "$ref": "#/definitions/ModifyNodeCommand" },
     { "$ref": "#/definitions/AttachScriptCommand" },
     { "$ref": "#/definitions/CreateSceneCommand" },
-    { "$ref": "#/definitions/GetSceneInfoCommand" }
+    { "$ref": "#/definitions/GetSceneInfoCommand" },
+    { "$ref": "#/definitions/InspectSceneFileCommand" },
+    { "$ref": "#/definitions/GetCurrentSceneDetailedCommand" },
+    { "$ref": "#/definitions/StartDebugCaptureCommand" },
+    { "$ref": "#/definitions/StopDebugCaptureCommand" },
+    { "$ref": "#/definitions/ClearDebugOutputCommand" },
+    { "$ref": "#/definitions/GetDebugOutputCommand" }
   ]
 }
 

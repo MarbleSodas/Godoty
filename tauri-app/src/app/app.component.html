@@ -10,14 +10,6 @@
 
   <main class="app-main">
     <div class="left-panel">
-      <!-- Chat Selector Dropdown -->
-      <app-chat-selector
-        [sessions]="chatSessions"
-        [activeSession]="activeSession"
-        (selectSession)="handleSelectSession($event)"
-        (createSession)="handleQuickCreateSession()"
-      ></app-chat-selector>
-
       <!-- Chat View with Integrated Input -->
       <app-chat-view
         [session]="activeSession"

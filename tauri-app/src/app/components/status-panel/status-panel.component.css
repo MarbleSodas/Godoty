@@ -4,8 +4,9 @@
   gap: 0.5rem;
   padding: 0.5rem 1rem;
   border-radius: 20px;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.3);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .status-icon {
@@ -18,16 +19,19 @@
 }
 
 .status-connected {
-  border-color: rgba(0, 255, 0, 0.3);
+  border-color: rgba(34, 197, 94, 0.6);
+  background: rgba(34, 197, 94, 0.15);
 }
 
 .status-connecting {
-  border-color: rgba(255, 255, 0, 0.3);
+  border-color: rgba(245, 158, 11, 0.6);
+  background: rgba(245, 158, 11, 0.15);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
 .status-disconnected {
-  border-color: rgba(255, 0, 0, 0.3);
+  border-color: rgba(239, 68, 68, 0.6);
+  background: rgba(239, 68, 68, 0.15);
 }
 
 @keyframes pulse {

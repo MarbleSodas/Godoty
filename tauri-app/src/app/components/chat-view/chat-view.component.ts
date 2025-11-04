@@ -64,13 +64,19 @@ export class ChatViewComponent implements OnChanges, AfterViewChecked, OnDestroy
 
     switch (this.processingStatus) {
       case 'thinking':
-        return 'Thinking...';
+        return '🤔 Thinking...';
+      case 'gathering':
+        return '📚 Gathering data...';
       case 'generating':
-        return 'Generating response...';
+        return '⚡ Generating response...';
       case 'streaming':
-        return 'Streaming response...';
+        return '📝 Streaming response...';
+      case 'executing':
+        return '⚙️ Executing action...';
+      case 'sending':
+        return '📤 Sending...';
       default:
-        return 'Processing...';
+        return '⏳ Processing...';
     }
   }
 
@@ -87,6 +93,10 @@ export class ChatViewComponent implements OnChanges, AfterViewChecked, OnDestroy
 
   formatTime(timestamp: number): string {
     return new Date(timestamp * 1000).toLocaleTimeString();
+  }
+
+  trackByMessageId(index: number, msg: ChatMessage): string {
+    return msg.id;
   }
 
   handleSubmit(event: Event): void {

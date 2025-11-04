@@ -46,15 +46,19 @@ export class ChatMessageComponent {
 
     switch (this.message.status) {
       case 'sending':
-        return '⏳';
+        return '📤';
       case 'sent':
         return '✓';
       case 'thinking':
-        return '💭';
+        return '🤔';
+      case 'gathering':
+        return '📚';
       case 'generating':
         return '⚡';
       case 'streaming':
         return '📝';
+      case 'executing':
+        return '⚙️';
       case 'complete':
         return '✓✓';
       case 'error':
@@ -74,10 +78,14 @@ export class ChatMessageComponent {
         return 'Sent';
       case 'thinking':
         return 'Thinking';
+      case 'gathering':
+        return 'Gathering Data';
       case 'generating':
         return 'Generating';
       case 'streaming':
         return 'Streaming';
+      case 'executing':
+        return 'Executing';
       case 'complete':
         return 'Complete';
       case 'error':
@@ -95,8 +103,10 @@ export class ChatMessageComponent {
       case 'sent':
         return 'status-sent';
       case 'thinking':
+      case 'gathering':
       case 'generating':
       case 'streaming':
+      case 'executing':
         return 'status-processing';
       case 'complete':
         return 'status-complete';
@@ -109,8 +119,10 @@ export class ChatMessageComponent {
 
   isProcessing(): boolean {
     return this.message.status === 'thinking' ||
+           this.message.status === 'gathering' ||
            this.message.status === 'generating' ||
-           this.message.status === 'streaming';
+           this.message.status === 'streaming' ||
+           this.message.status === 'executing';
   }
 
   getRoleLabel(): string {

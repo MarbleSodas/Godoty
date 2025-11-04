@@ -13,8 +13,10 @@ export type MessageStatus =
   | 'sending'      // User message being sent to backend
   | 'sent'         // User message successfully sent
   | 'thinking'     // AI is processing/thinking
+  | 'gathering'    // AI is gathering data/context
   | 'generating'   // AI is generating response
   | 'streaming'    // AI response is streaming in
+  | 'executing'    // AI is executing a command/action
   | 'complete'     // Message/response is complete
   | 'error';       // Error occurred
 

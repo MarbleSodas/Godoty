@@ -1,6 +1,7 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { trigger, state, style, transition, animate } from '@angular/animations';
 import { ChatSession } from '../../models/command.model';
 
 @Component({
@@ -8,7 +9,18 @@ import { ChatSession } from '../../models/command.model';
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './session-manager.component.html',
-  styleUrls: ['./session-manager.component.css']
+  styleUrls: ['./session-manager.component.css'],
+  animations: [
+    trigger('dialogAnimation', [
+      transition(':enter', [
+        style({ opacity: 0 }),
+        animate('300ms ease-out', style({ opacity: 1 }))
+      ]),
+      transition(':leave', [
+        animate('200ms ease-in', style({ opacity: 0 }))
+      ])
+    ])
+  ]
 })
 export class SessionManagerComponent {
   @Input() sessions: ChatSession[] = [];
@@ -66,7 +78,7 @@ export class SessionManagerComponent {
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffHours < 24) return `${diffHours}h ago`;
     if (diffDays < 7) return `${diffDays}d ago`;
-    
+
     return date.toLocaleDateString();
   }
 
@@ -77,5 +89,10 @@ export class SessionManagerComponent {
     const lastMessage = session.messages[session.messages.length - 1];
     return lastMessage.content.substring(0, 60) + (lastMessage.content.length > 60 ? '...' : '');
   }
+
+  trackBySessionId(_index: number, s: ChatSession): string {
+    return s.id;
+  }
+
 }
 

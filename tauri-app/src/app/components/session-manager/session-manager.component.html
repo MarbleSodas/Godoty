@@ -20,7 +20,7 @@
     </div>
 
     <div
-      *ngFor="let session of sessions"
+      *ngFor="let session of sessions; trackBy: trackBySessionId"
       class="session-item"
       [class.active]="session.id === activeSessionId"
       (click)="handleSelectSession(session.id)"
@@ -44,9 +44,9 @@
   </div>
 
   <!-- New Session Dialog -->
-  <div *ngIf="showNewSessionDialog" class="dialog-overlay" (click)="cancelCreateSession()">
+  <div *ngIf="showNewSessionDialog" class="dialog-overlay" (click)="cancelCreateSession()" @dialogAnimation>
     <div class="dialog-content" (click)="$event.stopPropagation()">
-      <h3>Create New Session</h3>
+      <h3>✨ Create New Session</h3>
       <input
         type="text"
         [(ngModel)]="newSessionTitle"

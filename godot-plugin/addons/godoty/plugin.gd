@@ -4,6 +4,7 @@ extends EditorPlugin
 var websocket_server: Node
 var command_executor: Node
 var dock: Control
+var debugger_plugin: EditorDebuggerPlugin
 
 const WEBSOCKET_PORT = 9001
 
@@ -19,7 +20,16 @@ func _enter_tree():
 	command_executor = preload("res://addons/godoty/command_executor.gd").new()
 	command_executor.editor_plugin = self
 	add_child(command_executor)
-	
+
+	# Create and register debugger plugin for capturing output
+	var DebuggerPlugin = preload("res://addons/godoty/debugger_plugin.gd")
+	debugger_plugin = DebuggerPlugin.new()
+	add_debugger_plugin(debugger_plugin)
+	command_executor.debugger_plugin = debugger_plugin
+	# Forward debug logs to dock
+	if debugger_plugin:
+		debugger_plugin.log_message.connect(_on_debug_message)
+
 	# Connect signals
 	websocket_server.command_received.connect(_on_command_received)
 	
@@ -42,10 +52,15 @@ func _exit_tree():
 		websocket_server.stop_server()
 		websocket_server.queue_free()
 	
+	# Unregister debugger plugin
+	if debugger_plugin:
+		remove_debugger_plugin(debugger_plugin)
+		debugger_plugin = null
+
 	# Clean up
 	if command_executor:
 		command_executor.queue_free()
-	
+
 	# Remove dock
 	if dock:
 		remove_control_from_docks(dock)
@@ -71,6 +86,10 @@ func _on_command_received(command: Dictionary):
 
 func _on_status_changed(status: String):
 	print("Godoty Status: ", status)
+
+func _on_debug_message(entry: Dictionary):
+	var msg := "[Dbg] %s — %s" % [entry.get("message", ""), str(entry.get("data", []))]
+	_update_dock_status(msg)
 
 func _update_dock_status(message: String):
 	if dock and dock.has_method("update_status"):

@@ -2,7 +2,10 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use crate::project_indexer::ProjectIndex;
-use crate::chat_session::{ChatSession, ChatMessage, ThoughtStep, ContextSnapshot};
+use crate::chat_session::ChatSession;
+
+// Bundled, high-signal Godot docs used as a fast offline cache
+const BUNDLED_GODOT_DOCS: &str = include_str!("../assets/godot_docs_bundled.md");
 
 #[derive(Serialize, Deserialize)]
 struct ChatRequest {
@@ -58,7 +61,7 @@ impl ContextEngine {
             api_key: api_key.to_string(),
             client: Client::new(),
             godot_docs_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            context7_enabled: false, // Will be enabled when Context7 API is integrated
+            context7_enabled: true, // Context7 integration enabled; will gracefully fall back to bundled docs
         }
     }
 
@@ -76,6 +79,27 @@ impl ContextEngine {
         let cache = self.godot_docs_cache.lock().await;
         cache.clone()
     }
+    /// Proactively fetch a broad slice of Godot docs and cache them for reuse
+    pub async fn prefetch_common_godot_docs(&self) -> Result<()> {
+        // If already present, skip
+        if self.get_cached_docs().await.is_some() { return Ok(()); }
+
+        // Seed with bundled docs to ensure immediate availability
+        {
+            let mut cache = self.godot_docs_cache.lock().await;
+            if cache.is_none() {
+                *cache = Some(BUNDLED_GODOT_DOCS.to_string());
+            }
+        }
+
+        // Optionally enrich/refresh from Context7 using a wide topic query
+        let enrichment_query = "nodes scenes Control Node2D CharacterBody2D signals ownership PackedScene NodePath editor tool scripts common pitfalls";
+        let enriched = self.fetch_from_context7(enrichment_query).await.unwrap_or_else(|_| BUNDLED_GODOT_DOCS.to_string());
+        let mut cache = self.godot_docs_cache.lock().await;
+        *cache = Some(enriched);
+        Ok(())
+    }
+
 
     /// Build comprehensive context from all sources
     pub async fn build_comprehensive_context(
@@ -142,6 +166,11 @@ impl ContextEngine {
 
     /// Analyze user input to determine what context to retrieve
     async fn analyze_input_for_context(&self, user_input: &str) -> Result<String> {
+        // Offline mode: skip network calls and use raw input as the query
+        if std::env::var("GODOTY_OFFLINE").ok().as_deref() == Some("1") {
+            return Ok(user_input.to_string());
+        }
+
         let system_prompt = r#"You are a context analyzer for a Godot game development assistant.
 Analyze the user's request and extract key topics, node types, and concepts that would be relevant.
 Return a concise list of keywords and topics to search for in documentation and project files.
@@ -172,7 +201,7 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
             max_tokens: 200,
         };
 
-        let response = self
+        let response = match self
             .client
             .post("https://openrouter.ai/api/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -181,25 +210,22 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
             .header("X-Title", "Godoty AI Assistant")
             .json(&request)
             .send()
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("OpenRouter API request error: {}. Falling back to raw input for context query", e);
+                return Ok(user_input.to_string());
+            }
+        };
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-
-            if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
-                return Err(anyhow::anyhow!(
-                    "OpenRouter API error ({}): {}",
-                    status,
-                    error_response.error.message
-                ));
-            }
-
-            return Err(anyhow::anyhow!(
-                "OpenRouter API request failed with status {}: {}",
-                status,
-                error_text
-            ));
+            // Fall back gracefully when the API is unavailable or rate-limited
+            eprintln!(
+                "OpenRouter API request failed (status {}), falling back to raw input for context query",
+                response.status()
+            );
+            return Ok(user_input.to_string());
         }
 
         let response_text = response.text().await?;
@@ -213,18 +239,13 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
                 }
             }
             Err(e) => {
-                if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&response_text) {
-                    Err(anyhow::anyhow!(
-                        "OpenRouter API error: {}",
-                        error_response.error.message
-                    ))
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Failed to parse API response: {}. Response: {}",
-                        e,
-                        &response_text[..response_text.len().min(500)]
-                    ))
-                }
+                // Fall back to the original user input if parsing fails
+                eprintln!(
+                    "Failed to parse context-analyzer response: {}. Falling back to raw input. Partial: {}",
+                    e,
+                    &response_text[..response_text.len().min(200)]
+                );
+                Ok(user_input.to_string())
             }
         }
     }
@@ -253,11 +274,75 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
         Ok(docs)
     }
 
-    /// Fetch from Context7 API (placeholder for future implementation)
-    async fn fetch_from_context7(&self, _query: &str) -> Result<String> {
-        // TODO: Implement Context7 API integration
-        // This would use the Context7 API to fetch relevant Godot documentation
-        Err(anyhow::anyhow!("Context7 integration not yet implemented"))
+    /// Fetch from Context7 API (via configurable gateway) and merge with bundled docs
+    async fn fetch_from_context7(&self, query: &str) -> Result<String> {
+        // Derive a focused topic from the query
+        fn derive_topic(q: &str) -> String {
+            let candidates: Vec<&str> = q
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|t| !t.is_empty())
+                .collect();
+            if let Some(tok) = candidates.iter().find(|t| t.chars().any(|c| c.is_uppercase())) {
+                return (*tok).to_string();
+            }
+            candidates.iter().max_by_key(|t| t.len()).map(|s| s.to_string()).unwrap_or_else(|| "Godot".to_string())
+        }
+
+        let topic = derive_topic(query);
+
+        // Context7 gateway URL must be provided by environment (keeps runtime flexible)
+        let gateway = std::env::var("CONTEXT7_GATEWAY_URL").unwrap_or_else(|_| String::new());
+        let mut context7_docs: Option<String> = None;
+
+        if !gateway.is_empty() {
+            let payload = serde_json::json!({
+                "context7CompatibleLibraryID": "/godotengine/godot-docs",
+                "topic": topic,
+                "tokens": 4000
+            });
+
+            match self.client.post(gateway).json(&payload).send().await {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        if let Ok(body) = resp.text().await {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                                let extracted = v.get("docs").and_then(|x| x.as_str())
+                                    .or_else(|| v.get("content").and_then(|x| x.as_str()))
+                                    .or_else(|| v.get("data").and_then(|d| d.get("content")).and_then(|x| x.as_str()))
+                                    .map(|s| s.to_string());
+                                context7_docs = extracted.or_else(|| Some(v.to_string()));
+                            } else {
+                                context7_docs = Some(body);
+                            }
+                        }
+                    } else {
+                        eprintln!("Context7 gateway returned non-success status: {}", resp.status());
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Context7 gateway request failed: {}", err);
+                }
+            }
+        }
+
+        let context7_part = context7_docs.unwrap_or_default();
+        if context7_part.trim().is_empty() {
+            // If no enrichment available, return bundled quick reference only
+            return Ok(BUNDLED_GODOT_DOCS.to_string());
+        }
+
+        if BUNDLED_GODOT_DOCS.contains(context7_part.trim()) {
+            return Ok(BUNDLED_GODOT_DOCS.to_string());
+        }
+
+        let merged = format!(
+            "{}\n\n# Context7 Enrichment (Topic: {})\n{}",
+            BUNDLED_GODOT_DOCS,
+            topic,
+            context7_part
+        );
+
+        Ok(merged)
     }
 
     /// Fetch basic Godot documentation (fallback)
@@ -359,6 +444,7 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
                     script.functions.len(),
                     script.classes.len()
                 ));
+
             }
         }
 
@@ -380,5 +466,42 @@ pub struct ComprehensiveContext {
     pub chat_history: String,
     pub recent_messages: Vec<(String, String)>,
     pub context_query: String,
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_index() -> ProjectIndex {
+        ProjectIndex { scenes: vec![], scripts: vec![], resources: vec![], project_path: ".".into() }
+    }
+
+    #[tokio::test]
+    async fn prefetch_caches_docs() {
+        std::env::set_var("GODOTY_OFFLINE", "1");
+        let engine = ContextEngine::new("test-key");
+        engine.prefetch_common_godot_docs().await.unwrap();
+        let docs = engine.get_cached_docs().await;
+        assert!(docs.is_some());
+        assert!(docs.unwrap().contains("Godot"));
+    }
+
+    #[tokio::test]
+    async fn build_context_offline_uses_input_query() {
+        std::env::set_var("GODOTY_OFFLINE", "1");
+        let engine = ContextEngine::new("test-key");
+        let ctx = engine
+            .build_comprehensive_context("Create a player with movement", &dummy_index(), None, 5)
+            .await
+            .unwrap();
+        assert!(ctx.godot_docs.len() > 10);
+        assert!(ctx.project_context.contains("Total Scenes"));
+        assert!(ctx.context_query.to_lowercase().contains("player"));
+
+        let formatted = engine.format_context_for_ai(&ctx);
+        assert!(formatted.contains("# Godot Documentation"));
+        assert!(formatted.contains("# Current Project Context"));
+    }
 }
 

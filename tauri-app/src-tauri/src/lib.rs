@@ -6,23 +6,21 @@ mod websocket;
 mod ai;
 mod storage;
 mod project_indexer;
-mod context_retrieval;
 mod chat_session;
 mod context_engine;
+mod tscn_utils;
 
 use websocket::WebSocketClient;
 use ai::AIProcessor;
 use storage::Storage;
 use project_indexer::{ProjectIndexer, ProjectIndex};
-use context_retrieval::ContextRetriever;
-use chat_session::{ChatSessionManager, ChatMessage, ThoughtStep, ContextSnapshot};
+use chat_session::{ChatSessionManager, ChatMessage, ContextSnapshot};
 use context_engine::ContextEngine;
 
 #[derive(Clone)]
 struct AppState {
     ws_client: Arc<Mutex<Option<WebSocketClient>>>,
     ai_processor: Arc<Mutex<Option<AIProcessor>>>,
-    context_retriever: Arc<Mutex<Option<ContextRetriever>>>,
     context_engine: Arc<Mutex<Option<ContextEngine>>>,
     chat_session_manager: Arc<Mutex<ChatSessionManager>>,
     storage: Arc<Mutex<Storage>>,
@@ -44,7 +42,6 @@ impl Default for AppState {
         Self {
             ws_client: Arc::new(Mutex::new(None)),
             ai_processor: Arc::new(Mutex::new(None)),
-            context_retriever: Arc::new(Mutex::new(None)),
             context_engine: Arc::new(Mutex::new(None)),
             chat_session_manager: Arc::new(Mutex::new(session_manager)),
             storage: Arc::new(Mutex::new(storage)),
@@ -106,6 +103,36 @@ async fn set_godot_project_path(path: String, state: State<'_, AppState>) -> Res
                 project_index.scripts.len(),
                 project_index.resources.len()
             );
+
+            // Proactively prefetch Godot docs and cache them
+            let api_key_opt = {
+                let storage = state_clone.storage.lock().unwrap();
+                storage.get_api_key()
+            };
+            if let Some(api_key) = api_key_opt {
+                let engine = ContextEngine::new(&api_key);
+                // Load any cached docs first
+                let cached_docs = {
+                    let storage = state_clone.storage.lock().unwrap();
+                    if storage.is_godot_docs_valid(7 * 24 * 60 * 60) {
+                        storage.load_godot_docs().ok()
+                    } else { None }
+                };
+                let _ = engine.load_cached_docs(cached_docs).await;
+                let _ = engine.prefetch_common_godot_docs().await;
+                if let Some(docs) = engine.get_cached_docs().await {
+                    let storage = state_clone.storage.lock().unwrap();
+                    let _ = storage.save_godot_docs(&docs);
+                }
+                // Make engine available in state if none exists yet
+                {
+                    let mut eng_state = state_clone.context_engine.lock().unwrap();
+                    if eng_state.is_none() {
+                        *eng_state = Some(engine);
+                    }
+                }
+            }
+
         }
     });
 
@@ -212,15 +239,15 @@ async fn process_command(
         }
     };
 
-    // Step 2: Initialize context retriever if needed
-    let context_retriever = {
+    // Step 2: Initialize context engine if needed
+    let context_engine = {
         let needs_init = {
-            let retriever = state.context_retriever.lock().unwrap();
-            retriever.is_none()
+            let engine = state.context_engine.lock().unwrap();
+            engine.is_none()
         };
 
         if needs_init {
-            let new_retriever = ContextRetriever::new(&api_key);
+            let new_engine = ContextEngine::new(&api_key);
 
             // Try to load cached Godot docs
             let cached_docs = {
@@ -232,22 +259,39 @@ async fn process_command(
                 }
             };
 
-            let _ = new_retriever.load_cached_docs(cached_docs).await;
+            let _ = new_engine.load_cached_docs(cached_docs).await;
 
-            let mut retriever = state.context_retriever.lock().unwrap();
-            *retriever = Some(new_retriever);
+            let mut engine = state.context_engine.lock().unwrap();
+            *engine = Some(new_engine);
         }
 
-        let retriever = state.context_retriever.lock().unwrap();
-        retriever.as_ref().unwrap().clone()
+        let engine = state.context_engine.lock().unwrap();
+        engine.as_ref().unwrap().clone()
     };
 
-    // Step 3: Retrieve relevant context
-    let context = context_retriever.retrieve_context(&input, &project_index).await
-        .map_err(|e| format!("Failed to retrieve context: {}", e))?;
+    // Step 3: Build comprehensive context (with chat history) and format for AI
+    let chat_session_opt = {
+        let manager = state.chat_session_manager.lock().unwrap();
+        manager.get_active_session().cloned()
+    };
+
+    let comprehensive = context_engine
+        .build_comprehensive_context(&input, &project_index, chat_session_opt.as_ref(), 10)
+        .await
+        .map_err(|e| format!("Failed to build context: {}", e))?;
+    let context = context_engine.format_context_for_ai(&comprehensive);
+    println!(
+        "[ContextEngine] built: total_chars={}, docs_len={}, proj_len={}, chat_len={}, recent_msgs={}, query='{}'",
+        context.len(),
+        comprehensive.godot_docs.len(),
+        comprehensive.project_context.len(),
+        comprehensive.chat_history.len(),
+        comprehensive.recent_messages.len(),
+        comprehensive.context_query
+    );
 
     // Save Godot docs to persistent storage
-    if let Some(docs) = context_retriever.get_cached_docs().await {
+    if let Some(docs) = context_engine.get_cached_docs().await {
         let storage = state.storage.lock().unwrap();
         let _ = storage.save_godot_docs(&docs);
     }
@@ -357,6 +401,74 @@ async fn process_command(
     {
         let mut manager = state.chat_session_manager.lock().unwrap();
         if let Some(session) = manager.get_active_session_mut() {
+/*
+/// Build a small research snippet from the current project index and scene info
+fn build_recovery_research(
+    project_index: &ProjectIndex,
+    scene_info: &serde_json::Value,
+    error_msg: &str,
+    failed_command: &serde_json::Value,
+) -> String {
+    let mut out = String::new();
+    out.push_str("Project/Scene context relevant to recovery:\n");
+
+    if let Some(data) = scene_info.get("data") {
+        if data.get("scene_open").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Some(root_name) = data.get("root_name").and_then(|v| v.as_str()) {
+                out.push_str(&format!("- Open scene root: {}\n", root_name));
+            }
+            if let Some(scene_path) = data.get("scene_path").and_then(|v| v.as_str()) {
+                out.push_str(&format!("- Open scene path: {}\n", scene_path));
+            }
+        } else {
+            out.push_str("- No scene is currently open in the editor.\n");
+        }
+    }
+
+    let parent_path = failed_command.get("parent").and_then(|v| v.as_str()).unwrap_or("");
+    if !parent_path.is_empty() {
+        let root_hint = parent_path.split('/').next().unwrap_or(parent_path);
+        out.push_str(&format!("- Failed parent path: '{}' (root hint: '{}')\n", parent_path, root_hint));
+    }
+
+    if let Some(node_type) = failed_command.get("type").and_then(|v| v.as_str()) {
+        out.push_str(&format!("- Target node type: {}\n", node_type));
+    }
+
+    // Show a couple of scenes that might be relevant
+    let mut ui_suggestions: Vec<&crate::project_indexer::SceneInfo> = Vec::new();
+    let mut game_suggestions: Vec<&crate::project_indexer::SceneInfo> = Vec::new();
+    for scene in &project_index.scenes {
+        if let Some(rt) = &scene.root_type {
+            if rt.contains("Control") || rt.contains("Panel") || rt.contains("Container") {
+                ui_suggestions.push(scene);
+            } else if rt.contains("Node2D") || rt.contains("Node3D") || rt.contains("CharacterBody") {
+                game_suggestions.push(scene);
+            }
+        }
+    }
+
+    if !ui_suggestions.is_empty() {
+        out.push_str("- Example UI scenes (root Control-like): ");
+        for s in ui_suggestions.iter().take(3) {
+            out.push_str(&format!("{} (root: {}), ", s.name, s.root_type.clone().unwrap_or_default()));
+        }
+        out.push('\n');
+    }
+    if !game_suggestions.is_empty() {
+        out.push_str("- Example gameplay scenes (root Node2D/3D-like): ");
+        for s in game_suggestions.iter().take(3) {
+            out.push_str(&format!("{} (root: {}), ", s.name, s.root_type.clone().unwrap_or_default()));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("Hints:\n- If parent is missing, create intermediate parents in order (X before X/Y).\n- If editor has no open scene, create or open a scene, then retry.\n- For editor persistence, ensure 'owner' is set to the edited scene root.\n");
+    out.push_str(&format!("Original error: {}\n", error_msg));
+
+    out
+*/
+
             let response_content = match &result_message {
                 Ok(msg) => msg.clone(),
                 Err(msg) => msg.clone(),
@@ -522,7 +634,98 @@ Example for "Parent node not found: MainMenu/Container" when MainMenu exists:
 
                 println!("Recovery command {} FAILED: {}", idx + 1, error_msg);
 
-                // Check if we can attempt nested recovery
+                // Fallback: if parent not found on create_node, try direct .tscn patch as last resort
+                if action == "create_node" && error_msg.contains("Parent node not found") {
+                    if let Some(scene_path) = scene_info_result
+                        .get("data").and_then(|d| d.get("scene_path")).and_then(|s| s.as_str())
+                    {
+                        let node_name = cmd.get("name").and_then(|v| v.as_str());
+                        let node_type = cmd.get("type").and_then(|v| v.as_str());
+                        let parent_path = cmd.get("parent").and_then(|v| v.as_str());
+                        if let (Some(n), Some(t), Some(p)) = (node_name, node_type, parent_path) {
+                            match crate::tscn_utils::add_node_to_tscn(scene_path, n, t, p) {
+                                Ok(_) => {
+                                    println!(
+                                        "Fallback applied: wrote node '{}' of type '{}' under '{}' into scene file {}",
+                                        n, t, p, scene_path
+                                    );
+                                }
+                                Err(e) => {
+                                    println!("Fallback TSCN edit failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+/// Build a small research snippet from the current project index and scene info
+fn build_recovery_research(
+    project_index: &ProjectIndex,
+    scene_info: &serde_json::Value,
+    error_msg: &str,
+    failed_command: &serde_json::Value,
+) -> String {
+    let mut out = String::new();
+    out.push_str("Project/Scene context relevant to recovery:\n");
+
+    if let Some(data) = scene_info.get("data") {
+        if data.get("scene_open").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Some(root_name) = data.get("root_name").and_then(|v| v.as_str()) {
+                out.push_str(&format!("- Open scene root: {}\n", root_name));
+            }
+            if let Some(scene_path) = data.get("scene_path").and_then(|v| v.as_str()) {
+                out.push_str(&format!("- Open scene path: {}\n", scene_path));
+            }
+        } else {
+            out.push_str("- No scene is currently open in the editor.\n");
+        }
+    }
+
+    let parent_path = failed_command.get("parent").and_then(|v| v.as_str()).unwrap_or("");
+    if !parent_path.is_empty() {
+        let root_hint = parent_path.split('/').next().unwrap_or(parent_path);
+        out.push_str(&format!("- Failed parent path: '{}' (root hint: '{}')\n", parent_path, root_hint));
+    }
+
+    if let Some(node_type) = failed_command.get("type").and_then(|v| v.as_str()) {
+        out.push_str(&format!("- Target node type: {}\n", node_type));
+    }
+
+    // Show a couple of scenes that might be relevant
+    let mut ui_suggestions: Vec<&crate::project_indexer::SceneInfo> = Vec::new();
+    let mut game_suggestions: Vec<&crate::project_indexer::SceneInfo> = Vec::new();
+    for scene in &project_index.scenes {
+        if let Some(rt) = &scene.root_type {
+            if rt.contains("Control") || rt.contains("Panel") || rt.contains("Container") {
+                ui_suggestions.push(scene);
+            } else if rt.contains("Node2D") || rt.contains("Node3D") || rt.contains("CharacterBody") {
+                game_suggestions.push(scene);
+            }
+        }
+    }
+
+    if !ui_suggestions.is_empty() {
+        out.push_str("- Example UI scenes (root Control-like): ");
+        for s in ui_suggestions.iter().take(3) {
+            out.push_str(&format!("{} (root: {}), ", s.name, s.root_type.clone().unwrap_or_default()));
+        }
+        out.push('\n');
+    }
+    if !game_suggestions.is_empty() {
+        out.push_str("- Example gameplay scenes (root Node2D/3D-like): ");
+        for s in game_suggestions.iter().take(3) {
+            out.push_str(&format!("{} (root: {}), ", s.name, s.root_type.clone().unwrap_or_default()));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("Hints:\n- If parent is missing, create intermediate parents in order (X before X/Y).\n- If editor has no open scene, create or open a scene, then retry.\n- For editor persistence, ensure 'owner' is set to the edited scene root.\n");
+    out.push_str(&format!("Original error: {}\n", error_msg));
+
+    out
+}
+
+                // Check if we can attempt nested recovery; enhance context to avoid repeating same strategy
                 if recovery_depth < MAX_RECOVERY_DEPTH {
                     println!("Attempting nested recovery (depth {} -> {})...", recovery_depth, recovery_depth + 1);
 
@@ -534,11 +737,14 @@ Example for "Parent node not found: MainMenu/Container" when MainMenu exists:
                         error_msg
                     );
 
+                    let research_snippet = build_recovery_research(project_index, &scene_info_result, error_msg, cmd);
+                    let enhanced_context = format!("{}\n\n# Additional Research\n{}", context, research_snippet);
+
                     // Attempt recursive recovery (boxed to avoid infinite size)
                     match Box::pin(attempt_single_command_recovery(
                         processor,
                         original_input,
-                        context,
+                        &enhanced_context,
                         project_index,
                         &nested_error_context,
                         cmd,
@@ -639,8 +845,8 @@ async fn clear_cache(state: State<'_, AppState>) -> Result<String, String> {
     }
 
     {
-        let mut retriever = state.context_retriever.lock().unwrap();
-        *retriever = None;
+        let mut engine = state.context_engine.lock().unwrap();
+        *engine = None;
     }
 
     // Clear persistent cache
@@ -671,8 +877,8 @@ async fn get_cache_status(state: State<'_, AppState>) -> Result<String, String> 
     };
 
     let in_memory_docs = {
-        let retriever = state.context_retriever.lock().unwrap();
-        retriever.is_some()
+        let engine = state.context_engine.lock().unwrap();
+        engine.is_some()
     };
 
     Ok(format!(
