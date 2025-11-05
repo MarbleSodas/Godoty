@@ -23,6 +23,37 @@ func execute_command(command: Dictionary):
 			return _inspect_scene_file(command)
 		"get_current_scene_detailed":
 			return _get_current_scene_detailed(command)
+		# New editor integration commands (EditorInterface / CommandPalette)
+		"select_nodes":
+			return _select_nodes(command)
+		"focus_node":
+			return _focus_node(command)
+		"play":
+			return _play(command)
+		"open_scene":
+			return await _open_scene(command)
+		"add_command_palette_command":
+			return _add_command_palette_command(command)
+		# Search commands
+		"search_nodes_by_type":
+			return _search_nodes_by_type(command)
+		"search_nodes_by_name":
+			return _search_nodes_by_name(command)
+		"search_nodes_by_group":
+			return _search_nodes_by_group(command)
+		"search_nodes_by_script":
+			return _search_nodes_by_script(command)
+		# Structure editing commands
+		"duplicate_node":
+			return _duplicate_node(command)
+		"reparent_node":
+			return _reparent_node(command)
+		"rename_node":
+			return _rename_node(command)
+		"add_to_group":
+			return _add_to_group(command)
+		"remove_from_group":
+			return _remove_from_group(command)
 		"start_debug_capture":
 			return _start_debug_capture(command)
 		"stop_debug_capture":
@@ -66,24 +97,32 @@ func _create_node(command: Dictionary) -> Dictionary:
 
 	new_node.name = node_name
 
-	# Resolve parent node (supports relative paths, "/" or "." for root, and absolute paths inside edited scene)
+	# Resolve parent node (supports relative paths, "/" or "." for root, root-name-prefixed paths, and absolute paths inside edited scene)
 	var parent_node: Node = edited_scene
 	if parent_path and not String(parent_path).is_empty():
-		var p: NodePath = (typeof(parent_path) == TYPE_NODE_PATH) ? parent_path : NodePath(str(parent_path))
-		var p_str := str(p)
+		var p_str := str(parent_path)
 		if p_str == "/" or p_str == ".":
 			parent_node = edited_scene
 		else:
 			# Try relative to edited scene first
-			parent_node = edited_scene.get_node_or_null(p)
+			var np: NodePath = parent_path if typeof(parent_path) == TYPE_NODE_PATH else NodePath(p_str)
+			parent_node = edited_scene.get_node_or_null(np)
+			if not parent_node:
+				# Convenience: allow paths that start with the scene root name (e.g. "Root/..." or exactly "Root")
+				var root_name := str(edited_scene.name)
+				if p_str == root_name:
+					parent_node = edited_scene
+				elif p_str.begins_with(root_name + "/"):
+					var stripped := p_str.substr(root_name.length() + 1)
+					parent_node = edited_scene.get_node_or_null(stripped)
 			if not parent_node:
 				# If absolute, try resolving from the SceneTree root, but ensure it's inside the edited scene
-				var from_root := editor_plugin.get_tree().get_root().get_node_or_null(p)
+				var from_root := editor_plugin.get_tree().get_root().get_node_or_null(np)
 				if from_root and (from_root == edited_scene or edited_scene.is_ancestor_of(from_root)):
 					parent_node = from_root
 			if not parent_node:
 				new_node.free()
-				return {"status": "error", "message": "Parent node not found or not in edited scene: %s" % p_str}
+				return {"status": "error", "message": "Parent node not found or not in edited scene: %s" % p_str, "suggestion": "If referring to the scene root ('%s'), use '/' or '.' or omit the parent. If your path starts with '%s/', drop that prefix." % [edited_scene.name, edited_scene.name]}
 
 	# Determine correct owner for saving (match parent's owner, fallback to scene root)
 	var owner_for_save: Node = parent_node.owner if parent_node.owner else edited_scene
@@ -135,14 +174,28 @@ func _delete_node(command: Dictionary) -> Dictionary:
 			"suggestion": "Use create_scene or open an existing scene"
 		}
 
-	var node = edited_scene.get_node_or_null(node_path)
+	var node: Node = edited_scene.get_node_or_null(node_path)
 	if not node:
 		return {"status": "error", "message": "Node not found: %s" % node_path}
 
 	if node == edited_scene:
 		return {"status": "error", "message": "Cannot delete scene root"}
 
-	node.queue_free()
+	var parent: Node = node.get_parent()
+	if parent == null:
+		return {"status": "error", "message": "Node has no parent (can't delete rootless node)"}
+	var index: int = parent.get_child_index(node)
+	var prev_owner := node.owner
+
+	var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+	ur.create_action("Delete Node: %s" % node_path)
+	ur.add_do_method(parent, "remove_child", node)
+	# Undo: re-add at same index and restore owner
+	ur.add_undo_method(parent, "add_child", node)
+	ur.add_undo_method(node, "set_owner", prev_owner)
+	ur.add_undo_method(parent, "move_child", node, index)
+	ur.commit_action()
+
 	editor_interface.mark_scene_as_unsaved()
 
 	return {
@@ -171,14 +224,25 @@ func _modify_node(command: Dictionary) -> Dictionary:
 	if not node:
 		return {"status": "error", "message": "Node not found: %s" % node_path}
 
-	# Set properties
-	var modified_props = []
+	var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+	ur.create_action("Modify Node: %s" % node_path)
+	var modified_props := []
 	for prop_name in properties:
-		if prop_name in node:
-			node.set(prop_name, properties[prop_name])
+		# Verify property exists on the node
+		var exists := false
+		for p in node.get_property_list():
+			if p.get("name", "") == prop_name:
+				exists = true
+				break
+		if exists:
+			var old_val = node.get(prop_name)
+			var new_val = properties[prop_name]
+			ur.add_do_property(node, prop_name, new_val)
+			ur.add_undo_property(node, prop_name, old_val)
 			modified_props.append(prop_name)
 		else:
 			push_warning("Property not found on node: %s" % prop_name)
+	ur.commit_action()
 
 	editor_interface.mark_scene_as_unsaved()
 
@@ -214,22 +278,27 @@ func _attach_script(command: Dictionary) -> Dictionary:
 	if not node:
 		return {"status": "error", "message": "Node not found: %s" % node_path}
 
-	# Create script
-	var script = GDScript.new()
+	# Create script resource
+	var script := GDScript.new()
 	script.source_code = script_content
-	var err = script.reload()
-
+	var err := script.reload()
 	if err != OK:
 		return {"status": "error", "message": "Script compilation failed: %s" % error_string(err)}
 
-	# Save script if path provided
+	# Save script if a path was provided
 	if script_path:
 		var file_err = ResourceSaver.save(script, script_path)
 		if file_err != OK:
 			return {"status": "error", "message": "Failed to save script: %s" % error_string(file_err)}
 
-	# Attach script to node
-	node.set_script(script)
+	# Attach via undo/redo so it's revertible
+	var prev_script: Script = node.get_script()
+	var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+	ur.create_action("Attach Script to %s" % node.name)
+	ur.add_do_method(node, "set_script", script)
+	ur.add_undo_method(node, "set_script", prev_script)
+	ur.commit_action()
+
 	editor_interface.mark_scene_as_unsaved()
 
 	return {
@@ -368,6 +437,469 @@ func _instantiate_node_by_type(type_name: String) -> Node:
 
 
 
+	# === Editor integration commands ===
+func _select_nodes(command: Dictionary) -> Dictionary:
+		var paths: Array = command.get("paths", [])
+		var clear := bool(command.get("clear", true))
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var selection = editor_interface.get_selection()
+		if selection == null:
+			return {"status": "error", "message": "Editor selection is unavailable"}
+		if clear:
+			selection.clear()
+		var added := []
+		for p in paths:
+			var np: NodePath = p if typeof(p) == TYPE_NODE_PATH else NodePath(str(p))
+			var n = edited_scene.get_node_or_null(np)
+			if n:
+				selection.add_node(n)
+				added.append(str(edited_scene.get_path_to(n)))
+		return {"status": "success", "message": "Selection updated", "data": {"selected": added, "count": added.size()}}
+
+func _focus_node(command: Dictionary) -> Dictionary:
+		var path := str(command.get("path", ""))
+		var also_select := bool(command.get("select", true))
+		if path.is_empty():
+			return {"status": "error", "message": "Node path is required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var node = edited_scene.get_node_or_null(path)
+		if not node:
+			return {"status": "error", "message": "Node not found: %s" % path}
+		editor_interface.edit_node(node)
+		if also_select and editor_interface.get_selection():
+			editor_interface.get_selection().clear()
+			editor_interface.get_selection().add_node(node)
+		return {"status": "success", "message": "Focused node: %s" % path}
+
+func _play(command: Dictionary) -> Dictionary:
+		var mode := str(command.get("mode", "current")).to_lower()
+		var editor_interface = editor_plugin.get_editor_interface()
+		match mode:
+			"current":
+				editor_interface.play_current_scene()
+				return {"status": "success", "message": "Playing current scene"}
+			"main":
+				editor_interface.play_main_scene()
+				return {"status": "success", "message": "Playing main scene"}
+			"custom":
+				var path := _to_res_path(str(command.get("path", "")))
+				if path.is_empty():
+					return {"status": "error", "message": "Path is required for custom play"}
+				editor_interface.play_custom_scene(path)
+				return {"status": "success", "message": "Playing scene: %s" % path}
+			_:
+				return {"status": "error", "message": "Unknown play mode: %s" % mode}
+
+func _open_scene(command: Dictionary) -> Dictionary:
+		var path := _to_res_path(str(command.get("path", "")))
+		if path.is_empty():
+			return {"status": "error", "message": "Scene path is required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		editor_interface.open_scene_from_path(path)
+		await editor_plugin.get_tree().process_frame
+		var opened = editor_interface.get_edited_scene_root()
+		if opened and String(opened.scene_file_path) == path:
+			return {"status": "success", "message": "Opened scene: %s" % path}
+		return {"status": "error", "message": "Failed to open scene: %s" % path}
+
+func _add_command_palette_command(command: Dictionary) -> Dictionary:
+		var display_name := str(command.get("display_name", ""))
+		var key := str(command.get("key", ""))
+		var action_to_execute := str(command.get("action_to_execute", ""))
+		var payload := command.get("payload", {})
+		if display_name.is_empty() or key.is_empty() or action_to_execute.is_empty():
+			return {"status": "error", "message": "display_name, key, and action_to_execute are required"}
+		var cp = editor_plugin.get_editor_interface().get_command_palette()
+		if cp == null:
+			return {"status": "error", "message": "Command palette unavailable in this editor build"}
+		var callable := Callable(self, "_on_palette_command").bind(action_to_execute, payload)
+		cp.add_command(display_name, key, callable)
+		return {"status": "success", "message": "Command added to palette", "data": {"key": key, "display_name": display_name}}
+
+
+	# === Search commands ===
+func _search_nodes_by_type(command: Dictionary) -> Dictionary:
+		var type_name := str(command.get("type", ""))
+		var select_results := bool(command.get("select_results", false))
+		var focus_first := bool(command.get("focus_first", false))
+		if type_name.is_empty():
+			return {"status": "error", "message": "Type is required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var results := []
+		var stack := [edited_scene]
+		while stack.size() > 0:
+			var n: Node = stack.pop_back()
+			if n.is_class(type_name):
+				results.append(str(edited_scene.get_path_to(n)))
+			for c in n.get_children():
+				stack.append(c)
+		var selected_count := 0
+		var focused := ""
+		if select_results and results.size() > 0:
+			var sel_res = _select_nodes({"paths": results, "clear": true})
+			if typeof(sel_res) == TYPE_DICTIONARY:
+				var sel_data = sel_res.get("data", {})
+				if typeof(sel_data) == TYPE_DICTIONARY:
+					selected_count = int(sel_data.get("count", 0))
+		if focus_first and results.size() > 0:
+			_focus_node({"path": results[0], "select": false})
+			focused = results[0]
+		var msg := "Found %d nodes of type %s" % [results.size(), type_name] if (results.size() > 0) else "No nodes found of type %s" % type_name
+		return {"status": "success", "message": msg, "data": {"matches": results, "count": results.size(), "selected_count": selected_count, "focused": focused}}
+
+func _search_nodes_by_name(command: Dictionary) -> Dictionary:
+		var query := str(command.get("name", ""))
+		var exact := bool(command.get("exact", false))
+		var case_sensitive := bool(command.get("case_sensitive", false))
+		var select_results := bool(command.get("select_results", false))
+		var focus_first := bool(command.get("focus_first", false))
+		if query.is_empty():
+			return {"status": "error", "message": "Name is required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var results := []
+		var cmp_query := query if case_sensitive else query.to_lower()
+		var stack := [edited_scene]
+		while stack.size() > 0:
+			var n: Node = stack.pop_back()
+			var n_name := str(n.name)
+			var cmp_name := n_name if case_sensitive else n_name.to_lower()
+			var match := cmp_name == cmp_query if exact else (cmp_name.find(cmp_query) != -1)
+			if match:
+				results.append(str(edited_scene.get_path_to(n)))
+			for c in n.get_children():
+				stack.append(c)
+		var selected_count := 0
+		var focused := ""
+		if select_results and results.size() > 0:
+			var sel_res = _select_nodes({"paths": results, "clear": true})
+			if typeof(sel_res) == TYPE_DICTIONARY:
+				var sel_data = sel_res.get("data", {})
+				if typeof(sel_data) == TYPE_DICTIONARY:
+					selected_count = int(sel_data.get("count", 0))
+		if focus_first and results.size() > 0:
+			_focus_node({"path": results[0], "select": false})
+			focused = results[0]
+		var mode := "exact" if exact else "contains"
+		var msg := "Found %d nodes where name %s '%s'" % [results.size(), mode, query] if (results.size() > 0) else "No nodes found where name %s '%s'" % [mode, query]
+		return {"status": "success", "message": msg, "data": {"matches": results, "count": results.size(), "selected_count": selected_count, "focused": focused}}
+
+func _search_nodes_by_group(command: Dictionary) -> Dictionary:
+		var group := str(command.get("group", ""))
+		var select_results := bool(command.get("select_results", false))
+		var focus_first := bool(command.get("focus_first", false))
+		if group.is_empty():
+			return {"status": "error", "message": "Group is required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var results := []
+		var stack := [edited_scene]
+		while stack.size() > 0:
+			var n: Node = stack.pop_back()
+			if n.is_in_group(group):
+				results.append(str(edited_scene.get_path_to(n)))
+			for c in n.get_children():
+				stack.append(c)
+		var selected_count := 0
+		var focused := ""
+		if select_results and results.size() > 0:
+			var sel_res = _select_nodes({"paths": results, "clear": true})
+			if typeof(sel_res) == TYPE_DICTIONARY:
+				var sel_data = sel_res.get("data", {})
+				if typeof(sel_data) == TYPE_DICTIONARY:
+					selected_count = int(sel_data.get("count", 0))
+		if focus_first and results.size() > 0:
+			_focus_node({"path": results[0], "select": false})
+			focused = results[0]
+		var msg := "Found %d nodes in group '%s'" % [results.size(), group] if (results.size() > 0) else "No nodes found in group '%s'" % group
+		return {"status": "success", "message": msg, "data": {"matches": results, "count": results.size(), "selected_count": selected_count, "focused": focused}}
+
+func _search_nodes_by_script(command: Dictionary) -> Dictionary:
+		var script_path := str(command.get("script_path", ""))
+		var filter_by_path := not script_path.is_empty()
+		var select_results := bool(command.get("select_results", false))
+		var focus_first := bool(command.get("focus_first", false))
+		if filter_by_path:
+			script_path = _to_res_path(script_path)
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var results := []
+		var stack := [edited_scene]
+		while stack.size() > 0:
+			var n: Node = stack.pop_back()
+			var s: Script = n.get_script()
+			if s:
+				if not filter_by_path or String(s.resource_path) == script_path:
+					results.append(str(edited_scene.get_path_to(n)))
+			for c in n.get_children():
+				stack.append(c)
+		var selected_count := 0
+		var focused := ""
+		if select_results and results.size() > 0:
+			var sel_res = _select_nodes({"paths": results, "clear": true})
+			if typeof(sel_res) == TYPE_DICTIONARY:
+				var sel_data = sel_res.get("data", {})
+				if typeof(sel_data) == TYPE_DICTIONARY:
+					selected_count = int(sel_data.get("count", 0))
+		if focus_first and results.size() > 0:
+			_focus_node({"path": results[0], "select": false})
+			focused = results[0]
+		var msg := "Found %d nodes with scripts" % results.size()
+		if filter_by_path:
+			msg = "Found %d nodes with script '%s'" % [results.size(), script_path] if (results.size() > 0) else "No nodes found with script '%s'" % script_path
+		elif results.size() == 0:
+			msg = "No nodes with scripts found"
+		return {"status": "success", "message": msg, "data": {"matches": results, "count": results.size(), "selected_count": selected_count, "focused": focused}}
+
+	# === Structure editing commands ===
+func _duplicate_node(command: Dictionary) -> Dictionary:
+		var path := str(command.get("path", ""))
+		var parent_path_val = command.get("parent_path", null)
+		var explicit_name := str(command.get("name", ""))
+		if path.is_empty():
+			return {"status": "error", "message": "Path is required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var node: Node = edited_scene.get_node_or_null(path)
+		if not node:
+			return {"status": "error", "message": "Node not found: %s" % path}
+		var current_parent: Node = node.get_parent()
+		if current_parent == null:
+			return {"status": "error", "message": "Node has no parent (can't duplicate rootless node)"}
+		var target_parent: Node = current_parent
+		if parent_path_val and not String(parent_path_val).is_empty():
+			var p_str := str(parent_path_val)
+			var np: NodePath = parent_path_val if typeof(parent_path_val) == TYPE_NODE_PATH else NodePath(p_str)
+			if p_str == "/" or p_str == ".":
+				target_parent = edited_scene
+			else:
+				# Try relative to edited scene first
+				target_parent = edited_scene.get_node_or_null(np)
+				if not target_parent:
+					# Convenience: allow paths that start with the scene root name (e.g. "Root/..." or exactly "Root")
+					var root_name := str(edited_scene.name)
+					if p_str == root_name:
+						target_parent = edited_scene
+					elif p_str.begins_with(root_name + "/"):
+						var stripped := p_str.substr(root_name.length() + 1)
+						target_parent = edited_scene.get_node_or_null(stripped)
+				if not target_parent:
+					# Try resolving from the SceneTree root, but keep within edited scene subtree
+					var from_root := editor_plugin.get_tree().get_root().get_node_or_null(np)
+					if from_root and (from_root == edited_scene or edited_scene.is_ancestor_of(from_root)):
+						target_parent = from_root
+			if not target_parent:
+				return {"status": "error", "message": "Parent node not found or not in edited scene: %s" % p_str, "suggestion": "If referring to the scene root ('%s'), use '/' or '.' or omit the parent. If your path starts with '%s/', drop that prefix." % [edited_scene.name, edited_scene.name]}
+		# Duplicate with scripts, groups, and signals
+		var flags: int = Node.DUPLICATE_SIGNALS | Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
+		var dup: Node = node.duplicate(flags)
+		if dup == null:
+			return {"status": "error", "message": "Failed to duplicate node"}
+		# Name handling: explicit or auto-unique
+		var final_name := explicit_name
+		if final_name.is_empty():
+			final_name = _make_unique_name(target_parent, str(node.name))
+		else:
+			if _sibling_name_exists(target_parent, final_name):
+				final_name = _make_unique_name(target_parent, final_name)
+		# Determine owner for save
+		var owner_for_save: Node = target_parent.owner if target_parent.owner else edited_scene
+		# Build undo/redo
+		var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+		ur.create_action("Duplicate Node: %s" % path)
+		ur.add_do_method(target_parent, "add_child", dup)
+		ur.add_do_property(dup, "name", final_name)
+		# Set owner on whole subtree
+		var subs := []
+		_collect_subtree_nodes(dup, subs)
+		for s in subs:
+			ur.add_do_method(s, "set_owner", owner_for_save)
+			ur.add_undo_method(s, "set_owner", null)
+		# If duplicating under same parent, place it right after original
+		if target_parent == current_parent:
+			var insert_index: int = current_parent.get_child_index(node) + 1
+			ur.add_do_method(target_parent, "move_child", dup, insert_index)
+		ur.add_undo_method(target_parent, "remove_child", dup)
+		ur.commit_action()
+		editor_interface.mark_scene_as_unsaved()
+		return {"status": "success", "message": "Duplicated node", "data": {"new_path": str(edited_scene.get_path_to(dup)), "name": final_name, "parent_path": str(edited_scene.get_path_to(target_parent))}}
+
+func _reparent_node(command: Dictionary) -> Dictionary:
+		var path := str(command.get("path", ""))
+		var new_parent_path := str(command.get("new_parent_path", ""))
+		var idx_param = command.get("index", null)
+		var keep_param_present := command.has("keep_global_transform")
+		var keep_global := keep_param_present and bool(command.get("keep_global_transform", true))
+		if path.is_empty() or new_parent_path.is_empty():
+			return {"status": "error", "message": "path and new_parent_path are required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var node: Node = edited_scene.get_node_or_null(path)
+		if not node:
+			return {"status": "error", "message": "Node not found: %s" % path}
+		var old_parent: Node = node.get_parent()
+		if old_parent == null:
+			return {"status": "error", "message": "Node has no parent (can't reparent rootless node)"}
+		var np: NodePath = NodePath(new_parent_path)
+		var dest_parent: Node = edited_scene.get_node_or_null(np)
+		if not dest_parent:
+			# Convenience: allow root-name-prefixed paths
+			var root_name := str(edited_scene.name)
+			if new_parent_path == root_name:
+				dest_parent = edited_scene
+			elif String(new_parent_path).begins_with(root_name + "/"):
+				var stripped := String(new_parent_path).substr(root_name.length() + 1)
+				dest_parent = edited_scene.get_node_or_null(stripped)
+		if not dest_parent:
+			var from_root := editor_plugin.get_tree().get_root().get_node_or_null(np)
+			if from_root and (from_root == edited_scene or edited_scene.is_ancestor_of(from_root)):
+				dest_parent = from_root
+		if not dest_parent:
+			return {"status": "error", "message": "Destination parent not found or not in edited scene: %s" % new_parent_path, "suggestion": "If referring to the scene root ('%s'), use '/' or '.' or omit the root name prefix." % edited_scene.name}
+		if node == dest_parent or node.is_ancestor_of(dest_parent):
+			return {"status": "error", "message": "Cannot reparent a node under itself or its descendant"}
+		if not keep_param_present:
+			# Default true for spatial/canvas nodes
+			keep_global = node is Node2D or node is Node3D
+		var old_index: int = old_parent.get_child_index(node)
+		var target_index: int = -1
+		if typeof(idx_param) == TYPE_INT:
+			target_index = clamp(int(idx_param), 0, dest_parent.get_child_count())
+		else:
+			target_index = old_index if dest_parent == old_parent else dest_parent.get_child_count()
+		if dest_parent == old_parent and target_index == old_index:
+			return {"status": "success", "message": "Node already at requested position", "data": {"path": path, "index": old_index}}
+		var owner_for_save: Node = dest_parent.owner if dest_parent.owner else edited_scene
+		# Collect subtree owners for undo
+		var subs := []
+		_collect_subtree_nodes(node, subs)
+		var prev_owners := []
+		for s in subs:
+			prev_owners.append(s.owner)
+		var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+		if dest_parent == old_parent:
+			ur.create_action("Move Node: %s" % path)
+			ur.add_do_method(old_parent, "move_child", node, target_index)
+			ur.add_undo_method(old_parent, "move_child", node, old_index)
+			ur.commit_action()
+			editor_interface.mark_scene_as_unsaved()
+			return {"status": "success", "message": "Moved node within parent", "data": {"path": str(edited_scene.get_path_to(node)), "index": target_index}}
+		# Full reparent
+		ur.create_action("Reparent Node: %s" % path)
+		ur.add_do_method(node, "reparent", dest_parent, keep_global)
+		ur.add_do_method(dest_parent, "move_child", node, target_index)
+		for i in range(subs.size()):
+			ur.add_do_method(subs[i], "set_owner", owner_for_save)
+			ur.add_undo_method(subs[i], "set_owner", prev_owners[i])
+		ur.add_undo_method(node, "reparent", old_parent, keep_global)
+		ur.add_undo_method(old_parent, "move_child", node, old_index)
+		ur.commit_action()
+		editor_interface.mark_scene_as_unsaved()
+		return {"status": "success", "message": "Reparented node", "data": {"new_parent_path": str(edited_scene.get_path_to(dest_parent)), "new_path": str(edited_scene.get_path_to(node)), "index": target_index}}
+
+func _rename_node(command: Dictionary) -> Dictionary:
+		var path := str(command.get("path", ""))
+		var new_name := str(command.get("new_name", ""))
+		if path.is_empty() or new_name.is_empty():
+			return {"status": "error", "message": "path and new_name are required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var node: Node = edited_scene.get_node_or_null(path)
+		if not node:
+			return {"status": "error", "message": "Node not found: %s" % path}
+		var parent := node.get_parent()
+		if parent == null:
+			return {"status": "error", "message": "Cannot rename the scene root via this command"}
+		# Validate sibling name uniqueness
+		if _sibling_name_exists(parent, new_name, node):
+			return {"status": "error", "message": "A sibling with the name '%s' already exists" % new_name}
+		var old_name := str(node.name)
+		var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+		ur.create_action("Rename Node: %s -> %s" % [old_name, new_name])
+		ur.add_do_property(node, "name", new_name)
+		ur.add_undo_property(node, "name", old_name)
+		ur.commit_action()
+		editor_interface.mark_scene_as_unsaved()
+		return {"status": "success", "message": "Renamed node", "data": {"new_path": str(edited_scene.get_path_to(node))}}
+
+func _add_to_group(command: Dictionary) -> Dictionary:
+		var path := str(command.get("path", ""))
+		var group := str(command.get("group", ""))
+		var persistent := bool(command.get("persistent", true))
+		if path.is_empty() or group.is_empty():
+			return {"status": "error", "message": "path and group are required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var node: Node = edited_scene.get_node_or_null(path)
+		if not node:
+			return {"status": "error", "message": "Node not found: %s" % path}
+		if node.is_in_group(group):
+			return {"status": "success", "message": "Node is already in group '%s'" % group}
+		var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+		ur.create_action("Add To Group: %s" % group)
+		ur.add_do_method(node, "add_to_group", group, persistent)
+		ur.add_undo_method(node, "remove_from_group", group)
+		ur.commit_action()
+		editor_interface.mark_scene_as_unsaved()
+		return {"status": "success", "message": "Added node to group", "data": {"group": group}}
+
+func _remove_from_group(command: Dictionary) -> Dictionary:
+		var path := str(command.get("path", ""))
+		var group := str(command.get("group", ""))
+		if path.is_empty() or group.is_empty():
+			return {"status": "error", "message": "path and group are required"}
+		var editor_interface = editor_plugin.get_editor_interface()
+		var edited_scene: Node = editor_interface.get_edited_scene_root()
+		if not edited_scene:
+			return {"status": "error", "message": "No scene is currently open."}
+		var node: Node = edited_scene.get_node_or_null(path)
+		if not node:
+			return {"status": "error", "message": "Node not found: %s" % path}
+		if not node.is_in_group(group):
+			return {"status": "success", "message": "Node is not in group '%s'" % group}
+		var ur: EditorUndoRedoManager = editor_plugin.get_undo_redo()
+		ur.create_action("Remove From Group: %s" % group)
+		ur.add_do_method(node, "remove_from_group", group)
+		# Best-effort: restore persistently on undo
+		ur.add_undo_method(node, "add_to_group", group, true)
+		ur.commit_action()
+		editor_interface.mark_scene_as_unsaved()
+		return {"status": "success", "message": "Removed node from group", "data": {"group": group}}
+
+
+
+func _on_palette_command(action: String, payload) -> void:
+		var cmd := {}
+		if typeof(payload) == TYPE_DICTIONARY:
+			cmd = payload.duplicate(true)
+		cmd["action"] = action
+		# Execute without blocking the UI; result is sent via WebSocket normally for direct calls.
+		call_deferred("execute_command", cmd)
+
+
 # === Debug capture commands ===
 func _start_debug_capture(command: Dictionary) -> Dictionary:
 	if debugger_plugin:
@@ -497,13 +1029,38 @@ func _build_tree_from_state(state: SceneState) -> Dictionary:
 	for key in nodes.keys():
 		if key == root_key:
 			continue
-		var idx := key.rfind("/")
+		var idx: int = String(key).rfind("/")
 		if idx == -1:
 			continue
-		var parent_key := key.substr(0, idx)
+		var parent_key: String = String(key).substr(0, idx)
 		if nodes.has(parent_key):
 			nodes[parent_key].children.append(nodes[key])
 	# Fallback if root_key not found
 	if root_key == "" and nodes.size() > 0:
 		root_key = nodes.keys()[0]
 	return nodes.get(root_key, {"name": "", "type": "", "path": "", "properties": {}, "children": []})
+
+	# --- Additional helpers ---
+func _collect_subtree_nodes(n: Node, out: Array) -> void:
+		out.append(n)
+		for c in n.get_children():
+			_collect_subtree_nodes(c, out)
+
+func _sibling_name_exists(parent: Node, name: String, exclude: Node = null) -> bool:
+		for c in parent.get_children():
+			if c != exclude and String(c.name) == name:
+				return true
+		return false
+
+func _make_unique_name(parent: Node, base: String) -> String:
+		var candidate := base
+		if not _sibling_name_exists(parent, candidate):
+			return candidate
+		var i := 2
+		while true:
+			candidate = "%s%d" % [base, i]
+			if not _sibling_name_exists(parent, candidate):
+				return candidate
+			i += 1
+		return candidate
+

@@ -27,19 +27,7 @@ pub fn add_node_to_tscn(scene_path: &str, node_name: &str, node_type: &str, pare
     Ok(())
 }
 
-/// Returns true if the given node path already exists in the scene file (best-effort check).
-pub fn tscn_has_node(scene_path: &str, node_path: &str) -> Result<bool> {
-    let path = Path::new(scene_path);
-    if !path.exists() {
-        return Ok(false);
-    }
 
-    let content = fs::read_to_string(path)?;
-    // Match either exact name at root or parent + name path
-    let needle1 = format!("name=\"{}\"", node_path);
-    let needle2 = format!("parent=\"{}\"", node_path);
-    Ok(content.contains(&needle1) || content.contains(&needle2))
-}
 
 fn sanitize_attr(s: &str) -> String {
     s.replace('"', "'")

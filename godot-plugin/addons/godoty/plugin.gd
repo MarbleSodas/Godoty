@@ -10,12 +10,13 @@ const WEBSOCKET_PORT = 9001
 
 func _enter_tree():
 	print("Godoty AI Assistant: Initializing...")
-	
+
+
 	# Create WebSocket server
 	websocket_server = preload("res://addons/godoty/websocket_server.gd").new()
 	websocket_server.port = WEBSOCKET_PORT
 	add_child(websocket_server)
-	
+
 	# Create command executor
 	command_executor = preload("res://addons/godoty/command_executor.gd").new()
 	command_executor.editor_plugin = self
@@ -32,26 +33,29 @@ func _enter_tree():
 
 	# Connect signals
 	websocket_server.command_received.connect(_on_command_received)
-	
+
 	# Create dock UI
 	dock = preload("res://addons/godoty/dock.tscn").instantiate()
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock)
 	dock.status_changed.connect(_on_status_changed)
-	
+
 	# Start server
 	websocket_server.start_server()
 	_update_dock_status("Server started on port %d" % WEBSOCKET_PORT)
-	
 	print("Godoty AI Assistant: Ready!")
+
+
+
 
 func _exit_tree():
 	print("Godoty AI Assistant: Shutting down...")
-	
+
+
 	# Stop server
 	if websocket_server:
 		websocket_server.stop_server()
 		websocket_server.queue_free()
-	
+
 	# Unregister debugger plugin
 	if debugger_plugin:
 		remove_debugger_plugin(debugger_plugin)
@@ -64,12 +68,16 @@ func _exit_tree():
 	# Remove dock
 	if dock:
 		remove_control_from_docks(dock)
+
 		dock.queue_free()
-	
 	print("Godoty AI Assistant: Stopped")
+
+
+
 
 func _on_command_received(command: Dictionary):
 	print("Godoty: Received command: ", command)
+
 	_update_dock_status("Executing: %s" % command.get("action", "unknown"))
 
 	# Execute command (await if it's async)

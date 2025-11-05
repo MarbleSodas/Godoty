@@ -117,7 +117,7 @@
         }
       }
     },
-    ,
+
     "InspectSceneFileCommand": {
       "type": "object",
       "required": ["action", "path"],
@@ -162,6 +162,20 @@
         "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 }
       }
     },
+    "OpenSceneCommand": {"type":"object","required":["action","path"],"properties":{"action":{"type":"string","const":"open_scene"},"path":{"type":"string","description":"Path to .tscn scene file (res:// or absolute)"}}},
+    "SelectNodesCommand": {"type":"object","required":["action","paths"],"properties":{"action":{"type":"string","const":"select_nodes"},"paths":{"type":"array","items":{"type":"string"},"description":"Array of node paths to select"}}},
+    "FocusNodeCommand": {"type":"object","required":["action","path"],"properties":{"action":{"type":"string","const":"focus_node"},"path":{"type":"string","description":"Node path to focus in the editor"},"select":{"type":"boolean","default":true}}},
+    "PlayCommand": {"type":"object","required":["action"],"properties":{"action":{"type":"string","const":"play"},"mode":{"type":"string","enum":["current","main","custom"],"default":"current"},"path":{"type":["string","null"],"description":"Scene path when mode=custom"}}},
+    "AddCommandPaletteCommand": {"type":"object","required":["action","display_name","key","action_to_execute"],"properties":{"action":{"type":"string","const":"add_command_palette_command"},"display_name":{"type":"string"},"key":{"type":"string","description":"Unique key for the palette item"},"action_to_execute":{"type":"string","description":"Action to send when invoked"},"payload":{"type":"object","additionalProperties":true}}},
+    "SearchNodesByTypeCommand": {"type":"object","required":["action","type"],"properties":{"action":{"type":"string","const":"search_nodes_by_type"},"type":{"type":"string","description":"Godot node type (e.g., Sprite2D)"},"select_results":{"type":"boolean","default":false},"focus_first":{"type":"boolean","default":false}}},
+    "SearchNodesByNameCommand": {"type":"object","required":["action","name"],"properties":{"action":{"type":"string","const":"search_nodes_by_name"},"name":{"type":"string"},"exact":{"type":"boolean","default":false},"case_sensitive":{"type":"boolean","default":false},"select_results":{"type":"boolean","default":false},"focus_first":{"type":"boolean","default":false}}},
+    "SearchNodesByGroupCommand": {"type":"object","required":["action","group"],"properties":{"action":{"type":"string","const":"search_nodes_by_group"},"group":{"type":"string"},"select_results":{"type":"boolean","default":false},"focus_first":{"type":"boolean","default":false}}},
+    "SearchNodesByScriptCommand": {"type":"object","required":["action"],"properties":{"action":{"type":"string","const":"search_nodes_by_script"},"script_path":{"type":["string","null"],"description":"Filter by script path if provided"},"select_results":{"type":"boolean","default":false},"focus_first":{"type":"boolean","default":false}}},
+    "DuplicateNodeCommand": {"type":"object","required":["action","path"],"properties":{"action":{"type":"string","const":"duplicate_node"},"path":{"type":"string"},"parent":{"type":["string","null"],"description":"New parent path or null to keep"},"name":{"type":["string","null"]}}},
+    "ReparentNodeCommand": {"type":"object","required":["action","path","new_parent"],"properties":{"action":{"type":"string","const":"reparent_node"},"path":{"type":"string"},"new_parent":{"type":"string"},"index":{"type":"integer","minimum":-1,"default":-1},"keep_global_transform":{"type":"boolean","default":true}}},
+    "RenameNodeCommand": {"type":"object","required":["action","path","new_name"],"properties":{"action":{"type":"string","const":"rename_node"},"path":{"type":"string"},"new_name":{"type":"string"}}},
+    "AddToGroupCommand": {"type":"object","required":["action","path","group"],"properties":{"action":{"type":"string","const":"add_to_group"},"path":{"type":"string"},"group":{"type":"string"},"persistent":{"type":"boolean","default":true}}},
+    "RemoveFromGroupCommand": {"type":"object","required":["action","path","group"],"properties":{"action":{"type":"string","const":"remove_from_group"},"path":{"type":"string"},"group":{"type":"string"}}},
     "Response": {
       "type": "object",
       "required": ["status"],
@@ -188,9 +202,23 @@
     { "$ref": "#/definitions/ModifyNodeCommand" },
     { "$ref": "#/definitions/AttachScriptCommand" },
     { "$ref": "#/definitions/CreateSceneCommand" },
+    { "$ref": "#/definitions/OpenSceneCommand" },
     { "$ref": "#/definitions/GetSceneInfoCommand" },
     { "$ref": "#/definitions/InspectSceneFileCommand" },
     { "$ref": "#/definitions/GetCurrentSceneDetailedCommand" },
+    { "$ref": "#/definitions/SelectNodesCommand" },
+    { "$ref": "#/definitions/FocusNodeCommand" },
+    { "$ref": "#/definitions/PlayCommand" },
+    { "$ref": "#/definitions/AddCommandPaletteCommand" },
+    { "$ref": "#/definitions/SearchNodesByTypeCommand" },
+    { "$ref": "#/definitions/SearchNodesByNameCommand" },
+    { "$ref": "#/definitions/SearchNodesByGroupCommand" },
+    { "$ref": "#/definitions/SearchNodesByScriptCommand" },
+    { "$ref": "#/definitions/DuplicateNodeCommand" },
+    { "$ref": "#/definitions/ReparentNodeCommand" },
+    { "$ref": "#/definitions/RenameNodeCommand" },
+    { "$ref": "#/definitions/AddToGroupCommand" },
+    { "$ref": "#/definitions/RemoveFromGroupCommand" },
     { "$ref": "#/definitions/StartDebugCaptureCommand" },
     { "$ref": "#/definitions/StopDebugCaptureCommand" },
     { "$ref": "#/definitions/ClearDebugOutputCommand" },

@@ -7,6 +7,36 @@ use crate::chat_session::ChatSession;
 // Bundled, high-signal Godot docs used as a fast offline cache
 const BUNDLED_GODOT_DOCS: &str = include_str!("../assets/godot_docs_bundled.md");
 
+// Compact reference of Godoty command executor tools for AI prompting
+const GODOTY_TOOL_REFERENCE: &str = r#"
+- create_scene: {"action":"create_scene","name":"Name","root_type":"NodeType","save_path":"res://Scene.tscn"}
+- open_scene: {"action":"open_scene","path":"res://Scene.tscn"}
+- get_scene_info: {"action":"get_scene_info"}
+- get_current_scene_detailed: {"action":"get_current_scene_detailed"}
+- inspect_scene_file: {"action":"inspect_scene_file","path":"res://Scene.tscn"}
+- create_node: {"action":"create_node","type":"Type","name":"Name","parent":"Parent or null","properties":{}}
+- modify_node: {"action":"modify_node","path":"NodePath","properties":{}}
+- delete_node: {"action":"delete_node","path":"NodePath"}
+- attach_script: {"action":"attach_script","path":"NodePath","script_content":"...","script_path":"res://opt.gd"}
+- select_nodes: {"action":"select_nodes","paths":["Root/A","Root/B"]}
+- focus_node: {"action":"focus_node","path":"Root/Node","select":true}
+- play: {"action":"play","mode":"current|main|custom","path":"res://opt.tscn"}
+- add_command_palette_command: {"action":"add_command_palette_command","display_name":"...","key":"...","action_to_execute":"...","payload":{}}
+- search_nodes_by_type: {"action":"search_nodes_by_type","type":"Sprite2D","select_results":false,"focus_first":false}
+- search_nodes_by_name: {"action":"search_nodes_by_name","name":"Enemy","exact":false,"case_sensitive":false}
+- search_nodes_by_group: {"action":"search_nodes_by_group","group":"enemies"}
+- search_nodes_by_script: {"action":"search_nodes_by_script","script_path":null}
+- duplicate_node: {"action":"duplicate_node","path":"Root/A","parent":"Root/B","name":"Copy"}
+- reparent_node: {"action":"reparent_node","path":"Root/A","new_parent":"Root/B","index":-1,"keep_global_transform":true}
+- rename_node: {"action":"rename_node","path":"Root/A","new_name":"NewName"}
+- add_to_group: {"action":"add_to_group","path":"Root/A","group":"grp","persistent":true}
+- remove_from_group: {"action":"remove_from_group","path":"Root/A","group":"grp"}
+- start_debug_capture: {"action":"start_debug_capture"}
+- stop_debug_capture: {"action":"stop_debug_capture"}
+- get_debug_output: {"action":"get_debug_output","limit":200}
+- clear_debug_output: {"action":"clear_debug_output"}
+"#;
+
 #[derive(Serialize, Deserialize)]
 struct ChatRequest {
     model: String,
@@ -31,20 +61,7 @@ struct Choice {
     message: ApiChatMessage,
 }
 
-#[derive(Deserialize)]
-struct ErrorResponse {
-    error: ErrorDetail,
-}
 
-#[derive(Deserialize)]
-struct ErrorDetail {
-    message: String,
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    error_type: Option<String>,
-    #[allow(dead_code)]
-    code: Option<String>,
-}
 
 /// Comprehensive context engine that manages all context sources
 #[derive(Clone)]
@@ -160,6 +177,11 @@ impl ContextEngine {
             formatted.push_str(&context.chat_history);
             formatted.push_str("\n\n");
         }
+
+        // Add Godoty command executor tool reference to help the AI plan and validate commands
+        formatted.push_str("# Godoty Command Executor – Tool Reference\n");
+        formatted.push_str(GODOTY_TOOL_REFERENCE);
+        formatted.push_str("\n\n");
 
         formatted
     }

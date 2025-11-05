@@ -132,18 +132,7 @@ impl ChatSession {
         self.metadata.total_tokens_used += tokens_used;
     }
 
-    /// Get a summary of the session
-    pub fn get_summary(&self) -> String {
-        format!(
-            "Session: {} | Messages: {} | Commands: {} (✓{} ✗{}) | Created: {}",
-            self.title,
-            self.messages.len(),
-            self.metadata.total_commands,
-            self.metadata.successful_commands,
-            self.metadata.failed_commands,
-            self.created_at
-        )
-    }
+
 
     /// Build accumulated context from all messages
     pub fn build_accumulated_context(&self) -> String {
@@ -167,7 +156,7 @@ impl ChatSession {
                 for thought in thoughts {
                     context.push_str(&format!("{}. {}\n", thought.step_number, thought.description));
                 }
-                context.push_str("\n");
+                context.push('\n');
             }
         }
         
@@ -210,20 +199,7 @@ impl ChatMessage {
         }
     }
 
-    /// Create a new system message
-    pub fn system(content: String) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            role: MessageRole::System,
-            content,
-            timestamp: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            thought_process: None,
-            context_used: None,
-        }
-    }
+
 }
 
 /// Manager for handling multiple chat sessions

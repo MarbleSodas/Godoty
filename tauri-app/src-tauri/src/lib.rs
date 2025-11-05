@@ -323,7 +323,7 @@ async fn process_command(
         // Try to execute the command
         println!("Executing command {}: {}", idx + 1, serde_json::to_string(cmd).unwrap_or_default());
 
-        let result = client.send_command(&cmd).await
+        let result = client.send_command(cmd).await
             .map_err(|e| format!("Failed to send command: {}", e))?;
 
         println!("Command {} result: {}", idx + 1, serde_json::to_string(&result).unwrap_or_default());
@@ -401,73 +401,6 @@ async fn process_command(
     {
         let mut manager = state.chat_session_manager.lock().unwrap();
         if let Some(session) = manager.get_active_session_mut() {
-/*
-/// Build a small research snippet from the current project index and scene info
-fn build_recovery_research(
-    project_index: &ProjectIndex,
-    scene_info: &serde_json::Value,
-    error_msg: &str,
-    failed_command: &serde_json::Value,
-) -> String {
-    let mut out = String::new();
-    out.push_str("Project/Scene context relevant to recovery:\n");
-
-    if let Some(data) = scene_info.get("data") {
-        if data.get("scene_open").and_then(|v| v.as_bool()).unwrap_or(false) {
-            if let Some(root_name) = data.get("root_name").and_then(|v| v.as_str()) {
-                out.push_str(&format!("- Open scene root: {}\n", root_name));
-            }
-            if let Some(scene_path) = data.get("scene_path").and_then(|v| v.as_str()) {
-                out.push_str(&format!("- Open scene path: {}\n", scene_path));
-            }
-        } else {
-            out.push_str("- No scene is currently open in the editor.\n");
-        }
-    }
-
-    let parent_path = failed_command.get("parent").and_then(|v| v.as_str()).unwrap_or("");
-    if !parent_path.is_empty() {
-        let root_hint = parent_path.split('/').next().unwrap_or(parent_path);
-        out.push_str(&format!("- Failed parent path: '{}' (root hint: '{}')\n", parent_path, root_hint));
-    }
-
-    if let Some(node_type) = failed_command.get("type").and_then(|v| v.as_str()) {
-        out.push_str(&format!("- Target node type: {}\n", node_type));
-    }
-
-    // Show a couple of scenes that might be relevant
-    let mut ui_suggestions: Vec<&crate::project_indexer::SceneInfo> = Vec::new();
-    let mut game_suggestions: Vec<&crate::project_indexer::SceneInfo> = Vec::new();
-    for scene in &project_index.scenes {
-        if let Some(rt) = &scene.root_type {
-            if rt.contains("Control") || rt.contains("Panel") || rt.contains("Container") {
-                ui_suggestions.push(scene);
-            } else if rt.contains("Node2D") || rt.contains("Node3D") || rt.contains("CharacterBody") {
-                game_suggestions.push(scene);
-            }
-        }
-    }
-
-    if !ui_suggestions.is_empty() {
-        out.push_str("- Example UI scenes (root Control-like): ");
-        for s in ui_suggestions.iter().take(3) {
-            out.push_str(&format!("{} (root: {}), ", s.name, s.root_type.clone().unwrap_or_default()));
-        }
-        out.push('\n');
-    }
-    if !game_suggestions.is_empty() {
-        out.push_str("- Example gameplay scenes (root Node2D/3D-like): ");
-        for s in game_suggestions.iter().take(3) {
-            out.push_str(&format!("{} (root: {}), ", s.name, s.root_type.clone().unwrap_or_default()));
-        }
-        out.push('\n');
-    }
-
-    out.push_str("Hints:\n- If parent is missing, create intermediate parents in order (X before X/Y).\n- If editor has no open scene, create or open a scene, then retry.\n- For editor persistence, ensure 'owner' is set to the edited scene root.\n");
-    out.push_str(&format!("Original error: {}\n", error_msg));
-
-    out
-*/
 
             let response_content = match &result_message {
                 Ok(msg) => msg.clone(),
@@ -617,7 +550,7 @@ Example for "Parent node not found: MainMenu/Container" when MainMenu exists:
     for (idx, cmd) in recovery_commands.iter().enumerate() {
         println!("Recovery command {} (depth {}): {}", idx + 1, recovery_depth, serde_json::to_string(cmd).unwrap_or_default());
 
-        let result = client.send_command(&cmd).await
+        let result = client.send_command(cmd).await
             .map_err(|e| {
                 println!("Failed to send recovery command {}: {}", idx + 1, e);
                 format!("Failed to send recovery command {}: {}", idx + 1, e)
