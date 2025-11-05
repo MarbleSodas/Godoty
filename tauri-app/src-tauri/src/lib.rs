@@ -9,6 +9,8 @@ mod project_indexer;
 mod chat_session;
 mod context_engine;
 mod tscn_utils;
+mod vision_processor;
+mod tutorial_processor;
 
 use websocket::WebSocketClient;
 use ai::AIProcessor;
@@ -279,7 +281,90 @@ async fn process_command(
         .build_comprehensive_context(&input, &project_index, chat_session_opt.as_ref(), 10)
         .await
         .map_err(|e| format!("Failed to build context: {}", e))?;
-    let context = context_engine.format_context_for_ai(&comprehensive);
+    let mut context = context_engine.format_context_for_ai(&comprehensive);
+    let mut visual_analysis_used = false;
+    let mut tutorial_research_used = false;
+    let mut snapshot_b64_to_attach: Option<String> = None;
+    let mut snapshot_meta_to_attach: Option<serde_json::Value> = None;
+
+
+    // Integrate Visual Snapshot Analysis (Godot Inspector)
+    {
+        // Clone WebSocket client if connected (do not hold lock across await)
+        let client_for_capture = {
+            let ws_client = state.ws_client.lock().unwrap();
+            ws_client.as_ref().cloned()
+        };
+        if let Some(client_for_capture) = client_for_capture {
+            // Get latest snapshot captured by the inspector plugin (if any)
+            if let Ok(snapshot) = client_for_capture
+                .send_command(&serde_json::json!({"action":"get_visual_snapshot"}))
+                .await
+            {
+                if snapshot.get("status").and_then(|s| s.as_str()) == Some("success") {
+                    if let Some(data) = snapshot.get("data") {
+                        let image_b64 = data.get("image_b64").and_then(|v| v.as_str()).unwrap_or("");
+                        let meta = data.get("meta").cloned().unwrap_or_else(|| serde_json::json!({}));
+                        if !image_b64.is_empty() {
+                            // Attach snapshot to the message later
+                            snapshot_b64_to_attach = Some(image_b64.to_string());
+                            snapshot_meta_to_attach = Some(meta.clone());
+
+                            let vp = crate::vision_processor::VisionProcessor::new(&api_key);
+                            match vp.analyze_visual_context(image_b64, &meta).await {
+                                Ok(analysis) => {
+                                    context.push_str("# Visual Analysis (Viewport/Inspector)\n");
+                                    context.push_str(&analysis);
+                                    context.push_str("\n\n");
+                                    visual_analysis_used = true;
+                                }
+                                Err(e) => {
+                                    context.push_str(&format!("[Visual Analysis] Error: {}\n\n", e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Integrate Tutorial Research (lower precedence than official docs)
+    {
+        let version_key = project_index.godot_version.as_deref();
+        let should_research = comprehensive.context_query.trim().len() >= 3;
+        if should_research {
+            // 3-day cache
+            let cached_ok = {
+                let storage = state.storage.lock().unwrap();
+                storage.is_tutorials_valid(version_key, 3 * 24 * 60 * 60)
+            };
+
+            let tutorials_text = if cached_ok {
+                let storage = state.storage.lock().unwrap();
+                storage.load_tutorials(version_key).unwrap_or_default()
+            } else {
+                let tp = crate::tutorial_processor::TutorialProcessor::new(&api_key);
+                let fetched = tp
+                    .fetch_godot_tutorials(&comprehensive.context_query, version_key)
+                    .await
+                    .unwrap_or_default();
+                if !fetched.is_empty() {
+                    let storage = state.storage.lock().unwrap();
+                    let _ = storage.save_tutorials(&fetched, version_key);
+                }
+                fetched
+            };
+
+            if !tutorials_text.trim().is_empty() {
+                context.push_str("# Tutorial Context (Lower Precedence)\n");
+                context.push_str("Note: Official Godot documentation takes precedence over tutorials. Conflicts will be resolved in favor of docs.\n\n");
+                context.push_str(&tutorials_text);
+                context.push_str("\n\n");
+                tutorial_research_used = true;
+            }
+        }
+    }
     println!(
         "[ContextEngine] built: total_chars={}, docs_len={}, proj_len={}, chat_len={}, recent_msgs={}, query='{}'",
         context.len(),
@@ -413,12 +498,16 @@ async fn process_command(
                 project_files_referenced: Vec::new(), // Could be enhanced to track actual files
                 previous_messages_count: session.get_messages().len(),
                 total_context_size: context.len(),
+                visual_analysis_used,
+                tutorial_research_used,
             };
 
             session.add_message(ChatMessage::assistant(
                 response_content,
                 None, // Thought process will be added in future enhancement
                 Some(context_snapshot),
+                snapshot_b64_to_attach,
+                snapshot_meta_to_attach,
             ));
 
             // Update metadata

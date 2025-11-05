@@ -18,6 +18,13 @@ struct CachedGodotDocs {
     docs: String,
     timestamp: u64,
 }
+#[derive(Serialize, Deserialize)]
+struct CachedTutorials {
+    tutorials: String,
+    timestamp: u64,
+    version_key: Option<String>,
+}
+
 
 pub struct Storage {
     api_key: Option<String>,
@@ -286,6 +293,53 @@ impl Default for Storage {
     }
 }
 
+
+// Tutorials Cache Methods
+impl Storage {
+    pub fn save_tutorials(&self, tutorials: &str, version_key: Option<&str>) -> Result<()> {
+        let mut path = Self::get_config_dir()?;
+        let fname = if let Some(v) = version_key { format!("tutorials_cache_{}.json", v) } else { "tutorials_cache.json".to_string() };
+        path.push(fname);
+
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs();
+
+        let cached = CachedTutorials {
+            tutorials: tutorials.to_string(),
+            timestamp,
+            version_key: version_key.map(|s| s.to_string()),
+        };
+
+        fs::write(path, serde_json::to_string_pretty(&cached)?)?;
+        Ok(())
+    }
+
+    pub fn load_tutorials(&self, version_key: Option<&str>) -> Result<String> {
+        let mut path = Self::get_config_dir()?;
+        let fname = if let Some(v) = version_key { format!("tutorials_cache_{}.json", v) } else { "tutorials_cache.json".to_string() };
+        path.push(fname);
+
+        let content = fs::read_to_string(path)?;
+        let cached: CachedTutorials = serde_json::from_str(&content)?;
+        Ok(cached.tutorials)
+    }
+
+    pub fn is_tutorials_valid(&self, version_key: Option<&str>, max_age_seconds: u64) -> bool {
+        let mut path = match Self::get_config_dir() { Ok(p) => p, Err(_) => return false };
+        let fname = if let Some(v) = version_key { format!("tutorials_cache_{}.json", v) } else { "tutorials_cache.json".to_string() };
+        path.push(fname);
+
+        if !path.exists() { return false; }
+
+        let content = match fs::read_to_string(&path) { Ok(c) => c, Err(_) => return false };
+        let cached: CachedTutorials = match serde_json::from_str(&content) { Ok(c) => c, Err(_) => return false };
+
+        let now = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) { Ok(d) => d.as_secs(), Err(_) => return false };
+        now - cached.timestamp < max_age_seconds
+    }
+}
+
 // Chat Session Storage Methods
 impl Storage {
     /// Save all chat sessions to disk
@@ -302,6 +356,7 @@ impl Storage {
     pub fn load_chat_sessions(&self) -> Result<Vec<ChatSession>> {
         let mut path = Self::get_config_dir()?;
         path.push("chat_sessions.json");
+
 
         if !path.exists() {
             return Ok(Vec::new());

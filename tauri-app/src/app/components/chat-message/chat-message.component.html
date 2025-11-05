@@ -40,6 +40,19 @@
     <!-- Streaming Indicator -->
     <span *ngIf="message.isStreaming" class="streaming-cursor">▊</span>
   </div>
+  <!-- Visual Snapshot -->
+  <div *ngIf="message.visual_snapshot_b64" class="visual-snapshot">
+    <div class="section-header">
+      <span class="section-icon">🖼️</span>
+      <span class="section-title">Visual Snapshot</span>
+    </div>
+    <img [src]="'data:image/png;base64,' + message.visual_snapshot_b64" alt="Visual Snapshot" class="snapshot-image" />
+    <div *ngIf="message.visual_snapshot_meta" class="snapshot-meta">
+      <span class="meta-item">Scene: {{ message.visual_snapshot_meta?.scene_path || '—' }}</span>
+      <span class="meta-item" *ngIf="message.visual_snapshot_meta?.timestamp">Time: {{ (message.visual_snapshot_meta.timestamp * 1000) | date:'short' }}</span>
+    </div>
+  </div>
+
 
   <!-- Thought Process Section -->
   <div *ngIf="message.thought_process && message.thought_process.length > 0 && thoughtsExpanded" class="thought-process">
@@ -74,6 +87,14 @@
       <div class="context-item">
         <span class="context-label">Context Size:</span>
         <span class="context-value">{{ (message.context_used.total_context_size / 1024).toFixed(2) }} KB</span>
+      </div>
+      <div class="context-item">
+        <span class="context-label">Visual Analysis:</span>
+        <span class="context-value">{{ message.context_used.visual_analysis_used ? '✓ Used' : '✗ Not used' }}</span>
+      </div>
+      <div class="context-item">
+        <span class="context-label">Tutorial Research:</span>
+        <span class="context-value">{{ message.context_used.tutorial_research_used ? '✓ Used' : '✗ Not used' }}</span>
       </div>
       <div *ngIf="message.context_used.project_files_referenced.length > 0" class="context-item">
         <span class="context-label">Files Referenced:</span>

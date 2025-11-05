@@ -67,6 +67,10 @@ export class ChatViewComponent implements OnChanges, AfterViewChecked, OnDestroy
         return '🤔 Thinking...';
       case 'gathering':
         return '📚 Gathering data...';
+      case 'analyzing_visual':
+        return '🖼️ Analyzing visual snapshot...';
+      case 'researching_tutorials':
+        return '🔎 Researching tutorials...';
       case 'generating':
         return '⚡ Generating response...';
       case 'streaming':

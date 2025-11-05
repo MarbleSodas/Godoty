@@ -3,6 +3,8 @@ extends Node
 var editor_plugin: EditorPlugin
 var debugger_plugin: EditorDebuggerPlugin
 
+var inspector_plugin: Node
+
 func execute_command(command: Dictionary):
 	var action = command.get("action", "")
 
@@ -23,6 +25,15 @@ func execute_command(command: Dictionary):
 			return _inspect_scene_file(command)
 		"get_current_scene_detailed":
 			return _get_current_scene_detailed(command)
+		# Visual context commands
+		"capture_visual_context":
+			return _capture_visual_context(command)
+		"get_visual_snapshot":
+			return _get_visual_snapshot(command)
+		"enable_auto_visual_capture":
+			return _enable_auto_visual_capture(command)
+		"disable_auto_visual_capture":
+			return _disable_auto_visual_capture(command)
 		# New editor integration commands (EditorInterface / CommandPalette)
 		"select_nodes":
 			return _select_nodes(command)
@@ -912,6 +923,32 @@ func _stop_debug_capture(command: Dictionary) -> Dictionary:
 		debugger_plugin.disable_capture()
 		return {"status": "success", "message": "Debug capture disabled"}
 	return {"status": "error", "message": "Debugger plugin not available"}
+
+# === Visual capture commands ===
+func _capture_visual_context(command: Dictionary) -> Dictionary:
+	if inspector_plugin and inspector_plugin.has_method("capture_snapshot"):
+		var meta := command.get("metadata", {})
+		var data = inspector_plugin.call("capture_snapshot", "manual", meta)
+		return {"status": "success", "message": "Visual snapshot captured", "data": data}
+	return {"status": "error", "message": "Inspector plugin not available"}
+
+func _get_visual_snapshot(command: Dictionary) -> Dictionary:
+	if inspector_plugin and inspector_plugin.has_method("get_last_snapshot"):
+		var data = inspector_plugin.call("get_last_snapshot")
+		return {"status": "success", "message": "Last visual snapshot", "data": data}
+	return {"status": "error", "message": "Inspector plugin not available"}
+
+func _enable_auto_visual_capture(command: Dictionary) -> Dictionary:
+	if inspector_plugin and inspector_plugin.has_method("enable_auto_capture"):
+		inspector_plugin.call("enable_auto_capture")
+		return {"status": "success", "message": "Auto visual capture enabled"}
+	return {"status": "error", "message": "Inspector plugin not available"}
+
+func _disable_auto_visual_capture(command: Dictionary) -> Dictionary:
+	if inspector_plugin and inspector_plugin.has_method("disable_auto_capture"):
+		inspector_plugin.call("disable_auto_capture")
+		return {"status": "success", "message": "Auto visual capture disabled"}
+	return {"status": "error", "message": "Inspector plugin not available"}
 
 func _clear_debug_output(command: Dictionary) -> Dictionary:
 	if debugger_plugin:

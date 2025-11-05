@@ -12,6 +12,9 @@ pub struct ChatMessage {
     pub timestamp: u64,
     pub thought_process: Option<Vec<ThoughtStep>>,
     pub context_used: Option<ContextSnapshot>,
+    // Optional visual snapshot attached to this message (base64 PNG + metadata)
+    pub visual_snapshot_b64: Option<String>,
+    pub visual_snapshot_meta: Option<serde_json::Value>,
 }
 
 /// Role of the message sender
@@ -39,6 +42,10 @@ pub struct ContextSnapshot {
     pub project_files_referenced: Vec<String>,
     pub previous_messages_count: usize,
     pub total_context_size: usize,
+    #[serde(default)]
+    pub visual_analysis_used: bool,
+    #[serde(default)]
+    pub tutorial_research_used: bool,
 }
 
 /// Represents a complete chat session
@@ -177,6 +184,8 @@ impl ChatMessage {
                 .as_secs(),
             thought_process: None,
             context_used: None,
+            visual_snapshot_b64: None,
+            visual_snapshot_meta: None,
         }
     }
 
@@ -185,6 +194,8 @@ impl ChatMessage {
         content: String,
         thought_process: Option<Vec<ThoughtStep>>,
         context_used: Option<ContextSnapshot>,
+        visual_snapshot_b64: Option<String>,
+        visual_snapshot_meta: Option<serde_json::Value>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -196,6 +207,8 @@ impl ChatMessage {
                 .as_secs(),
             thought_process,
             context_used,
+            visual_snapshot_b64,
+            visual_snapshot_meta,
         }
     }
 

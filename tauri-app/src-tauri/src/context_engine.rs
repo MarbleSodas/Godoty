@@ -35,6 +35,10 @@ const GODOTY_TOOL_REFERENCE: &str = r#"
 - stop_debug_capture: {"action":"stop_debug_capture"}
 - get_debug_output: {"action":"get_debug_output","limit":200}
 - clear_debug_output: {"action":"clear_debug_output"}
+- capture_visual_context: {"action":"capture_visual_context","metadata":{}}
+- get_visual_snapshot: {"action":"get_visual_snapshot"}
+- enable_auto_visual_capture: {"action":"enable_auto_visual_capture"}
+- disable_auto_visual_capture: {"action":"disable_auto_visual_capture"}
 "#;
 
 #[derive(Serialize, Deserialize)]
@@ -155,6 +159,8 @@ impl ContextEngine {
             chat_history,
             recent_messages,
             context_query,
+            visual_analysis: None,
+            tutorial_context: None,
         })
     }
 
@@ -171,6 +177,21 @@ impl ContextEngine {
         formatted.push_str("# Current Project Context\n");
         formatted.push_str(&context.project_context);
         formatted.push_str("\n\n");
+
+        // Add visual analysis if available
+        if let Some(visual) = &context.visual_analysis {
+            formatted.push_str("# Visual Analysis (Viewport/Inspector)\n");
+            formatted.push_str(visual);
+            formatted.push_str("\n\n");
+        }
+
+        // Add tutorial context if available, with precedence note
+        if let Some(tuts) = &context.tutorial_context {
+            formatted.push_str("# Tutorial Context (Lower Precedence)\n");
+            formatted.push_str("Note: Official Godot documentation takes precedence over tutorials. Conflicts will be resolved in favor of docs.\n\n");
+            formatted.push_str(tuts);
+            formatted.push_str("\n\n");
+        }
 
         // Add chat history if available
         if !context.chat_history.is_empty() {
@@ -488,6 +509,8 @@ pub struct ComprehensiveContext {
     pub chat_history: String,
     pub recent_messages: Vec<(String, String)>,
     pub context_query: String,
+    pub visual_analysis: Option<String>,
+    pub tutorial_context: Option<String>,
 }
 
 
@@ -496,7 +519,7 @@ mod tests {
     use super::*;
 
     fn dummy_index() -> ProjectIndex {
-        ProjectIndex { scenes: vec![], scripts: vec![], resources: vec![], project_path: ".".into() }
+        ProjectIndex { scenes: vec![], scripts: vec![], resources: vec![], project_path: ".".into(), godot_version: None }
     }
 
     #[tokio::test]

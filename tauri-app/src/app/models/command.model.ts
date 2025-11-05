@@ -14,6 +14,8 @@ export type MessageStatus =
   | 'sent'         // User message successfully sent
   | 'thinking'     // AI is processing/thinking
   | 'gathering'    // AI is gathering data/context
+  | 'analyzing_visual' // AI is analyzing a visual snapshot
+  | 'researching_tutorials' // AI is researching tutorials (low precedence)
   | 'generating'   // AI is generating response
   | 'streaming'    // AI response is streaming in
   | 'executing'    // AI is executing a command/action
@@ -38,6 +40,9 @@ export interface ChatMessage {
   context_used?: ContextSnapshot;
   status?: MessageStatus; // Current status of the message
   isStreaming?: boolean; // Whether message is currently streaming
+  // Optional visual snapshot attached to this message
+  visual_snapshot_b64?: string;
+  visual_snapshot_meta?: any;
 }
 
 export interface ThoughtStep {
@@ -52,6 +57,8 @@ export interface ContextSnapshot {
   project_files_referenced: string[];
   previous_messages_count: number;
   total_context_size: number;
+  visual_analysis_used?: boolean;
+  tutorial_research_used?: boolean;
 }
 
 export interface ChatSession {

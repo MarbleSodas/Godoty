@@ -133,6 +133,35 @@
         "action": { "type": "string", "const": "get_current_scene_detailed" }
       }
     },
+    "CaptureVisualContextCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "capture_visual_context" },
+        "metadata": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "GetVisualSnapshotCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "get_visual_snapshot" }
+      }
+    },
+    "EnableAutoVisualCaptureCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "enable_auto_visual_capture" }
+      }
+    },
+    "DisableAutoVisualCaptureCommand": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "const": "disable_auto_visual_capture" }
+      }
+    },
     "StartDebugCaptureCommand": {
       "type": "object",
       "required": ["action"],
@@ -219,6 +248,10 @@
     { "$ref": "#/definitions/RenameNodeCommand" },
     { "$ref": "#/definitions/AddToGroupCommand" },
     { "$ref": "#/definitions/RemoveFromGroupCommand" },
+    { "$ref": "#/definitions/CaptureVisualContextCommand" },
+    { "$ref": "#/definitions/GetVisualSnapshotCommand" },
+    { "$ref": "#/definitions/EnableAutoVisualCaptureCommand" },
+    { "$ref": "#/definitions/DisableAutoVisualCaptureCommand" },
     { "$ref": "#/definitions/StartDebugCaptureCommand" },
     { "$ref": "#/definitions/StopDebugCaptureCommand" },
     { "$ref": "#/definitions/ClearDebugOutputCommand" },

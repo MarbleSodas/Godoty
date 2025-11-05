@@ -9,6 +9,7 @@ pub struct ProjectIndex {
     pub scripts: Vec<ScriptInfo>,
     pub resources: Vec<ResourceInfo>,
     pub project_path: String,
+    pub godot_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,11 +55,32 @@ impl ProjectIndexer {
     }
 
     pub fn index_project(&self) -> Result<ProjectIndex> {
+        // Best-effort Godot version detection (optional)
+        let godot_version = {
+            let cfg = self.project_path.join("project.godot");
+            if let Ok(content) = fs::read_to_string(cfg) {
+                let mut found: Option<String> = None;
+                for line in content.lines() {
+                    let l = line.trim();
+                    if l.starts_with("config_version=") {
+                        found = Some("4.x".to_string());
+                        break;
+                    }
+                    if l.contains("godot") && l.contains("version") {
+                        found = Some(l.to_string());
+                        break;
+                    }
+                }
+                found
+            } else { None }
+        };
+
         let mut index = ProjectIndex {
             scenes: Vec::new(),
             scripts: Vec::new(),
             resources: Vec::new(),
             project_path: self.project_path.to_string_lossy().to_string(),
+            godot_version,
         };
 
         // Index scenes (.tscn files)
