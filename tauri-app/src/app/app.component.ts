@@ -2,6 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { invoke } from '@tauri-apps/api/core';
 import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus } from './models/command.model';
+import { ProcessLogService } from './services/process-log.service';
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
 import { SettingsPanelComponent } from './components/settings-panel/settings-panel.component';
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
@@ -21,6 +22,7 @@ import { SessionManagerComponent } from './components/session-manager/session-ma
   styleUrls: ['./app.component.css']
 })
 export class AppComponent implements OnInit {
+  constructor(private logs: ProcessLogService) {}
   commands: Command[] = [];
   connectionStatus: ConnectionStatus = 'disconnected';
   apiKey: string = '';
@@ -59,12 +61,15 @@ export class AppComponent implements OnInit {
 
   async connectToGodot(): Promise<void> {
     this.connectionStatus = 'connecting';
+    this.logs.add({ level: 'info', category: 'agent_activity', message: 'Connecting to Godot...', agent: 'Bridge', status: 'processing' });
     try {
       await invoke('connect_to_godot');
       this.connectionStatus = 'connected';
+      this.logs.add({ level: 'info', category: 'agent_activity', message: 'Connected to Godot', agent: 'Bridge', status: 'completed' });
     } catch (error) {
       console.error('Failed to connect to Godot:', error);
       this.connectionStatus = 'disconnected';
+      this.logs.add({ level: 'error', category: 'agent_activity', message: 'Failed to connect to Godot', agent: 'Bridge', status: 'error', data: { error: String(error) } });
     }
   }
 
@@ -131,14 +136,56 @@ export class AppComponent implements OnInit {
       this.chatSessions = [tempSession, ...this.chatSessions];
     }
 
+    // Stream backend activity logs as inline system chat messages during processing
+    const startMs = Date.now();
+    const logsSub = this.logs.onEntry().subscribe((entry) => {
+      if (!this.activeSession) return;
+      if (entry.timestamp && entry.timestamp < startMs) return; // ignore old entries
+      if (entry.sessionId && this.activeSession.id !== entry.sessionId) return; // different session
+
+      const statusMap: Record<string, MessageStatus> = {
+        idle: 'thinking',
+        processing: 'executing',
+        waiting: 'thinking',
+        completed: 'complete',
+        error: 'error'
+      } as any;
+
+      const parts: string[] = [];
+      if (entry.agent) parts.push(entry.agent);
+      if (entry.task) parts.push(`— ${entry.task}`);
+      const bracket = parts.length ? ` [${parts.join(' ')}]` : '';
+      const text = `${(entry.level || 'info').toUpperCase()}${bracket}: ${entry.message}`;
+
+      const msg: ChatMessage = {
+        id: `log-${entry.id}`,
+        role: 'system',
+        content: text,
+        timestamp: Math.floor(((entry.timestamp as number) || Date.now()) / 1000),
+        status: statusMap[(entry.status as string) || 'processing'] || 'thinking',
+        isStreaming: false
+      };
+
+      const updated: ChatSession = {
+        ...this.activeSession,
+        messages: [...this.activeSession.messages, msg],
+        updated_at: Math.floor(Date.now() / 1000)
+      };
+      this.activeSession = updated;
+      this.chatSessions = this.chatSessions.map(s => s.id === updated.id ? { ...s, messages: updated.messages, updated_at: updated.updated_at } : s);
+    });
+
     try {
       // Update status to thinking before backend call to keep UI lively
       this.processingStatus = 'thinking';
+      // Emit client-side log to kick off inline activity stream
+      this.logs.add({ level: 'info', category: 'agent_activity', message: 'AI processing started', agent: 'Assistant', status: 'processing', sessionId: this.activeSession?.id || this._tempSessionId || undefined });
 
       const response = await invoke<string>('process_command', { input });
 
       // Update status to complete
       this.processingStatus = 'complete';
+      this.logs.add({ level: 'info', category: 'agent_activity', message: 'AI processing complete', agent: 'Assistant', status: 'completed', sessionId: this.activeSession?.id || undefined });
 
       this.commands = this.commands.map(cmd =>
         cmd.id === command.id ? { ...cmd, status: 'success', response } : cmd
@@ -174,6 +221,7 @@ export class AppComponent implements OnInit {
       }
     } catch (error) {
       this.processingStatus = 'error';
+      this.logs.add({ level: 'error', category: 'agent_activity', message: 'AI processing failed', agent: 'Assistant', status: 'error', sessionId: this.activeSession?.id || this._tempSessionId || undefined, data: { error: String(error) } });
 
       this.commands = this.commands.map(cmd =>
         cmd.id === command.id ? { ...cmd, status: 'error', response: String(error) } : cmd
@@ -193,6 +241,8 @@ export class AppComponent implements OnInit {
         }
       }
     } finally {
+      // Stop streaming logs for this request
+      try { logsSub.unsubscribe(); } catch {}
       // Clear processing state immediately (no artificial delay)
       this.isProcessing = false;
       this.processingStatus = null;

@@ -22,15 +22,15 @@ func _enter_tree():
 	command_executor.editor_plugin = self
 	add_child(command_executor)
 
-		# Create inspector/visual capture helper
-		var InspectorPlugin := preload("res://addons/godoty/inspector_plugin.gd")
-		inspector_plugin = InspectorPlugin.new()
-		add_child(inspector_plugin)
-		if inspector_plugin and inspector_plugin.has_method("set_editor_plugin"):
-			inspector_plugin.call("set_editor_plugin", self)
-		# Wire into command executor
-		if command_executor:
-			command_executor.inspector_plugin = inspector_plugin
+	# Create inspector/visual capture helper
+	var InspectorPlugin := preload("res://addons/godoty/inspector_plugin.gd")
+	inspector_plugin = InspectorPlugin.new()
+	add_child(inspector_plugin)
+	if inspector_plugin and inspector_plugin.has_method("set_editor_plugin"):
+		inspector_plugin.call("set_editor_plugin", self)
+	# Wire into command executor
+	if command_executor:
+		command_executor.inspector_plugin = inspector_plugin
 
 
 	# Create and register debugger plugin for capturing output
@@ -73,8 +73,8 @@ func _exit_tree():
 		debugger_plugin = null
 
 	# Clean up
-		if inspector_plugin:
-			inspector_plugin.queue_free()
+	if inspector_plugin:
+		inspector_plugin.queue_free()
 
 	if command_executor:
 		command_executor.queue_free()

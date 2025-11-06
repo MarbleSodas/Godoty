@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use tauri::State;
-use serde_json::Value;
+use tauri::Emitter;
+use serde_json::{Value, json};
 
 mod websocket;
 mod ai;
@@ -66,6 +67,41 @@ impl Default for AppState {
             metrics_store: Arc::new(Mutex::new(None)),
         }
     }
+
+}
+
+// Helper: emit process-log events to frontend
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn emit_log(
+    window: &tauri::Window,
+    level: &str,
+    category: &str,
+    message: &str,
+    agent: Option<&str>,
+    task: Option<&str>,
+    status: Option<&str>,
+    session_id: Option<String>,
+    data: Option<Value>,
+) {
+    let payload = json!({
+        "id": format!("{}-{}", level, now_millis()),
+        "timestamp": now_millis(),
+        "level": level,
+        "category": category,
+        "message": message,
+        "agent": agent,
+        "task": task,
+        "status": status,
+        "sessionId": session_id,
+        "data": data,
+    });
+    let _ = window.emit("process-log", payload);
 }
 
 #[tauri::command]
@@ -164,6 +200,7 @@ fn get_godot_project_path(state: State<'_, AppState>) -> Result<String, String> 
 
 #[tauri::command]
 async fn process_command(
+    window: tauri::Window,
     input: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -198,6 +235,24 @@ async fn process_command(
         }
     }
 
+    // Emit start log for this session
+    let session_id_for_logs = {
+        let manager = state.chat_session_manager.lock().unwrap();
+        manager.get_active_session().map(|s| s.id.clone())
+    };
+    emit_log(
+        &window,
+        "info",
+        "agent_activity",
+        "AI processing started",
+        Some("Assistant"),
+        None,
+        Some("processing"),
+        session_id_for_logs.clone(),
+        Some(json!({ "input_preview": input.chars().take(200).collect::<String>() }))
+    );
+
+
     // Step 1: Try to load cached project index, otherwise index the project
     let project_index = {
         let cached_index = state.project_index.lock().unwrap();
@@ -214,6 +269,7 @@ async fn process_command(
                     // Cache in memory
                     let mut cached_index = state.project_index.lock().unwrap();
                     *cached_index = Some(index.clone());
+
                     drop(cached_index);
                     drop(storage);
                     index
@@ -390,6 +446,26 @@ async fn process_command(
         comprehensive.context_query
     );
 
+
+    // Emit context built log
+    emit_log(
+        &window,
+        "info",
+        "information_flow",
+        "Context built",
+        Some("ContextEngine"),
+        None,
+        Some("processing"),
+        session_id_for_logs.clone(),
+        Some(json!({
+            "context_chars": context.len(),
+            "docs_len": comprehensive.godot_docs.len(),
+            "project_len": comprehensive.project_context.len(),
+            "chat_len": comprehensive.chat_history.len(),
+            "recent_messages": comprehensive.recent_messages.len()
+        }))
+    );
+
     // Save Godot docs to persistent storage
     if let Some(docs) = context_engine.get_cached_docs().await {
         let storage = state.storage.lock().unwrap();
@@ -409,6 +485,20 @@ async fn process_command(
     let commands = processor.process_input(&input, &context, &project_index).await
         .map_err(|e| format!("AI processing failed: {}", e))?;
 
+
+    // Emit AI command generation log
+    emit_log(
+        &window,
+        "info",
+        "agent_activity",
+        &format!("AI generated {} command(s)", commands.len()),
+        Some("Assistant"),
+        Some("Plan commands"),
+        Some("processing"),
+        session_id_for_logs.clone(),
+        Some(json!({ "count": commands.len() }))
+    );
+
     // Step 6: Send commands to Godot and handle errors with immediate recovery
     let client = {
         let ws_client = state.ws_client.lock().unwrap();
@@ -421,6 +511,20 @@ async fn process_command(
 
     for (idx, cmd) in commands.iter().enumerate() {
         // Try to execute the command
+        // Inline activity log: about to execute command
+        let action_name = cmd.get("action").and_then(|a| a.as_str()).unwrap_or("unknown");
+        emit_log(
+            &window,
+            "info",
+            "action",
+            &format!("Executing command {}: {}", idx + 1, action_name),
+            Some("GodotBridge"),
+            Some("Execute"),
+            Some("processing"),
+            session_id_for_logs.clone(),
+            Some(json!({ "index": idx + 1, "action": action_name, "command": cmd }))
+        );
+
         println!("Executing command {}: {}", idx + 1, serde_json::to_string(cmd).unwrap_or_default());
 
         let result = client.send_command(cmd).await
@@ -440,6 +544,18 @@ async fn process_command(
                 let error_context = format!("Command {}: {} - Error: {}", idx + 1, action, error_msg);
 
                 println!("ERROR DETECTED: {}", error_context);
+                emit_log(
+                    &window,
+                    "error",
+                    "action",
+                    &error_context,
+                    Some("GodotBridge"),
+                    Some("Execute"),
+                    Some("error"),
+                    session_id_for_logs.clone(),
+                    Some(json!({ "index": idx + 1, "action": action, "result": result }))
+                );
+
                 println!("Attempting recovery...");
 
                 match attempt_single_command_recovery(
@@ -460,6 +576,7 @@ async fn process_command(
                         continue;
                     }
                     Err(recovery_err) => {
+
                         println!("Recovery failed: {}", recovery_err);
                         // Recovery failed, record the error but CONTINUE with remaining tasks
                         final_errors.push(format!("{}\nRecovery failed: {}", error_context, recovery_err));
@@ -472,6 +589,18 @@ async fn process_command(
 
         // Command succeeded
         println!("Command {} succeeded", idx + 1);
+        emit_log(
+            &window,
+            "info",
+            "action",
+            &format!("Command {} succeeded", idx + 1),
+            Some("GodotBridge"),
+            Some("Execute"),
+            Some("completed"),
+            session_id_for_logs.clone(),
+            None
+        );
+
         successful_commands += 1;
     }
 
@@ -495,6 +624,33 @@ async fn process_command(
         ))
     } else {
         Ok(format!("Successfully executed {} commands", successful_commands))
+    };
+
+
+    // Emit final completion log
+    match &result_message {
+        Ok(msg) => emit_log(
+            &window,
+            "info",
+            "agent_activity",
+            "AI processing complete",
+            Some("Assistant"),
+            None,
+            Some("completed"),
+            session_id_for_logs.clone(),
+            Some(json!({ "summary": msg }))
+        ),
+        Err(msg) => emit_log(
+            &window,
+            "error",
+            "agent_activity",
+            "AI processing failed",
+            Some("Assistant"),
+            None,
+            Some("error"),
+            session_id_for_logs.clone(),
+            Some(json!({ "summary": msg }))
+        ),
     };
 
     // Add assistant response to chat session
@@ -1063,6 +1219,7 @@ async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String
 /// Process command using agentic workflow
 #[tauri::command]
 async fn process_command_agentic(
+    window: tauri::Window,
     input: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -1142,7 +1299,25 @@ async fn process_command_agentic(
         if let Some(session) = manager.get_active_session_mut() {
             session.add_message(ChatMessage::user(input.clone()));
         }
+
     }
+
+    // Emit start log for agentic workflow
+    let session_id_for_logs = {
+        let manager = state.chat_session_manager.lock().unwrap();
+        manager.get_active_session().map(|s| s.id.clone())
+    };
+    emit_log(
+        &window,
+        "info",
+        "agent_activity",
+        "Agentic processing started",
+        Some("Assistant"),
+        Some("AgenticWorkflow"),
+        Some("processing"),
+        session_id_for_logs.clone(),
+        Some(json!({ "input_preview": input.chars().take(200).collect::<String>() }))
+    );
 
     // Get project index
     let project_index = {
@@ -1199,6 +1374,20 @@ async fn process_command_agentic(
     let agent_response = workflow.execute(&agent_context).await
         .map_err(|e| format!("Agentic workflow failed: {}", e))?;
 
+
+    // Emit agentic plan summary
+    emit_log(
+        &window,
+        "info",
+        "agent_activity",
+        &format!("Agentic plan ready: {} command(s)", agent_response.commands.len()),
+        Some("Assistant"),
+        Some("AgenticWorkflow"),
+        Some("processing"),
+        session_id_for_logs.clone(),
+        Some(json!({ "count": agent_response.commands.len() }))
+    );
+
     // Execute commands
     let client = {
         let ws_client = state.ws_client.lock().unwrap();
@@ -1207,6 +1396,20 @@ async fn process_command_agentic(
 
     let mut results = Vec::new();
     for (idx, cmd) in agent_response.commands.iter().enumerate() {
+        // Log agentic command execution
+        let action_name = cmd.get("action").and_then(|a| a.as_str()).unwrap_or("unknown");
+        emit_log(
+            &window,
+            "info",
+            "action",
+            &format!("Executing command {}: {}", idx + 1, action_name),
+            Some("GodotBridge"),
+            Some("Execute"),
+            Some("processing"),
+            session_id_for_logs.clone(),
+            Some(json!({ "index": idx + 1, "action": action_name, "command": cmd }))
+        );
+
         println!("Executing command {}: {}", idx + 1, serde_json::to_string(cmd).unwrap_or_default());
 
         let result = client.send_command(cmd).await
@@ -1214,6 +1417,20 @@ async fn process_command_agentic(
 
         results.push(result);
     }
+
+
+    // Emit agentic completion log
+    emit_log(
+        &window,
+        "info",
+        "agent_activity",
+        &format!("Agentic workflow completed: {} command(s) executed", results.len()),
+        Some("Assistant"),
+        Some("AgenticWorkflow"),
+        Some("completed"),
+        session_id_for_logs.clone(),
+        Some(json!({ "executed": results.len() }))
+    );
 
     // Add assistant message to session with thoughts
     {

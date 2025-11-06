@@ -31,7 +31,7 @@ func capture_snapshot(reason: String = "manual", extra: Dictionary = {}) -> Dict
 			if image:
 				size = image.get_size()
 				var bytes: PackedByteArray = image.save_png_to_buffer()
-				img_b64 = bytes.to_base64()
+				img_b64 = _bytes_to_base64(bytes)
 	last_snapshot_b64 = img_b64
 	last_snapshot_meta = {
 		"timestamp": Time.get_unix_time_from_system(),
@@ -109,4 +109,24 @@ func _current_scene_path(ei: EditorInterface) -> String:
 	if root and "scene_file_path" in root:
 		return root.scene_file_path
 	return ""
+
+
+# Fallback Base64 encoder compatible across Godot versions
+func _bytes_to_base64(bytes: PackedByteArray) -> String:
+	var table := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	var out := ""
+	var i := 0
+	while i < bytes.size():
+		var b0 := int(bytes[i])
+		var has_b1 := i + 1 < bytes.size()
+		var has_b2 := i + 2 < bytes.size()
+		var b1 := int(bytes[i + 1]) if has_b1 else 0
+		var b2 := int(bytes[i + 2]) if has_b2 else 0
+		var triple := (b0 << 16) | (b1 << 8) | b2
+		out += table.substr((triple >> 18) & 0x3F, 1)
+		out += table.substr((triple >> 12) & 0x3F, 1)
+		out += table.substr((triple >> 6) & 0x3F, 1) if has_b1 else "="
+		out += table.substr(triple & 0x3F, 1) if has_b2 else "="
+		i += 3
+	return out
 

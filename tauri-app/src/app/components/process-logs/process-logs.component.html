@@ -1,0 +1,33 @@
+<div class="logs-container">
+  <div class="logs-header">
+    <div class="title">📜 Activity Logs</div>
+    <div class="filters">
+      <label><input type="checkbox" [(ngModel)]="showInfo" (change)="applyFilters()"> Info</label>
+      <label><input type="checkbox" [(ngModel)]="showWarning" (change)="applyFilters()"> Warning</label>
+      <label><input type="checkbox" [(ngModel)]="showError" (change)="applyFilters()"> Error</label>
+    </div>
+  </div>
+
+  <div class="log-list" *ngIf="filtered.length > 0; else empty">
+    <div class="log-item" *ngFor="let e of filtered" [class.error]="e.level==='error'" [class.warning]="e.level==='warning'">
+      <div class="log-summary" (click)="toggleExpand(e.id)">
+        <span class="time">{{ formatTime(e.timestamp) }}</span>
+        <span class="level">{{ levelIcon(e.level) }}</span>
+        <span class="category">{{ e.category }}</span>
+        <span class="agent" *ngIf="e.agent">{{ e.agent }}</span>
+        <span class="task" *ngIf="e.task">— {{ e.task }}</span>
+        <span class="status" [class]="'badge ' + statusBadge(e)">{{ e.status || 'idle' }}</span>
+        <span class="message">{{ e.message }}</span>
+        <span class="chevron">{{ expandedId===e.id ? '▾' : '▸' }}</span>
+      </div>
+      <div class="log-details" *ngIf="expandedId===e.id">
+        <pre *ngIf="e.data as d">{{ d | json }}</pre>
+      </div>
+    </div>
+  </div>
+
+  <ng-template #empty>
+    <div class="empty">No activity yet</div>
+  </ng-template>
+</div>
+
