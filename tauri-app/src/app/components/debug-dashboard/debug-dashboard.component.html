@@ -1,17 +1,17 @@
-<div class="debug-dashboard">
-  <header class="dashboard-header">
-    <h1>🔧 Developer Debug Dashboard</h1>
-    <p class="subtitle">Real-time metrics and logs for agentic workflow</p>
+<div class="p-4">
+  <header class="mb-3">
+    <h1 class="m-0 text-xl font-semibold">🔧 Developer Debug Dashboard</h1>
+    <p class="mt-1 mb-0 text-neutral-400">Real-time metrics and logs for agentic workflow</p>
   </header>
 
-  <div class="dashboard-content">
-    <section class="metrics-section">
-      <h2>Workflow Metrics</h2>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <section class="bg-white border border-neutral-200 rounded-lg p-3">
+      <h2 class="text-lg font-semibold mb-2">Workflow Metrics</h2>
       <app-metrics-panel></app-metrics-panel>
     </section>
 
-    <section class="logs-section">
-      <h2>Process Logs</h2>
+    <section class="bg-white border border-neutral-200 rounded-lg p-3">
+      <h2 class="text-lg font-semibold mb-2">Process Logs</h2>
       <app-process-logs></app-process-logs>
     </section>
   </div>

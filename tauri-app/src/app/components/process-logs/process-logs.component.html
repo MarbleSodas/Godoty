@@ -1,34 +1,67 @@
-<div class="logs-container">
-  <div class="logs-header">
-    <div class="title">📜 Activity Logs</div>
-    <div class="filters">
-      <label><input type="checkbox" [(ngModel)]="showDebug" (change)="applyFilters()"> Debug</label>
-      <label><input type="checkbox" [(ngModel)]="showInfo" (change)="applyFilters()"> Info</label>
-      <label><input type="checkbox" [(ngModel)]="showWarning" (change)="applyFilters()"> Warning</label>
-      <label><input type="checkbox" [(ngModel)]="showError" (change)="applyFilters()"> Error</label>
+<div class="flex flex-col gap-2 bg-white/6 border-t border-white/15 py-2">
+  <div class="flex items-center justify-between px-3">
+    <div class="font-semibold opacity-90">📜 Activity Logs</div>
+    <div class="flex gap-3 text-sm">
+      <label class="flex items-center gap-1 opacity-85 cursor-pointer hover:opacity-100 transition-opacity">
+        <input type="checkbox" [(ngModel)]="showDebug" (change)="applyFilters()" class="cursor-pointer">
+        <span>Debug</span>
+      </label>
+      <label class="flex items-center gap-1 opacity-85 cursor-pointer hover:opacity-100 transition-opacity">
+        <input type="checkbox" [(ngModel)]="showInfo" (change)="applyFilters()" class="cursor-pointer">
+        <span>Info</span>
+      </label>
+      <label class="flex items-center gap-1 opacity-85 cursor-pointer hover:opacity-100 transition-opacity">
+        <input type="checkbox" [(ngModel)]="showWarning" (change)="applyFilters()" class="cursor-pointer">
+        <span>Warning</span>
+      </label>
+      <label class="flex items-center gap-1 opacity-85 cursor-pointer hover:opacity-100 transition-opacity">
+        <input type="checkbox" [(ngModel)]="showError" (change)="applyFilters()" class="cursor-pointer">
+        <span>Error</span>
+      </label>
     </div>
   </div>
 
-  <div class="log-list" *ngIf="filtered.length > 0; else empty">
-    <div class="log-item" *ngFor="let e of filtered" [class.error]="e.level==='error'" [class.warning]="e.level==='warning'">
-      <div class="log-summary" (click)="toggleExpand(e.id)">
-        <span class="time">{{ formatTime(e.timestamp) }}</span>
-        <span class="level">{{ levelIcon(e.level) }}</span>
-        <span class="category">{{ e.category }}</span>
-        <span class="agent" *ngIf="e.agent">{{ e.agent }}</span>
-        <span class="task" *ngIf="e.task">— {{ e.task }}</span>
-        <span class="status" [class]="'badge ' + statusBadge(e)">{{ e.status || 'idle' }}</span>
-        <span class="message">{{ e.message }}</span>
-        <span class="chevron">{{ expandedId===e.id ? '▾' : '▸' }}</span>
+  <div *ngIf="filtered.length > 0; else empty" class="max-h-56 overflow-auto px-1">
+    <div
+      *ngFor="let e of filtered"
+      class="border-l-3 bg-black/15 my-1 rounded-lg transition-colors hover:bg-black/25"
+      [ngClass]="{
+        'border-l-amber-400': e.level === 'warning',
+        'border-l-red-500': e.level === 'error',
+        'border-l-transparent': e.level !== 'warning' && e.level !== 'error'
+      }"
+    >
+      <div
+        class="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer"
+        (click)="toggleExpand(e.id)"
+      >
+        <span class="font-mono opacity-70 text-xs">{{ formatTime(e.timestamp) }}</span>
+        <span class="w-5 text-center">{{ levelIcon(e.level) }}</span>
+        <span class="text-xs opacity-70">{{ e.category }}</span>
+        <span *ngIf="e.agent" class="font-semibold text-sm">{{ e.agent }}</span>
+        <span *ngIf="e.task" class="opacity-80 text-sm">— {{ e.task }}</span>
+        <span
+          class="px-2 py-0.5 rounded-full text-xs"
+          [ngClass]="{
+            'bg-blue-600': statusBadge(e) === 'processing',
+            'bg-purple-600': statusBadge(e) === 'waiting',
+            'bg-green-600': statusBadge(e) === 'completed',
+            'bg-red-600': statusBadge(e) === 'error'
+          }"
+        >
+          {{ e.status || 'idle' }}
+        </span>
+        <span class="flex-1 opacity-95 text-sm">{{ e.message }}</span>
+        <span class="opacity-60">{{ expandedId === e.id ? '▾' : '▸' }}</span>
       </div>
-      <div class="log-details" *ngIf="expandedId===e.id">
-        <pre *ngIf="e.data as d">{{ d | json }}</pre>
+      <div *ngIf="expandedId === e.id" class="px-3 py-2 border-t border-dashed border-white/15">
+        <pre *ngIf="e.data as d" class="whitespace-pre-wrap break-words m-0 text-xs opacity-90">{{ d | json }}</pre>
       </div>
     </div>
   </div>
 
   <ng-template #empty>
-    <div class="empty">No activity yet</div>
+    <div class="opacity-70 text-center py-2">No activity yet</div>
   </ng-template>
 </div>
 

@@ -1,5 +1,12 @@
-<div [class]="'status-panel status-' + status">
-  <span class="status-icon">{{ getStatusIcon() }}</span>
-  <span class="status-text">{{ getStatusText() }}</span>
+<div
+  class="flex items-center gap-2 px-4 py-2 rounded-full border-2 shadow-md transition-all duration-200"
+  [ngClass]="{
+    'bg-green-500/15 border-green-500/60': status === 'connected',
+    'bg-amber-500/15 border-amber-500/60 animate-status-pulse': status === 'connecting',
+    'bg-red-500/15 border-red-500/60': status === 'disconnected'
+  }"
+>
+  <span class="text-base" role="img" [attr.aria-label]="status">{{ getStatusIcon() }}</span>
+  <span class="text-sm font-medium">{{ getStatusText() }}</span>
 </div>
 

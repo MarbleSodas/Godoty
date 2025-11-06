@@ -156,8 +156,56 @@ impl AgenticWorkflow {
             "Planning agent completed"
         );
 
-        // Parse execution plan
-        let plan: ExecutionPlan = serde_json::from_str(&Self::extract_json(&plan_output.content)?)?;
+        // Log planning response preview for debugging truncated/malformed JSON
+        let plan_resp_len = plan_output.content.len();
+        let plan_preview: String = plan_output.content.chars().take(200).collect();
+        tracing::debug!(plan_response_len = plan_resp_len, plan_response_preview = %plan_preview, "Planning agent raw response preview");
+
+        // Parse execution plan with salvage/repair
+        let plan_raw = Self::extract_json(&plan_output.content)?;
+        let plan: ExecutionPlan = match serde_json::from_str::<ExecutionPlan>(&plan_raw) {
+            Ok(p) => p,
+            Err(e1) => {
+                if let Some(trimmed) = Self::trim_to_balanced_json_block(&plan_raw) {
+                    match serde_json::from_str::<ExecutionPlan>(&trimmed) {
+                        Ok(p2) => p2,
+                        Err(_e2) => {
+                            // Last resort: ask LLM to repair malformed JSON into valid object
+                            let repair_prompt = r#"You will receive a malformed execution plan as text.
+Return ONLY a valid JSON object with this exact shape (no extra text):
+{
+  "reasoning": string,
+  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
+  "estimated_complexity": "low" | "medium" | "high"
+}
+Ensure all braces/brackets are closed. No comments or trailing commas."#;
+                            let repaired = self.call_llm(repair_prompt, &plan_raw).await?;
+                            let repaired_json = Self::extract_json(&repaired)?;
+                            serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
+                                let prev = plan_raw.chars().take(500).collect::<String>();
+                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                            })?
+                        }
+                    }
+                } else {
+                    // Could not find a balanced block; attempt repair once
+                    let repair_prompt = r#"You will receive a malformed execution plan as text.
+Return ONLY a valid JSON object with this exact shape (no extra text):
+{
+  "reasoning": string,
+  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
+  "estimated_complexity": "low" | "medium" | "high"
+}
+Ensure all braces/brackets are closed. No comments or trailing commas."#;
+                    let repaired = self.call_llm(repair_prompt, &plan_raw).await?;
+                    let repaired_json = Self::extract_json(&repaired)?;
+                    serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
+                        let prev = plan_raw.chars().take(500).collect::<String>();
+                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                    })?
+                }
+            }
+        };
 
         thoughts.push(AgentThought {
             step: 2,
@@ -195,8 +243,54 @@ impl AgenticWorkflow {
             metrics.generation_time_ms += gen_start.elapsed().as_millis() as u64;
             metrics.generation_tokens += gen_output.tokens_used;
 
-            // Parse generated commands
-            let generated_commands: Vec<Value> = serde_json::from_str(&Self::extract_json(&gen_output.content)?)?;
+            // Parse generated commands (accept array or single object) with robust salvage
+            let gen_raw = Self::extract_json(&gen_output.content)?;
+            // Attempt direct parse
+            let gen_val: serde_json::Value = match serde_json::from_str(&gen_raw) {
+                Ok(v) => v,
+                Err(first_err) => {
+                    // Try trimming to a balanced JSON block
+                    if let Some(trimmed) = Self::trim_to_balanced_json_block(&gen_raw) {
+                        if let Ok(v2) = serde_json::from_str::<serde_json::Value>(&trimmed) {
+                            v2
+                        } else {
+                            // Try sanitizing control characters within strings
+                            let sanitized = sanitize_json_control_chars(&trimmed);
+                            match serde_json::from_str::<serde_json::Value>(&sanitized) {
+                                Ok(v3) => v3,
+                                Err(_) => {
+                                    // Last resort: request JSON repair
+                                    let repair_prompt = r#"You will receive a possibly malformed JSON array of Godoty commands.
+Return ONLY a valid JSON array of command objects (no extra text).
+Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
+                                    let repaired = self.call_llm(repair_prompt, &gen_raw).await?;
+                                    let repaired_json = Self::extract_json(&repaired)?;
+                                    let repaired_sanitized = sanitize_json_control_chars(&repaired_json);
+                                    serde_json::from_str::<serde_json::Value>(&repaired_sanitized).map_err(|e| {
+                                        let preview = gen_raw.chars().take(500).collect::<String>();
+                                        anyhow::anyhow!("Failed to parse generated commands JSON: {}. Raw preview: {}. First error: {}", e, preview, first_err)
+                                    })?
+                                }
+                            }
+                        }
+                    } else {
+                        // No balanced block; try sanitization directly
+                        let sanitized = sanitize_json_control_chars(&gen_raw);
+                        match serde_json::from_str::<serde_json::Value>(&sanitized) {
+                            Ok(v3) => v3,
+                            Err(e) => {
+                                let preview = gen_raw.chars().take(500).collect::<String>();
+                                return Err(anyhow::anyhow!("Failed to parse generated commands JSON: {}. Raw preview: {}. First error: {}", e, preview, first_err));
+                            }
+                        }
+                    }
+                }
+            };
+            let generated_commands: Vec<Value> = match gen_val {
+                serde_json::Value::Array(arr) => arr,
+                serde_json::Value::Object(_) => vec![gen_val],
+                other => return Err(anyhow::anyhow!(format!("Expected JSON array or object for generated commands, got {}", other))),
+            };
             metrics.commands_generated = generated_commands.len() as u32;
             tracing::debug!(attempt = retry + 1, commands_generated = metrics.commands_generated, generation_tokens = metrics.generation_tokens, "Code generation completed");
 
@@ -261,10 +355,15 @@ impl AgenticWorkflow {
                 valid: bool,
                 errors: Vec<String>,
                 warnings: Vec<String>,
+                #[serde(default, deserialize_with = "opt_one_or_many")]
                 validated_commands: Option<Vec<Value>>,
             }
 
-            let ai_validation: AIValidationResult = serde_json::from_str(&Self::extract_json(&val_output.content)?)?;
+            let val_raw = Self::extract_json(&val_output.content)?;
+            let ai_validation: AIValidationResult = serde_json::from_str(&val_raw).map_err(|e| {
+                let preview = if val_raw.len() > 500 { &val_raw[..500] } else { &val_raw };
+                anyhow::anyhow!("Failed to parse validation JSON: {}. Raw preview: {}", e, preview)
+            })?;
 
             metrics.validation_errors += ai_validation.errors.len() as u32;
             metrics.validation_warnings += ai_validation.warnings.len() as u32;
@@ -335,6 +434,7 @@ impl AgenticWorkflow {
     }
 
     /// Plan the task by breaking it down into steps
+
     async fn plan_task(
         &self,
         context: &AgentContext,
@@ -374,7 +474,14 @@ Respond with a JSON object containing:
   ],
   "estimated_complexity": "low|medium|high"
 }}
-"#, 
+
+STRICT OUTPUT RULES:
+- Respond ONLY with a valid JSON object (no prose before/after).
+- If you use a code fence, use ```json and include only valid JSON inside.
+- No comments, no trailing commas, no ellipses inside JSON.
+- Ensure all braces/brackets are closed; keep to <= 8 steps.
+
+"#,
             plugin_context,
             docs_context,
             context.project_index.scenes.len(),
@@ -382,10 +489,50 @@ Respond with a JSON object containing:
         );
 
         let response = self.call_llm(&system_prompt, &context.user_input).await?;
-        
-        // Parse the plan from response
-        let plan: ExecutionPlan = serde_json::from_str(&response)
-            .map_err(|e| anyhow::anyhow!("Failed to parse plan: {}", e))?;
+        // Extract potential JSON from the response (handles code fences and extra text)
+        let plan_json = Self::extract_json(&response)?;
+        // Parse the plan with salvage/repair
+        let plan: ExecutionPlan = match serde_json::from_str::<ExecutionPlan>(&plan_json) {
+            Ok(p) => p,
+            Err(e1) => {
+                if let Some(trimmed) = Self::trim_to_balanced_json_block(&plan_json) {
+                    match serde_json::from_str::<ExecutionPlan>(&trimmed) {
+                        Ok(p2) => p2,
+                        Err(_e2) => {
+                            let repair_prompt = r#"You will receive a malformed execution plan as text.
+Return ONLY a valid JSON object with this exact shape (no extra text):
+{
+  "reasoning": string,
+  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
+  "estimated_complexity": "low" | "medium" | "high"
+}
+Ensure all braces/brackets are closed. No comments or trailing commas."#;
+                            let repaired = self.call_llm(repair_prompt, &plan_json).await?;
+                            let repaired_json = Self::extract_json(&repaired)?;
+                            serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
+                                let prev = plan_json.chars().take(500).collect::<String>();
+                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                            })?
+                        }
+                    }
+                } else {
+                    let repair_prompt = r#"You will receive a malformed execution plan as text.
+Return ONLY a valid JSON object with this exact shape (no extra text):
+{
+  "reasoning": string,
+  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
+  "estimated_complexity": "low" | "medium" | "high"
+}
+Ensure all braces/brackets are closed. No comments or trailing commas."#;
+                    let repaired = self.call_llm(repair_prompt, &plan_json).await?;
+                    let repaired_json = Self::extract_json(&repaired)?;
+                    serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
+                        let prev = plan_json.chars().take(500).collect::<String>();
+                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                    })?
+                }
+            }
+        };
 
         Ok(plan)
     }
@@ -404,6 +551,8 @@ Respond with a JSON object containing:
             .collect::<Vec<_>>()
             .join("\n\n");
 
+        let allowed_actions_list = self.guardrails.config.allowed_command_types.join(", ");
+
         let system_prompt = format!(r#"You are a command generation agent for Godot.
 
 Execution Plan:
@@ -412,19 +561,44 @@ Execution Plan:
 Plugin Command Examples:
 {}
 
+STRICT SCHEMA RULES:
+- Every command MUST include an 'action' field; it must be one of: [{}].
+- Map Godot UI/node types to the 'type' field ONLY when action = 'create_node' (or when searching by type). Do NOT use node types as command actions.
+- Required fields by action:
+  - create_node: type, name
+  - create_scene: name, root_type
+  - modify_node: path, properties
+  - delete_node: path
+  - attach_script: path, script_content
+  - open_scene: path
+  - select_nodes: paths
+  - focus_node: path
+  - rename_node: path, new_name
+  - reparent_node: path, new_parent
+- Use only fields defined in the schema. Do not invent new fields.
+
 Generate a JSON array of commands to execute the plan.
 Each command must be a valid JSON object matching the plugin's command schema.
 Respond ONLY with the JSON array, no explanations.
 "#,
             serde_json::to_string_pretty(plan)?,
-            plugin_examples
+            plugin_examples,
+            allowed_actions_list
         );
 
         let response = self.call_llm(&system_prompt, &context.user_input).await?;
 
-        // Extract and parse commands
-        let commands: Vec<Value> = serde_json::from_str(&Self::extract_json(&response)?)
-            .map_err(|e| anyhow::anyhow!("Failed to parse commands: {}", e))?;
+        // Extract and parse commands (accept array or single object)
+        let raw = Self::extract_json(&response)?;
+        let val: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+            let preview = if raw.len() > 500 { &raw[..500] } else { &raw };
+            anyhow::anyhow!("Failed to parse commands JSON: {}. Raw preview: {}", e, preview)
+        })?;
+        let commands: Vec<Value> = match val {
+            serde_json::Value::Array(arr) => arr,
+            serde_json::Value::Object(_) => vec![val],
+            other => return Err(anyhow::anyhow!(format!("Expected JSON array or object for commands, got {}", other))),
+        };
 
         Ok(commands)
     }
@@ -468,7 +642,7 @@ Respond ONLY with the JSON array, no explanations.
                 },
             ],
             temperature: 0.7,
-            max_tokens: 4096,
+            max_tokens: 8192,
         };
 
         let response = self.client
@@ -486,7 +660,10 @@ Respond ONLY with the JSON array, no explanations.
         }
 
         let response_text = response.text().await?;
-        let chat_response: ChatResponse = serde_json::from_str(&response_text)?;
+        let chat_response: ChatResponse = serde_json::from_str(&response_text).map_err(|e| {
+            let preview = response_text.chars().take(200).collect::<String>();
+            anyhow::anyhow!("Failed to parse LLM chat response JSON: {}. Raw preview: {}", e, preview)
+        })?;
 
         if let Some(choice) = chat_response.choices.first() {
             Ok(choice.message.content.clone())
@@ -497,56 +674,285 @@ Respond ONLY with the JSON array, no explanations.
 
     /// Extract JSON from response
     fn extract_json(content: &str) -> Result<String> {
-        let trimmed = content.trim();
+        // Trim and remove leading BOM/zero-width characters that can break JSON
+        let mut s = content.trim();
+        // Strip common leading invisible characters (BOM, ZWSP, ZWNJ, ZWJ, WJ)
+        while let Some(ch) = s.chars().next() {
+            match ch {
+                '\u{feff}' | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' => {
+                    s = &s[ch.len_utf8()..];
+                }
+                _ => break,
+            }
+        }
 
-        if let Some(start) = trimmed.find("```json") {
-            let json_start = start + 7;
-            if let Some(end_offset) = trimmed[json_start..].find("```") {
+        // Prefer fenced code blocks labeled json (handle common case-insensitive variants)
+        if let Some(pos) = s.find("```json") {
+            let json_start = pos + 7;
+            if let Some(end_offset) = s[json_start..].find("```") {
                 let json_end = json_start + end_offset;
-                return Ok(trimmed[json_start..json_end].trim().to_string());
+                let block = s[json_start..json_end].trim();
+                if !block.is_empty() { return Ok(block.to_string()); }
+            }
+        }
+        if let Some(pos) = s.find("```JSON") {
+            let json_start = pos + 7;
+            if let Some(end_offset) = s[json_start..].find("```") {
+                let json_end = json_start + end_offset;
+                let block = s[json_start..json_end].trim();
+                if !block.is_empty() { return Ok(block.to_string()); }
             }
         }
 
-        if let Some(start) = trimmed.find("```") {
+
+        // Fallback: first fenced block of any type that looks like JSON
+        if let Some(start) = s.find("```") {
             let first_block_start = start + 3;
-            if let Some(end) = trimmed[first_block_start..].find("```") {
+            if let Some(end) = s[first_block_start..].find("```") {
                 let json_end = first_block_start + end;
-                return Ok(trimmed[first_block_start..json_end].trim().to_string());
+                let block = s[first_block_start..json_end].trim();
+                if block.starts_with('{') || block.starts_with('[') {
+                    if !block.is_empty() { return Ok(block.to_string()); }
+                }
             }
         }
 
-        if let Some(array_start) = trimmed.find('[') {
-            if let Some(array_end) = trimmed.rfind(']') {
+        // Try extracting array or object by outermost brackets/braces
+        if let Some(array_start) = s.find('[') {
+            if let Some(array_end) = s.rfind(']') {
                 if array_end > array_start {
-                    return Ok(trimmed[array_start..=array_end].to_string());
+                    let candidate = s[array_start..=array_end].trim();
+                    if !candidate.is_empty() { return Ok(candidate.to_string()); }
                 }
             }
         }
-
-        if let Some(obj_start) = trimmed.find('{') {
-            if let Some(obj_end) = trimmed.rfind('}') {
+        if let Some(obj_start) = s.find('{') {
+            if let Some(obj_end) = s.rfind('}') {
                 if obj_end > obj_start {
-                    return Ok(trimmed[obj_start..=obj_end].to_string());
+                    let candidate = s[obj_start..=obj_end].trim();
+                    if !candidate.is_empty() { return Ok(candidate.to_string()); }
                 }
             }
         }
 
-        Ok(trimmed.to_string())
+        // If we got here, we didn't find a JSON object/array
+        let preview: String = s.chars().take(200).collect();
+        Err(anyhow::anyhow!(
+            "No JSON object/array found in response (first 200 chars): {}",
+            preview
+        ))
+    }
+
+        /// Trim to the first balanced JSON object or array within the given string.
+        /// Returns Some(json_substring) if a balanced block is found; otherwise None.
+        fn trim_to_balanced_json_block(s: &str) -> Option<String> {
+            let bytes = s.as_bytes();
+
+            // Find first '{' or '['
+            let mut start = None;
+            for (i, &b) in bytes.iter().enumerate() {
+                if b == b'{' || b == b'[' {
+                    start = Some((i, b));
+                    break;
+                }
+            }
+            let (start_idx, open_b) = start?;
+            let (open_ch, close_ch) = if open_b == b'{' { ('{', '}') } else { ('[', ']') };
+
+            // Scan for matching close using depth, respecting strings and escapes
+            let mut depth: i32 = 0;
+            let mut in_string = false;
+            let mut escaped = false;
+            for (offset, ch) in s[start_idx..].char_indices() {
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    match ch {
+                        '\\' => escaped = true,
+                        '"' => in_string = false,
+                        _ => {}
+                    }
+                    continue;
+                }
+                match ch {
+                    '"' => in_string = true,
+
+                    c if c == open_ch => depth += 1,
+                    c if c == close_ch => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let end_abs = start_idx + offset;
+                            return Some(s[start_idx..=end_abs].to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+
+}
+
+// Helper deserializer: accept either a string or any JSON value and convert to string
+fn string_or_value<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::String(s) => Ok(s),
+        other => Ok(other.to_string()),
     }
 }
+
+// Helper deserializer: accept either a single object or an array of objects and return Vec<T>
+fn one_or_many<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                out.push(serde_json::from_value(item).map_err(serde::de::Error::custom)?);
+            }
+            Ok(out)
+        }
+        serde_json::Value::Object(_) => {
+            let t: T = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
+            Ok(vec![t])
+        }
+        other => Err(serde::de::Error::custom(format!(
+
+            "expected array or object, got {}",
+            other
+        ))),
+    }
+}
+
+// Helper deserializer: accept a single string or an array of strings and return Vec<String>
+fn string_or_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::String(s) => Ok(vec![s]),
+        serde_json::Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                match item {
+                    serde_json::Value::String(s) => out.push(s),
+                    other => {
+                        return Err(serde::de::Error::custom(format!(
+                            "expected string in array, got {}",
+                            other
+                        )))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        other => Err(serde::de::Error::custom(format!(
+            "expected string or array of strings, got {}",
+            other
+        ))),
+    }
+}
+
+// Helper deserializer for Option<Vec<Value>> to accept null/missing, array, or single object
+fn opt_one_or_many<'de, D>(deserializer: D) -> std::result::Result<Option<Vec<serde_json::Value>>, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(serde_json::Value::Array(arr)) => Ok(Some(arr)),
+        Some(v @ serde_json::Value::Object(_)) => Ok(Some(vec![v])),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "expected array or object for validated_commands, got {}",
+            other
+        ))),
+    }
+}
+
+// Helper: accept number or numeric string and return usize
+fn usize_or_string<'de, D>(deserializer: D) -> std::result::Result<usize, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::Number(n) => n.as_u64()
+            .ok_or_else(|| serde::de::Error::custom("expected unsigned integer for step_number"))
+            .map(|u| u as usize),
+        serde_json::Value::String(s) => s.parse::<usize>().map_err(serde::de::Error::custom),
+        other => Err(serde::de::Error::custom(format!(
+            "expected integer or numeric string for step_number, got {}",
+            other
+        ))),
+    }
+}
+
+/// Sanitize JSON by escaping ASCII control characters inside quoted strings.
+fn sanitize_json_control_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in s.chars() {
+        if in_string {
+            if escaped {
+                out.push(ch);
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => { out.push('\\'); escaped = true; }
+                '"' => { out.push('"'); in_string = false; }
+                c if (c as u32) <= 0x1F => {
+                    match c {
+                        '\n' => out.push_str("\\n"),
+                        '\r' => out.push_str("\\r"),
+                        '\t' => out.push_str("\\t"),
+                        _ => out.push_str(&format!("\\u{:04x}", c as u32)),
+                    }
+                }
+                _ => out.push(ch),
+            }
+        } else {
+            match ch {
+                '"' => { out.push('"'); in_string = true; }
+                _ => out.push(ch),
+            }
+        }
+    }
+    out
+}
+
 
 /// Execution plan created by the planner agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionPlan {
+    #[serde(deserialize_with = "string_or_value")]
     pub reasoning: String,
+    #[serde(deserialize_with = "one_or_many")]
     pub steps: Vec<PlanStep>,
+    #[serde(deserialize_with = "string_or_value")]
     pub estimated_complexity: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
+    #[serde(deserialize_with = "usize_or_string")]
     pub step_number: usize,
+    #[serde(deserialize_with = "string_or_value")]
     pub description: String,
+    #[serde(deserialize_with = "string_or_vec")]
     pub commands_needed: Vec<String>,
 }
 

@@ -1,16 +1,16 @@
-<div class="app-container">
-  <header class="app-header">
-    <div class="header-left">
-      <h1>🎮 Godoty AI Assistant</h1>
+<div class="flex flex-col h-screen bg-gradient-to-br from-godot-gray-darker via-godot-gray-darkest to-godot-gray-darker text-white">
+  <header class="flex justify-between items-center px-8 py-4 bg-black/50 backdrop-blur-xl border-b-2 border-white/25 shadow-lg">
+    <div class="flex items-center gap-4">
+      <h1 class="m-0 text-3xl font-bold bg-gradient-to-br from-white to-indigo-100 bg-clip-text text-transparent">🎮 Godoty AI Assistant</h1>
     </div>
-    <div class="header-controls">
+    <div class="flex items-center gap-4">
       <a routerLink="/debug" class="debug-link" title="Developer Debug Dashboard">🛠️ Debug</a>
       <app-status-panel [status]="connectionStatus"></app-status-panel>
     </div>
   </header>
 
-  <main class="app-main">
-    <div class="left-panel">
+  <main class="flex flex-1 gap-6 p-6 overflow-hidden">
+    <div class="left-panel flex-[2.5] flex flex-col overflow-hidden min-w-0 min-h-0 max-h-full">
       <!-- Chat View with Integrated Input -->
       <app-chat-view
         [session]="activeSession"
@@ -21,7 +21,7 @@
       ></app-chat-view>
     </div>
 
-    <div class="right-panel">
+    <div class="right-panel flex-1 overflow-y-auto flex flex-col gap-4 min-w-[300px] max-w-[400px]">
       <app-session-manager
         [sessions]="chatSessions"
         [activeSessionId]="activeSession?.id || null"

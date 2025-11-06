@@ -1,65 +1,62 @@
-<div class="session-manager-container">
-  <div class="manager-header">
-    <h3>💬 Chat Sessions</h3>
-    <div class="header-actions">
-      <button class="btn-new" (click)="handleCreateSession()" title="New Session">
+<div class="glass-card p-4 flex flex-col h-full max-h-[600px]">
+  <div class="flex justify-between items-center mb-4 pb-3 border-b-2 border-white/20">
+    <h3 class="m-0 text-lg font-semibold text-white/90">💬 Chat Sessions</h3>
+    <div class="flex gap-2">
+      <button
+        class="px-3 py-1.5 rounded-lg border-2 border-white/30 bg-white/15 hover:bg-green-500/30 hover:border-green-500/50 transition-all text-base cursor-pointer"
+        (click)="handleCreateSession()"
+        title="New Session"
+        aria-label="Create new session"
+      >
         ➕
       </button>
-      <button class="btn-clear" (click)="handleClearAll()" title="Clear All" *ngIf="sessions.length > 0">
+      <button
+        *ngIf="sessions.length > 0"
+        class="px-3 py-1.5 rounded-lg border-2 border-white/30 bg-white/15 hover:bg-red-500/30 hover:border-red-500/50 transition-all text-base cursor-pointer"
+        (click)="handleClearAll()"
+        title="Clear All"
+        aria-label="Clear all sessions"
+      >
         🗑️
       </button>
     </div>
   </div>
 
-  <div class="sessions-list">
-    <div *ngIf="sessions.length === 0" class="empty-sessions">
-      <p>No sessions yet</p>
-      <button class="btn-create-first" (click)="handleCreateSession()">
+  <div class="flex-1 overflow-y-auto flex flex-col gap-2 pr-1">
+    <div *ngIf="sessions.length === 0" class="flex flex-col items-center justify-center h-full text-white/70 text-center p-8">
+      <p class="m-0 mb-4 italic">No sessions yet</p>
+      <button
+        class="px-6 py-3 rounded-lg border-2 border-primary-400/60 bg-primary-400/40 hover:bg-primary-400/60 hover:-translate-y-0.5 hover:shadow-lg transition-all text-white font-semibold cursor-pointer shadow-md"
+        (click)="handleCreateSession()"
+      >
         Create First Session
       </button>
     </div>
 
     <div
       *ngFor="let session of sessions; trackBy: trackBySessionId"
-      class="session-item"
-      [class.active]="session.id === activeSessionId"
+      class="bg-black/30 border-2 border-white/20 rounded-lg p-3 cursor-pointer transition-all flex justify-between items-start gap-2 hover:bg-black/40 hover:border-white/35 hover:shadow-md"
+      [ngClass]="{'bg-primary-400/20 border-primary-400/50': session.id === activeSessionId}"
       (click)="handleSelectSession(session.id)"
     >
-      <div class="session-content">
-        <div class="session-title">{{ session.title }}</div>
-        <div class="session-preview">{{ getSessionPreview(session) }}</div>
-        <div class="session-meta">
-          <span class="meta-time">{{ formatDate(session.updated_at) }}</span>
-          <span class="meta-messages">{{ session.messages.length }} msgs</span>
+      <div class="flex-1 min-w-0">
+        <div class="font-semibold text-white/90 mb-1 text-sm truncate">{{ session.title }}</div>
+        <div class="text-xs text-white/60 mb-1 truncate">{{ getSessionPreview(session) }}</div>
+        <div class="flex gap-3 text-xs text-white/50">
+          <span>{{ formatDate(session.updated_at) }}</span>
+          <span>{{ session.messages.length }} msgs</span>
         </div>
       </div>
       <button
-        class="btn-delete"
+        class="bg-transparent border-0 text-white/40 hover:text-red-500 cursor-pointer p-1 text-base transition-colors flex-shrink-0"
         (click)="handleDeleteSession(session.id, $event)"
         title="Delete Session"
+        aria-label="Delete session"
       >
         ✕
       </button>
     </div>
   </div>
 
-  <!-- New Session Dialog -->
-  <div *ngIf="showNewSessionDialog" class="dialog-overlay" (click)="cancelCreateSession()" @dialogAnimation>
-    <div class="dialog-content" (click)="$event.stopPropagation()">
-      <h3>✨ Create New Session</h3>
-      <input
-        type="text"
-        [(ngModel)]="newSessionTitle"
-        placeholder="Session title (optional)"
-        class="session-title-input"
-        (keyup.enter)="confirmCreateSession()"
-        autofocus
-      />
-      <div class="dialog-actions">
-        <button class="btn-cancel" (click)="cancelCreateSession()">Cancel</button>
-        <button class="btn-confirm" (click)="confirmCreateSession()">Create</button>
-      </div>
-    </div>
-  </div>
 </div>
 

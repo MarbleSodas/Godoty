@@ -1,19 +1,23 @@
-<div class="command-input-container">
-  <h2>💬 Command Input</h2>
-  <form (ngSubmit)="handleSubmit($event)" class="command-form">
+<div class="bg-white/5 backdrop-blur-xl rounded-2xl p-5 border border-white/12 shadow-lg">
+  <h2 class="m-0 mb-4 text-xl font-semibold">💬 Command Input</h2>
+  <form (ngSubmit)="handleSubmit($event)" class="flex gap-3 items-end">
     <textarea
       [(ngModel)]="input"
       name="commandInput"
       placeholder="Describe what you want to create in Godot...&#10;&#10;Example: Add a 2D player character with a sprite and collision shape"
       [disabled]="disabled"
       rows="4"
-      class="command-textarea"
+      class="flex-1 input-field min-h-[52px] max-h-[200px] resize-none disabled:opacity-50 disabled:cursor-not-allowed"
     ></textarea>
-    <button type="submit" [disabled]="disabled || !input.trim()" class="submit-button">
+    <button
+      type="submit"
+      [disabled]="disabled || !input.trim()"
+      class="px-7 py-3.5 rounded-xl border-0 bg-gradient-to-br from-primary-400 to-primary-500 text-white text-base font-semibold cursor-pointer transition-all whitespace-nowrap shadow-md min-h-[52px] hover:from-primary-300 hover:to-primary-400 hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 active:shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none disabled:bg-primary-400/30"
+    >
       {{ disabled ? '⏸ Not Ready' : '🚀 Execute' }}
     </button>
   </form>
-  <p *ngIf="disabled" class="warning-text">
+  <p *ngIf="disabled" class="mt-2 mb-0 text-amber-500 text-sm font-medium">
     ⚠️ Please configure your API key and ensure Godot is connected
   </p>
 </div>

@@ -1,7 +1,6 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { trigger, state, style, transition, animate } from '@angular/animations';
 import { ChatSession } from '../../models/command.model';
 
 @Component({
@@ -9,18 +8,7 @@ import { ChatSession } from '../../models/command.model';
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './session-manager.component.html',
-  styleUrls: ['./session-manager.component.css'],
-  animations: [
-    trigger('dialogAnimation', [
-      transition(':enter', [
-        style({ opacity: 0 }),
-        animate('300ms ease-out', style({ opacity: 1 }))
-      ]),
-      transition(':leave', [
-        animate('200ms ease-in', style({ opacity: 0 }))
-      ])
-    ])
-  ]
+  styleUrls: ['./session-manager.component.css']
 })
 export class SessionManagerComponent {
   @Input() sessions: ChatSession[] = [];
@@ -30,23 +18,9 @@ export class SessionManagerComponent {
   @Output() deleteSession = new EventEmitter<string>();
   @Output() clearAllSessions = new EventEmitter<void>();
 
-  showNewSessionDialog = false;
-  newSessionTitle = '';
-
   handleCreateSession(): void {
-    this.showNewSessionDialog = true;
-  }
-
-  confirmCreateSession(): void {
-    const title = this.newSessionTitle.trim() || 'New Session';
-    this.createSession.emit(title);
-    this.newSessionTitle = '';
-    this.showNewSessionDialog = false;
-  }
-
-  cancelCreateSession(): void {
-    this.newSessionTitle = '';
-    this.showNewSessionDialog = false;
+    // Instantly create a new session with a placeholder title
+    this.createSession.emit('New Chat');
   }
 
   handleSelectSession(sessionId: string): void {

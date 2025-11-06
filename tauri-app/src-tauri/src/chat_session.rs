@@ -139,7 +139,14 @@ impl ChatSession {
         self.metadata.total_tokens_used += tokens_used;
     }
 
-
+    /// Update the session title
+    pub fn update_title(&mut self, new_title: String) {
+        self.title = new_title;
+        self.updated_at = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+    }
 
     /// Build accumulated context from all messages
     pub fn build_accumulated_context(&self) -> String {
@@ -272,14 +279,24 @@ impl ChatSessionManager {
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
         let index = self.sessions.iter().position(|s| s.id == session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-        
+
         self.sessions.remove(index);
-        
+
         // If we deleted the active session, clear it
         if self.active_session_id.as_ref().map(|id| id == session_id).unwrap_or(false) {
             self.active_session_id = None;
         }
-        
+
+        Ok(())
+    }
+
+    /// Update the title of a session
+    pub fn update_session_title(&mut self, session_id: &str, new_title: String) -> Result<()> {
+        let session = self.sessions.iter_mut()
+            .find(|s| s.id == session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+
+        session.update_title(new_title);
         Ok(())
     }
 

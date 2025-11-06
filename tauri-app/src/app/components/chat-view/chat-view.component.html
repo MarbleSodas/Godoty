@@ -1,38 +1,42 @@
-<div class="chat-view-container">
-  <div *ngIf="!session" class="empty-state-wrapper">
-    <div class="empty-state">
-      <div class="empty-icon">💬</div>
-      <h3>No Active Session</h3>
-      <p>Start a new conversation to begin</p>
+<div class="flex flex-col flex-1 min-h-0 h-full bg-white/8 rounded-2xl overflow-hidden border-2 border-white/20 shadow-lg">
+  <div *ngIf="!session" class="flex flex-col h-full">
+    <div class="flex flex-col items-center justify-center flex-1 text-white/70 text-center p-12">
+      <div class="text-8xl mb-6 opacity-40 animate-float">💬</div>
+      <h3 class="m-0 mb-3 text-2xl text-white/90 font-semibold">No Active Session</h3>
+      <p class="m-0 text-base text-white/70">Start a new conversation to begin</p>
     </div>
 
     <!-- Input shown even without session -->
-    <div class="chat-input-container">
-      <form (ngSubmit)="handleSubmit($event)" class="chat-input-form">
+    <div class="bg-black/40 border-t-2 border-white/20 p-4 px-6 flex-shrink-0">
+      <form (ngSubmit)="handleSubmit($event)" class="flex gap-3 items-end">
         <textarea
           [(ngModel)]="input"
           name="commandInput"
           placeholder="Type your message to start a new conversation..."
           [disabled]="disabled"
           rows="1"
-          class="chat-input-textarea"
+          class="flex-1 px-4 py-3.5 rounded-xl border-2 border-white/25 bg-black/40 text-white text-base resize-none min-h-[44px] max-h-[150px] leading-relaxed transition-all overflow-y-auto placeholder:text-white/40 focus:outline-none focus:border-primary-400/50 focus:shadow-[0_0_0_3px_rgba(74,158,255,0.1)] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-black/50 disabled:border-white/15"
         ></textarea>
-        <button type="submit" [disabled]="disabled || !input.trim()" class="chat-send-button">
-          <span class="send-icon">{{ disabled ? '⏸' : '🚀' }}</span>
+        <button
+          type="submit"
+          [disabled]="disabled || !input.trim()"
+          class="px-5 py-3.5 rounded-xl border-0 bg-gradient-to-br from-primary-400 to-primary-500 text-white text-xl cursor-pointer transition-all whitespace-nowrap shadow-md min-h-[44px] min-w-[44px] flex items-center justify-center hover:from-primary-300 hover:to-primary-400 hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 active:shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none disabled:bg-primary-400/30"
+        >
+          <span class="text-xl leading-none">{{ disabled ? '⏸' : '🚀' }}</span>
         </button>
       </form>
-      <p *ngIf="disabled" class="chat-warning-text">
+      <p *ngIf="disabled" class="mt-2 mb-0 text-amber-500 text-sm font-medium text-center">
         ⚠️ Please configure your API key and ensure Godot is connected
       </p>
     </div>
   </div>
 
-  <div *ngIf="session" class="chat-session">
+  <div *ngIf="session" class="flex flex-col flex-1 min-h-0 overflow-hidden">
     <!-- Messages Container -->
-    <div class="messages-container" #messagesContainer (scroll)="onScroll()">
-      <div *ngIf="session.messages.length === 0" class="no-messages">
-        <div class="no-messages-icon">✨</div>
-        <p class="no-messages-text">No messages yet. Start the conversation!</p>
+    <div class="flex-1 overflow-y-auto overflow-x-hidden p-6 scroll-smooth min-h-0" #messagesContainer (scroll)="onScroll()">
+      <div *ngIf="session.messages.length === 0" class="flex flex-col items-center justify-center h-full gap-4">
+        <div class="text-5xl opacity-40 animate-sparkle">✨</div>
+        <p class="text-white/50 text-base m-0">No messages yet. Start the conversation!</p>
       </div>
 
       <app-chat-message
@@ -42,36 +46,41 @@
       ></app-chat-message>
 
       <!-- Processing Indicator -->
-      <div *ngIf="isProcessing" class="processing-indicator">
-        <div class="processing-avatar">🤖</div>
-        <div class="processing-content">
-          <div class="processing-dots">
-            <span class="dot"></span>
-            <span class="dot"></span>
-            <span class="dot"></span>
+      <div *ngIf="isProcessing" class="flex items-start gap-4 p-5 mb-4 bg-gradient-to-br from-purple-600/15 to-purple-700/10 rounded-2xl border-2 border-purple-600/40 border-l-4 border-l-purple-600 animate-fade-in shadow-md">
+        <div class="text-2xl flex-shrink-0">🤖</div>
+        <div class="flex-1 flex flex-col gap-2">
+          <div class="flex gap-2 items-center">
+            <span class="w-2 h-2 bg-purple-600/80 rounded-full animate-bounce-dot"></span>
+            <span class="w-2 h-2 bg-purple-600/80 rounded-full animate-bounce-dot [animation-delay:0.2s]"></span>
+            <span class="w-2 h-2 bg-purple-600/80 rounded-full animate-bounce-dot [animation-delay:0.4s]"></span>
           </div>
-          <div class="processing-status" *ngIf="processingStatus">
-            <span class="status-text">{{ getProcessingStatusText() }}</span>
+          <div *ngIf="processingStatus" class="text-sm text-white/90 font-semibold bg-purple-600/20 px-3 py-1.5 rounded-md border border-purple-600/40">
+            <span class="inline-block animate-pulse-glow">{{ getProcessingStatusText() }}</span>
           </div>
         </div>
       </div>
     </div>
+
     <!-- Integrated Command Input -->
-    <div class="chat-input-container">
-      <form (ngSubmit)="handleSubmit($event)" class="chat-input-form">
+    <div class="bg-black/40 border-t-2 border-white/20 p-4 px-6 flex-shrink-0">
+      <form (ngSubmit)="handleSubmit($event)" class="flex gap-3 items-end">
         <textarea
           [(ngModel)]="input"
           name="commandInput"
           placeholder="Type your message..."
           [disabled]="disabled"
           rows="1"
-          class="chat-input-textarea"
+          class="flex-1 px-4 py-3.5 rounded-xl border-2 border-white/25 bg-black/40 text-white text-base resize-none min-h-[44px] max-h-[150px] leading-relaxed transition-all overflow-y-auto placeholder:text-white/40 focus:outline-none focus:border-primary-400/50 focus:shadow-[0_0_0_3px_rgba(74,158,255,0.1)] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-black/50 disabled:border-white/15"
         ></textarea>
-        <button type="submit" [disabled]="disabled || !input.trim()" class="chat-send-button">
-          <span class="send-icon">{{ disabled ? '⏸' : '🚀' }}</span>
+        <button
+          type="submit"
+          [disabled]="disabled || !input.trim()"
+          class="px-5 py-3.5 rounded-xl border-0 bg-gradient-to-br from-primary-400 to-primary-500 text-white text-xl cursor-pointer transition-all whitespace-nowrap shadow-md min-h-[44px] min-w-[44px] flex items-center justify-center hover:from-primary-300 hover:to-primary-400 hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 active:shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none disabled:bg-primary-400/30"
+        >
+          <span class="text-xl leading-none">{{ disabled ? '⏸' : '🚀' }}</span>
         </button>
       </form>
-      <p *ngIf="disabled" class="chat-warning-text">
+      <p *ngIf="disabled" class="mt-2 mb-0 text-amber-500 text-sm font-medium text-center">
         ⚠️ Please configure your API key and ensure Godot is connected
       </p>
     </div>

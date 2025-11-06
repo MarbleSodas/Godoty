@@ -92,7 +92,14 @@ Respond with a JSON object containing:
   ],
   "estimated_complexity": "low|medium|high"
 }}
-"#, 
+
+STRICT OUTPUT RULES:
+- Respond ONLY with a valid JSON object (no prose before/after).
+- If you use a code fence, use ```json and include only valid JSON inside.
+- No comments, no trailing commas, no ellipses inside JSON.
+- Ensure all braces/brackets are closed; keep to <= 8 steps.
+
+"#,
             plugin_context,
             docs_context,
             context.project_context
@@ -144,7 +151,7 @@ impl CodeGenerationAgent {
         Self {
             api_key: api_key.to_string(),
             client: Client::new(),
-            model: "z-ai/glm-4.5-air:free".to_string(),
+            model: "qwen/qwen3-coder:free".to_string(),
         }
     }
 }
@@ -408,7 +415,7 @@ async fn call_llm(
             },
         ],
         temperature: 0.7,
-        max_tokens: 4096,
+        max_tokens: 8192,
     };
 
     let response = client

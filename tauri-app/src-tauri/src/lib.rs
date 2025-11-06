@@ -224,14 +224,35 @@ async fn process_command(
 
     if !session_exists {
         let mut manager = state.chat_session_manager.lock().unwrap();
-        manager.create_session(Some("New Session".to_string()), Some(project_path.clone()));
+        manager.create_session(Some("New Chat".to_string()), Some(project_path.clone()));
     }
 
-    // Add user message to session
-    {
+    // Add user message to session and auto-generate title if this is the first message
+    let should_generate_title = {
         let mut manager = state.chat_session_manager.lock().unwrap();
         if let Some(session) = manager.get_active_session_mut() {
+            let is_first_message = session.messages.is_empty();
             session.add_message(ChatMessage::user(input.clone()));
+
+            // Auto-generate title from first message if session has default title
+            if is_first_message && (session.title == "New Chat" || session.title.starts_with("Session ")) {
+                let new_title = generate_session_title_from_message(&input);
+                session.update_title(new_title);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    // Save session if title was updated
+    if should_generate_title {
+        let manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session() {
+            let storage = state.storage.lock().unwrap();
+            let _ = storage.save_chat_session(session);
         }
     }
 
@@ -1083,6 +1104,25 @@ async fn get_cache_status(state: State<'_, AppState>) -> Result<String, String> 
     ))
 }
 
+/// Helper function to generate a session title from the first message
+fn generate_session_title_from_message(message: &str) -> String {
+    // Take first 50 characters or up to first newline, whichever comes first
+    let title = message
+        .lines()
+        .next()
+        .unwrap_or(message)
+        .chars()
+        .take(50)
+        .collect::<String>();
+
+    // If we truncated and it's not due to a newline, add ellipsis
+    if title.len() < message.len() && !message.contains('\n') {
+        format!("{}...", title)
+    } else {
+        title
+    }
+}
+
 // Chat Session Management Commands
 
 #[tauri::command]
@@ -1175,6 +1215,29 @@ async fn clear_all_sessions(state: State<'_, AppState>) -> Result<String, String
         .map_err(|e| format!("Failed to clear sessions: {}", e))?;
 
     Ok("All sessions cleared".to_string())
+}
+
+#[tauri::command]
+async fn update_session_title(
+    state: State<'_, AppState>,
+    session_id: String,
+    new_title: String,
+) -> Result<String, String> {
+    {
+        let mut manager = state.chat_session_manager.lock().unwrap();
+        manager.update_session_title(&session_id, new_title)
+            .map_err(|e| format!("Failed to update session title: {}", e))?;
+    }
+
+    // Save to storage
+    let manager = state.chat_session_manager.lock().unwrap();
+    if let Some(session) = manager.get_all_sessions().iter().find(|s| s.id == session_id) {
+        let storage = state.storage.lock().unwrap();
+        storage.save_chat_session(session)
+            .map_err(|e| format!("Failed to save session: {}", e))?;
+    }
+
+    Ok("Session title updated".to_string())
 }
 
 /// Initialize knowledge bases
@@ -1361,16 +1424,46 @@ async fn process_command_agentic(
 
     if !session_exists {
         let mut manager = state.chat_session_manager.lock().unwrap();
-        manager.create_session(Some("Agentic Session".to_string()), Some(project_path.clone()));
+        manager.create_session(Some("New Chat".to_string()), Some(project_path.clone()));
     }
 
-    // Add user message to session
-    {
+    // Add user message to session and auto-generate title if this is the first message
+    let should_generate_title = {
         let mut manager = state.chat_session_manager.lock().unwrap();
         if let Some(session) = manager.get_active_session_mut() {
+            let is_first_message = session.messages.is_empty();
             session.add_message(ChatMessage::user(input.clone()));
-        }
 
+            // Auto-generate title from first message if session has default title
+            if is_first_message && (session.title == "New Chat" || session.title.starts_with("Session ")) {
+                let new_title = generate_session_title_from_message(&input);
+                session.update_title(new_title);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    // Persist session immediately after adding user message (improves reliability on early errors)
+    {
+        let manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session() {
+            let storage = state.storage.lock().unwrap();
+            let _ = storage.save_chat_session(session);
+        }
+    }
+
+
+    // Save session if title was updated
+    if should_generate_title {
+        let manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session() {
+            let storage = state.storage.lock().unwrap();
+            let _ = storage.save_chat_session(session);
+        }
     }
 
     // Emit start log for agentic workflow
@@ -1442,8 +1535,41 @@ async fn process_command_agentic(
         }
     };
 
-    let agent_response = workflow.execute(&agent_context).await
-        .map_err(|e| format!("Agentic workflow failed: {}", e))?;
+    let agent_response = match workflow.execute(&agent_context).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Emit error log for agentic workflow failure
+            emit_log(
+                &window,
+                "error",
+                "agent_activity",
+                &format!("Agentic workflow failed: {}", e),
+                Some("AgenticWorkflow"),
+                Some("Execute"),
+                Some("error"),
+                session_id_for_logs.clone(),
+                None,
+            );
+
+            // Append assistant error message to chat and persist
+            {
+                let mut manager = state.chat_session_manager.lock().unwrap();
+                if let Some(session) = manager.get_active_session_mut() {
+                    session.add_message(ChatMessage::assistant(
+                        format!("Agentic workflow failed: {}", e),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ));
+                    let storage = state.storage.lock().unwrap();
+                    let _ = storage.save_chat_session(session);
+                }
+            }
+
+            return Err(format!("Agentic workflow failed: {}", e));
+        }
+    };
 
     // Emit metrics snapshot and warnings if any
     if let Some(m) = agent_response.metrics.as_ref() {
@@ -1659,6 +1785,7 @@ pub fn run() {
             set_active_session,
             delete_session,
             clear_all_sessions,
+            update_session_title,
             get_workflow_metrics,
             get_metrics_summary,
             clear_metrics
