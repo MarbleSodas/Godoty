@@ -63,7 +63,7 @@ impl Storage {
         self.save_config_to_file()
     }
 
-    fn get_config_dir() -> Result<PathBuf> {
+    pub fn get_config_dir() -> Result<PathBuf> {
         let mut path = dirs::config_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
         path.push("godoty");

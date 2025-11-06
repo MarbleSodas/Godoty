@@ -11,6 +11,12 @@ mod context_engine;
 mod tscn_utils;
 mod vision_processor;
 mod tutorial_processor;
+mod knowledge_base;
+mod knowledge_manager;
+mod agent;
+mod metrics;
+mod guardrails;
+mod strands_agent;
 
 use websocket::WebSocketClient;
 use ai::AIProcessor;
@@ -18,6 +24,9 @@ use storage::Storage;
 use project_indexer::{ProjectIndexer, ProjectIndex};
 use chat_session::{ChatSessionManager, ChatMessage, ContextSnapshot};
 use context_engine::ContextEngine;
+use knowledge_manager::KnowledgeManager;
+use agent::AgenticWorkflow;
+use metrics::MetricsStore;
 
 #[derive(Clone)]
 struct AppState {
@@ -28,6 +37,9 @@ struct AppState {
     storage: Arc<Mutex<Storage>>,
     project_index: Arc<Mutex<Option<ProjectIndex>>>,
     godot_project_path: Arc<Mutex<Option<String>>>,
+    knowledge_manager: Arc<Mutex<Option<KnowledgeManager>>>,
+    agentic_workflow: Arc<Mutex<Option<AgenticWorkflow>>>,
+    metrics_store: Arc<Mutex<Option<MetricsStore>>>,
 }
 
 impl Default for AppState {
@@ -48,7 +60,10 @@ impl Default for AppState {
             chat_session_manager: Arc::new(Mutex::new(session_manager)),
             storage: Arc::new(Mutex::new(storage)),
             project_index: Arc::new(Mutex::new(None)),
+            knowledge_manager: Arc::new(Mutex::new(None)),
+            agentic_workflow: Arc::new(Mutex::new(None)),
             godot_project_path: Arc::new(Mutex::new(project_path)),
+            metrics_store: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -1006,6 +1021,286 @@ async fn clear_all_sessions(state: State<'_, AppState>) -> Result<String, String
     Ok("All sessions cleared".to_string())
 }
 
+/// Initialize knowledge bases
+#[tauri::command]
+async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String, String> {
+    let api_key = {
+        let storage = state.storage.lock().unwrap();
+        storage.get_api_key().ok_or("API key not configured")?
+    };
+
+    // Get storage directory
+    let storage_dir = storage::Storage::get_config_dir()
+        .map_err(|e| format!("Failed to get config dir: {}", e))?;
+
+    // Initialize knowledge manager
+    let km = KnowledgeManager::new(&api_key, storage_dir.clone());
+    km.initialize().await
+        .map_err(|e| format!("Failed to initialize knowledge bases: {}", e))?;
+
+    // Store in state
+    {
+        let mut knowledge_manager = state.knowledge_manager.lock().unwrap();
+        *knowledge_manager = Some(km);
+    }
+
+    // Initialize metrics store
+    let metrics_store = MetricsStore::new(storage_dir.clone());
+    {
+        let mut store = state.metrics_store.lock().unwrap();
+        *store = Some(metrics_store.clone());
+    }
+
+    // Initialize agentic workflow with metrics
+    {
+        let mut agentic_workflow = state.agentic_workflow.lock().unwrap();
+        *agentic_workflow = Some(AgenticWorkflow::new(&api_key).with_metrics_store(metrics_store));
+    }
+
+    Ok("Knowledge bases initialized successfully".to_string())
+}
+
+/// Process command using agentic workflow
+#[tauri::command]
+async fn process_command_agentic(
+    input: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    // Get API key
+    let api_key = {
+        let storage = state.storage.lock().unwrap();
+        storage.get_api_key().ok_or("API key not configured")?
+    };
+
+    // Get Godot project path
+    let project_path = {
+        let path = state.godot_project_path.lock().unwrap();
+        path.clone().ok_or("Godot project path not set. Please set it in settings.")?
+    };
+
+    // Ensure knowledge bases are initialized
+    let km_exists = {
+        let km = state.knowledge_manager.lock().unwrap();
+        km.is_some()
+    };
+
+    if !km_exists {
+        // Initialize knowledge bases
+        let storage_dir = storage::Storage::get_config_dir()
+            .map_err(|e| format!("Failed to get config dir: {}", e))?;
+        let km = KnowledgeManager::new(&api_key, storage_dir);
+        km.initialize().await
+            .map_err(|e| format!("Failed to initialize knowledge bases: {}", e))?;
+
+        let mut knowledge_manager = state.knowledge_manager.lock().unwrap();
+        *knowledge_manager = Some(km);
+    }
+
+    // Ensure metrics store is initialized
+    let metrics_exists = {
+        let store = state.metrics_store.lock().unwrap();
+        store.is_some()
+    };
+
+    if !metrics_exists {
+        let storage_dir = storage::Storage::get_config_dir()
+            .map_err(|e| format!("Failed to get config dir: {}", e))?;
+        let metrics_store = MetricsStore::new(storage_dir);
+        let mut store = state.metrics_store.lock().unwrap();
+        *store = Some(metrics_store);
+    }
+
+    // Ensure agentic workflow is initialized
+    let workflow_exists = {
+        let workflow = state.agentic_workflow.lock().unwrap();
+        workflow.is_some()
+    };
+
+    if !workflow_exists {
+        let metrics_store = {
+            let store = state.metrics_store.lock().unwrap();
+            store.clone().ok_or("Metrics store not initialized")?
+        };
+        let mut agentic_workflow = state.agentic_workflow.lock().unwrap();
+        *agentic_workflow = Some(AgenticWorkflow::new(&api_key).with_metrics_store(metrics_store));
+    }
+
+    // Ensure we have an active chat session
+    let session_exists = {
+        let manager = state.chat_session_manager.lock().unwrap();
+        manager.get_active_session().is_some()
+    };
+
+    if !session_exists {
+        let mut manager = state.chat_session_manager.lock().unwrap();
+        manager.create_session(Some("Agentic Session".to_string()), Some(project_path.clone()));
+    }
+
+    // Add user message to session
+    {
+        let mut manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session_mut() {
+            session.add_message(ChatMessage::user(input.clone()));
+        }
+    }
+
+    // Get project index
+    let project_index = {
+        let cached_index = state.project_index.lock().unwrap();
+        if let Some(index) = cached_index.as_ref() {
+            index.clone()
+        } else {
+            drop(cached_index);
+            let indexer = ProjectIndexer::new(&project_path);
+            let index = indexer.index_project()
+                .map_err(|e| format!("Failed to index project: {}", e))?;
+
+            let mut cached_index = state.project_index.lock().unwrap();
+            *cached_index = Some(index.clone());
+            index
+        }
+    };
+
+    // Get chat history
+    let chat_history = {
+        let manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session() {
+            session.build_accumulated_context()
+        } else {
+            String::new()
+        }
+    };
+
+    // Get knowledge bases
+    let (plugin_kb, docs_kb) = {
+        let km = state.knowledge_manager.lock().unwrap();
+        let km_ref = km.as_ref().ok_or("Knowledge manager not initialized")?;
+        (km_ref.get_plugin_kb(), km_ref.get_docs_kb())
+    };
+
+    // Create agent context
+    let agent_context = agent::AgentContext {
+        user_input: input.clone(),
+        project_index,
+        chat_history,
+        plugin_kb,
+        docs_kb,
+    };
+
+    // Execute agentic workflow
+    let workflow = {
+        let workflow_guard = state.agentic_workflow.lock().unwrap();
+        match workflow_guard.as_ref() {
+            Some(w) => w.clone(),
+            None => return Err("Agentic workflow not initialized".to_string()),
+        }
+    };
+
+    let agent_response = workflow.execute(&agent_context).await
+        .map_err(|e| format!("Agentic workflow failed: {}", e))?;
+
+    // Execute commands
+    let client = {
+        let ws_client = state.ws_client.lock().unwrap();
+        ws_client.as_ref().ok_or("Not connected to Godot")?.clone()
+    };
+
+    let mut results = Vec::new();
+    for (idx, cmd) in agent_response.commands.iter().enumerate() {
+        println!("Executing command {}: {}", idx + 1, serde_json::to_string(cmd).unwrap_or_default());
+
+        let result = client.send_command(cmd).await
+            .map_err(|e| format!("Failed to send command: {}", e))?;
+
+        results.push(result);
+    }
+
+    // Add assistant message to session with thoughts
+    {
+        let mut manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session_mut() {
+            let response_text = format!(
+                "Executed {} commands.\n\nPlan:\n{}\n\nThoughts:\n{}",
+                agent_response.commands.len(),
+                agent_response.plan.reasoning,
+                agent_response.thoughts.iter()
+                    .map(|t| format!("Step {}: {}", t.step, t.thought))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            session.add_message(ChatMessage::assistant(
+                response_text,
+                Some(agent_response.thoughts.iter().map(|t| chat_session::ThoughtStep {
+                    step_number: t.step,
+                    description: t.thought.clone(),
+                    reasoning: t.action.clone().unwrap_or_default(),
+                    timestamp: now,
+                }).collect()),
+                None,
+                None,
+                None,
+            ));
+        }
+    }
+
+    // Save session
+    {
+        let manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session() {
+            let storage = state.storage.lock().unwrap();
+            let _ = storage.save_chat_session(session);
+        }
+    }
+
+    Ok(format!("Agentic workflow completed: {} commands executed", results.len()))
+}
+
+/// Get all workflow metrics
+#[tauri::command]
+async fn get_workflow_metrics(state: State<'_, AppState>) -> Result<String, String> {
+    let metrics_store = {
+        let store = state.metrics_store.lock().unwrap();
+        store.clone().ok_or("Metrics store not initialized")?
+    };
+
+    let all_metrics = metrics_store.get_all_metrics().await;
+    serde_json::to_string(&all_metrics)
+        .map_err(|e| format!("Failed to serialize metrics: {}", e))
+}
+
+/// Get metrics summary
+#[tauri::command]
+async fn get_metrics_summary(state: State<'_, AppState>) -> Result<String, String> {
+    let metrics_store = {
+        let store = state.metrics_store.lock().unwrap();
+        store.clone().ok_or("Metrics store not initialized")?
+    };
+
+    let summary = metrics_store.get_summary().await;
+    serde_json::to_string(&summary)
+        .map_err(|e| format!("Failed to serialize summary: {}", e))
+}
+
+/// Clear all metrics
+#[tauri::command]
+async fn clear_metrics(state: State<'_, AppState>) -> Result<String, String> {
+    // Clear by creating a new store
+    let storage_dir = storage::Storage::get_config_dir()
+        .map_err(|e| format!("Failed to get config dir: {}", e))?;
+    let new_store = MetricsStore::new(storage_dir);
+
+    let mut store = state.metrics_store.lock().unwrap();
+    *store = Some(new_store);
+
+    Ok("Metrics cleared".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1014,6 +1309,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             connect_to_godot,
             process_command,
+            process_command_agentic,
+            initialize_knowledge_bases,
             get_api_key,
             save_api_key,
             set_godot_project_path,
@@ -1026,7 +1323,10 @@ pub fn run() {
             get_all_sessions,
             set_active_session,
             delete_session,
-            clear_all_sessions
+            clear_all_sessions,
+            get_workflow_metrics,
+            get_metrics_summary,
+            clear_metrics
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
