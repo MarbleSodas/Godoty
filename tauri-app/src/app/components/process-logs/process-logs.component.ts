@@ -24,6 +24,7 @@ export class ProcessLogsComponent implements OnDestroy {
   showWarning = true;
   showError = true;
 
+  showDebug = true;
   private sub?: Subscription;
 
   constructor(private logs: ProcessLogService) {
@@ -43,6 +44,7 @@ export class ProcessLogsComponent implements OnDestroy {
 
   levelIcon(level: LogLevel): string {
     switch (level) {
+      case 'debug': return '🐞';
       case 'info': return 'ℹ️';
       case 'warning': return '⚠️';
       case 'error': return '❌';
@@ -66,6 +68,7 @@ export class ProcessLogsComponent implements OnDestroy {
 
   applyFilters(): void {
     const allowedLevels = new Set<LogLevel>([
+      ...(this.showDebug ? ['debug'] as LogLevel[] : []),
       ...(this.showInfo ? ['info'] as LogLevel[] : []),
       ...(this.showWarning ? ['warning'] as LogLevel[] : []),
       ...(this.showError ? ['error'] as LogLevel[] : []),

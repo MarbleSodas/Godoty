@@ -1218,6 +1218,7 @@ async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String
 
 /// Process command using agentic workflow
 #[tauri::command]
+#[tracing::instrument(skip(window, state, input))]
 async fn process_command_agentic(
     window: tauri::Window,
     input: String,
@@ -1242,6 +1243,19 @@ async fn process_command_agentic(
     };
 
     if !km_exists {
+        // Log knowledge base initialization if not present
+        emit_log(
+            &window,
+            "debug",
+            "agent_activity",
+            "Initializing knowledge bases",
+            Some("System"),
+            Some("Bootstrap"),
+            Some("processing"),
+            None,
+            None
+        );
+
         // Initialize knowledge bases
         let storage_dir = storage::Storage::get_config_dir()
             .map_err(|e| format!("Failed to get config dir: {}", e))?;
@@ -1251,6 +1265,19 @@ async fn process_command_agentic(
 
         let mut knowledge_manager = state.knowledge_manager.lock().unwrap();
         *knowledge_manager = Some(km);
+
+        emit_log(
+            &window,
+            "info",
+            "agent_activity",
+            "Knowledge bases initialized",
+            Some("System"),
+            Some("Bootstrap"),
+            Some("completed"),
+            None,
+            None
+        );
+
     }
 
     // Ensure metrics store is initialized
@@ -1262,9 +1289,31 @@ async fn process_command_agentic(
     if !metrics_exists {
         let storage_dir = storage::Storage::get_config_dir()
             .map_err(|e| format!("Failed to get config dir: {}", e))?;
+        emit_log(
+            &window,
+            "debug",
+            "agent_activity",
+            "Initializing metrics store",
+            Some("System"),
+            Some("Bootstrap"),
+            Some("processing"),
+            None,
+            None
+        );
         let metrics_store = MetricsStore::new(storage_dir);
         let mut store = state.metrics_store.lock().unwrap();
         *store = Some(metrics_store);
+        emit_log(
+            &window,
+            "info",
+            "agent_activity",
+            "Metrics store ready",
+            Some("System"),
+            Some("Bootstrap"),
+            Some("completed"),
+            None,
+            None
+        );
     }
 
     // Ensure agentic workflow is initialized
@@ -1274,12 +1323,34 @@ async fn process_command_agentic(
     };
 
     if !workflow_exists {
+        emit_log(
+            &window,
+            "debug",
+            "agent_activity",
+            "Initializing agentic workflow",
+            Some("System"),
+            Some("Bootstrap"),
+            Some("processing"),
+            None,
+            None
+        );
         let metrics_store = {
             let store = state.metrics_store.lock().unwrap();
             store.clone().ok_or("Metrics store not initialized")?
         };
         let mut agentic_workflow = state.agentic_workflow.lock().unwrap();
         *agentic_workflow = Some(AgenticWorkflow::new(&api_key).with_metrics_store(metrics_store));
+        emit_log(
+            &window,
+            "info",
+            "agent_activity",
+            "Agentic workflow ready",
+            Some("System"),
+            Some("Bootstrap"),
+            Some("completed"),
+            None,
+            None
+        );
     }
 
     // Ensure we have an active chat session
@@ -1374,6 +1445,41 @@ async fn process_command_agentic(
     let agent_response = workflow.execute(&agent_context).await
         .map_err(|e| format!("Agentic workflow failed: {}", e))?;
 
+    // Emit metrics snapshot and warnings if any
+    if let Some(m) = agent_response.metrics.as_ref() {
+        emit_log(
+            &window,
+            "debug",
+            "agent_activity",
+            "Metrics snapshot",
+            Some("Metrics"),
+            Some("AgenticWorkflow"),
+            Some("processing"),
+            session_id_for_logs.clone(),
+            Some(json!({
+                "total_time_ms": m.total_time_ms,
+                "total_tokens": m.total_tokens,
+                "commands_generated": m.commands_generated,
+                "commands_validated": m.commands_validated,
+                "validation_warnings": m.validation_warnings,
+                "validation_errors": m.validation_errors,
+                "success": m.success
+            }))
+        );
+        if m.validation_warnings > 0 {
+            emit_log(
+                &window,
+                "warning",
+                "agent_activity",
+                &format!("Validation warnings detected: {}", m.validation_warnings),
+                Some("Validation"),
+                Some("AgenticWorkflow"),
+                Some("warning"),
+                session_id_for_logs.clone(),
+                None
+            );
+        }
+    }
 
     // Emit agentic plan summary
     emit_log(
@@ -1415,6 +1521,20 @@ async fn process_command_agentic(
         let result = client.send_command(cmd).await
             .map_err(|e| format!("Failed to send command: {}", e))?;
 
+        // Log command result
+        let resp_preview = result.to_string().chars().take(300).collect::<String>();
+        let level = if result.get("error").is_some() { "error" } else { "debug" };
+        emit_log(
+            &window,
+            level,
+            "action",
+            &format!("Command {} response", idx + 1),
+            Some("GodotBridge"),
+            Some("Execute"),
+            Some(if level == "error" { "failed" } else { "completed" }),
+            session_id_for_logs.clone(),
+            Some(json!({ "index": idx + 1, "response_preview": resp_preview }))
+        );
         results.push(result);
     }
 
@@ -1480,28 +1600,26 @@ async fn process_command_agentic(
 
 /// Get all workflow metrics
 #[tauri::command]
-async fn get_workflow_metrics(state: State<'_, AppState>) -> Result<String, String> {
+async fn get_workflow_metrics(state: State<'_, AppState>) -> Result<Vec<crate::metrics::WorkflowMetrics>, String> {
     let metrics_store = {
         let store = state.metrics_store.lock().unwrap();
         store.clone().ok_or("Metrics store not initialized")?
     };
 
     let all_metrics = metrics_store.get_all_metrics().await;
-    serde_json::to_string(&all_metrics)
-        .map_err(|e| format!("Failed to serialize metrics: {}", e))
+    Ok(all_metrics)
 }
 
 /// Get metrics summary
 #[tauri::command]
-async fn get_metrics_summary(state: State<'_, AppState>) -> Result<String, String> {
+async fn get_metrics_summary(state: State<'_, AppState>) -> Result<crate::metrics::MetricsSummary, String> {
     let metrics_store = {
         let store = state.metrics_store.lock().unwrap();
         store.clone().ok_or("Metrics store not initialized")?
     };
 
     let summary = metrics_store.get_summary().await;
-    serde_json::to_string(&summary)
-        .map_err(|e| format!("Failed to serialize summary: {}", e))
+    Ok(summary)
 }
 
 /// Clear all metrics

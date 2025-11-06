@@ -64,6 +64,7 @@ impl AgenticWorkflow {
     }
 
     /// Execute the agentic workflow with Strands agents
+    #[tracing::instrument(skip(self, context))]
     pub async fn execute(
         &self,
         context: &AgentContext,
@@ -71,6 +72,10 @@ impl AgenticWorkflow {
         // Initialize metrics
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut metrics = WorkflowMetrics::new(request_id.clone(), context.user_input.clone());
+
+        // Trace start of workflow
+        let input_preview: String = context.user_input.chars().take(120).collect();
+        tracing::info!(%request_id, input_len = context.user_input.len(), input_preview = %input_preview, "Starting agentic workflow");
 
         // Check rate limit
         self.guardrails.check_rate_limit().await?;
@@ -102,6 +107,13 @@ impl AgenticWorkflow {
         metrics.kb_search_time_ms += doc_start.elapsed().as_millis() as u64;
         metrics.documentation_tokens += doc_output.tokens_used;
         metrics.docs_kb_queries += 1;
+
+        tracing::debug!(
+            docs_kb_queries = metrics.docs_kb_queries,
+            documentation_tokens = metrics.documentation_tokens,
+            kb_search_time_ms = metrics.kb_search_time_ms,
+            "Documentation agent completed"
+        );
 
         thoughts.push(AgentThought {
             step: 1,
@@ -136,6 +148,14 @@ impl AgenticWorkflow {
         metrics.docs_kb_queries += plan_output.metadata.get("godot_docs_retrieved")
             .and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
+        tracing::debug!(
+            planning_tokens = metrics.planning_tokens,
+            planning_time_ms = metrics.planning_time_ms,
+            plugin_kb_queries = metrics.plugin_kb_queries,
+            docs_kb_queries = metrics.docs_kb_queries,
+            "Planning agent completed"
+        );
+
         // Parse execution plan
         let plan: ExecutionPlan = serde_json::from_str(&Self::extract_json(&plan_output.content)?)?;
 
@@ -155,6 +175,7 @@ impl AgenticWorkflow {
         for retry in 0..=max_retries {
             iteration += 1;
             self.guardrails.check_iteration_limit(iteration)?;
+            tracing::debug!(attempt = retry + 1, "Code generation attempt starting");
 
             let code_gen_agent = CodeGenerationAgent::new(&self.api_key);
             let code_gen_context = AgentExecutionContext {
@@ -177,6 +198,7 @@ impl AgenticWorkflow {
             // Parse generated commands
             let generated_commands: Vec<Value> = serde_json::from_str(&Self::extract_json(&gen_output.content)?)?;
             metrics.commands_generated = generated_commands.len() as u32;
+            tracing::debug!(attempt = retry + 1, commands_generated = metrics.commands_generated, generation_tokens = metrics.generation_tokens, "Code generation completed");
 
             thoughts.push(AgentThought {
                 step: thoughts.len() + 1,
@@ -196,6 +218,7 @@ impl AgenticWorkflow {
             if !guardrail_validation.valid {
                 metrics.validation_errors += guardrail_validation.errors.len() as u32;
                 metrics.validation_warnings += guardrail_validation.warnings.len() as u32;
+                tracing::warn!(errors = metrics.validation_errors, warnings = metrics.validation_warnings, attempt = retry + 1, "Guardrail validation failed");
 
                 thoughts.push(AgentThought {
                     step: thoughts.len() + 1,
@@ -245,6 +268,7 @@ impl AgenticWorkflow {
 
             metrics.validation_errors += ai_validation.errors.len() as u32;
             metrics.validation_warnings += ai_validation.warnings.len() as u32;
+            tracing::debug!(ai_valid = ai_validation.valid, ai_errors = ai_validation.errors.len(), ai_warnings = ai_validation.warnings.len(), "AI validation completed");
 
             thoughts.push(AgentThought {
                 step: thoughts.len() + 1,
@@ -286,6 +310,7 @@ impl AgenticWorkflow {
 
         // Finalize metrics
         metrics.finalize(true, None);
+        tracing::info!(total_tokens = metrics.total_tokens, commands_generated = metrics.commands_generated, commands_validated = metrics.commands_validated, retry_attempts = metrics.retry_attempts, "Agentic workflow completed successfully");
 
         // Save metrics if store is available
         if let Some(store) = &self.metrics_store {

@@ -1,0 +1,52 @@
+<div class="metrics-panel">
+  <h2>📈 Metrics</h2>
+  <div class="summary" *ngIf="summary; else noSummary">
+    <div class="card">
+      <div class="label">Total Requests</div>
+      <div class="value">{{ summary.total_requests }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Success Rate</div>
+      <div class="value">{{ summary.success_rate | number:'1.0-0' }}%</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Time</div>
+      <div class="value">{{ ms(summary.avg_time_ms) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Total Tokens</div>
+      <div class="value">{{ summary.total_tokens | number }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Tokens/Req</div>
+      <div class="value">{{ summary.avg_tokens_per_request | number:'1.0-0' }}</div>
+    </div>
+    <div class="actions">
+      <button (click)="clear()">Clear Metrics</button>
+    </div>
+  </div>
+  <ng-template #noSummary>
+    <div class="empty">No metrics yet</div>
+  </ng-template>
+
+  <h3>Recent Runs</h3>
+  <div class="recent" *ngIf="recent.length > 0; else noRecent">
+    <div class="item" *ngFor="let m of recent">
+      <div class="title">
+        <span [class.ok]="m.success" [class.err]="!m.success">{{ m.success ? '✔' : '✖' }}</span>
+        <span class="input">{{ m.user_input }}</span>
+      </div>
+      <div class="row">
+        <div>Time: <strong>{{ ms(m.total_time_ms) }}</strong></div>
+        <div>Tokens: <strong>{{ m.total_tokens }}</strong></div>
+        <div>Cmds: <strong>{{ m.commands_generated }}</strong></div>
+        <div>Warn: <strong>{{ m.validation_warnings }}</strong></div>
+        <div>Errors: <strong>{{ m.validation_errors }}</strong></div>
+      </div>
+    </div>
+  </div>
+  <ng-template #noRecent>
+    <div class="empty">Run the agent to see recent metrics</div>
+  </ng-template>
+</div>
+

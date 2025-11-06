@@ -1,5 +1,6 @@
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { RouterOutlet, RouterLink } from '@angular/router';
 import { invoke } from '@tauri-apps/api/core';
 import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus } from './models/command.model';
 import { ProcessLogService } from './services/process-log.service';
@@ -7,16 +8,22 @@ import { StatusPanelComponent } from './components/status-panel/status-panel.com
 import { SettingsPanelComponent } from './components/settings-panel/settings-panel.component';
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
 import { SessionManagerComponent } from './components/session-manager/session-manager.component';
+import { ProcessLogsComponent } from './components/process-logs/process-logs.component';
+import { MetricsPanelComponent } from './components/metrics-panel/metrics-panel.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
   imports: [
     CommonModule,
+    RouterOutlet,
+    RouterLink,
     StatusPanelComponent,
     SettingsPanelComponent,
     ChatViewComponent,
-    SessionManagerComponent
+    SessionManagerComponent,
+    ProcessLogsComponent,
+    MetricsPanelComponent
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css']
@@ -181,7 +188,7 @@ export class AppComponent implements OnInit {
       // Emit client-side log to kick off inline activity stream
       this.logs.add({ level: 'info', category: 'agent_activity', message: 'AI processing started', agent: 'Assistant', status: 'processing', sessionId: this.activeSession?.id || this._tempSessionId || undefined });
 
-      const response = await invoke<string>('process_command', { input });
+      const response = await invoke<string>('process_command_agentic', { input });
 
       // Update status to complete
       this.processingStatus = 'complete';

@@ -1,0 +1,14 @@
+.metrics-panel { padding: 8px; }
+.summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.card { background: #1f1f1f; border: 1px solid #333; border-radius: 6px; padding: 8px; }
+.card .label { font-size: 12px; color: #aaa; }
+.card .value { font-size: 18px; font-weight: 600; }
+.actions { grid-column: 1 / -1; text-align: right; }
+.recent { display: flex; flex-direction: column; gap: 8px; }
+.item { border: 1px solid #333; border-radius: 6px; padding: 8px; }
+.title { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+.title .ok { color: #3cb371; }
+.title .err { color: #ff4d4f; }
+.title .input { color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60ch; }
+.row { display: flex; gap: 16px; color: #bbb; }
+.empty { color: #777; padding: 8px; text-align: center; }

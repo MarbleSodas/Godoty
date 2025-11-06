@@ -4,6 +4,7 @@
       <h1>🎮 Godoty AI Assistant</h1>
     </div>
     <div class="header-controls">
+      <a routerLink="/debug" class="debug-link" title="Developer Debug Dashboard">🛠️ Debug</a>
       <app-status-panel [status]="connectionStatus"></app-status-panel>
     </div>
   </header>
@@ -37,7 +38,11 @@
         (saveProjectPath)="handleSaveProjectPath($event)"
         (reconnect)="connectToGodot()"
       ></app-settings-panel>
+
+      <app-metrics-panel></app-metrics-panel>
+      <app-process-logs></app-process-logs>
     </div>
   </main>
+  <router-outlet></router-outlet>
 </div>
 

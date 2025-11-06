@@ -2,6 +2,7 @@
   <div class="logs-header">
     <div class="title">📜 Activity Logs</div>
     <div class="filters">
+      <label><input type="checkbox" [(ngModel)]="showDebug" (change)="applyFilters()"> Debug</label>
       <label><input type="checkbox" [(ngModel)]="showInfo" (change)="applyFilters()"> Info</label>
       <label><input type="checkbox" [(ngModel)]="showWarning" (change)="applyFilters()"> Warning</label>
       <label><input type="checkbox" [(ngModel)]="showError" (change)="applyFilters()"> Error</label>

@@ -1,4 +1,4 @@
-export type LogLevel = 'info' | 'warning' | 'error';
+export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
 export type LogCategory = 'agent_activity' | 'information_flow' | 'action';
 
 export interface ProcessLogEntry {
