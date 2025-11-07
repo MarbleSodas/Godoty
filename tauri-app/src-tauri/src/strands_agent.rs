@@ -298,6 +298,343 @@ Respond with a JSON object:
     }
 }
 
+/// GDScript Generation Agent - Generates contextually appropriate GDScript code
+/// using a multi-source approach: online references, official docs, and project analysis
+pub struct GDScriptAgent {
+    api_key: String,
+    client: Client,
+    model: String,
+}
+
+#[derive(Debug)]
+struct ProjectStyleAnalysis {
+    indentation: String,
+    naming_convention: String,
+    comment_style: String,
+    signal_patterns: Vec<String>,
+    export_patterns: Vec<String>,
+    common_functions: Vec<String>,
+    godot_version: String,
+    file_organization: String,
+}
+
+impl GDScriptAgent {
+    pub fn new(api_key: &str) -> Self {
+        Self {
+            api_key: api_key.to_string(),
+            client: Client::new(),
+            model: "qwen/qwen3-coder:free".to_string(),
+        }
+    }
+
+    /// Fetch online GDScript examples and best practices
+    async fn fetch_online_references(&self, query: &str, node_type: Option<&str>) -> Result<String> {
+        let search_query = if let Some(nt) = node_type {
+            format!("Godot 4 GDScript {} {} examples best practices", nt, query)
+        } else {
+            format!("Godot 4 GDScript {} examples best practices", query)
+        };
+
+        // Use web search to find current best practices
+        // Note: This would integrate with the web-search tool
+        // For now, we'll construct a focused query for the LLM
+        let online_context = format!(
+            "Search Query: {}\nNote: Look for modern Godot 4.x patterns and community best practices",
+            search_query
+        );
+
+        Ok(online_context)
+    }
+
+    /// Query official Godot documentation for node type and GDScript features
+    async fn fetch_official_docs(&self, node_type: Option<&str>, docs_kb: &crate::knowledge_base::KnowledgeBase) -> Result<String> {
+        let query = if let Some(nt) = node_type {
+            format!("{} node API methods signals properties GDScript", nt)
+        } else {
+            String::from("GDScript syntax features built-in methods")
+        };
+
+        let docs = docs_kb.search(&query, 5).await?;
+
+        let docs_content = docs.iter()
+            .map(|d| format!("## {}\n{}", d.id, d.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        Ok(if docs_content.is_empty() {
+            String::from("No specific documentation found. Use Godot 4.x standard practices.")
+        } else {
+            format!("Official Godot Documentation:\n{}", docs_content)
+        })
+    }
+
+    /// Comprehensive analysis of existing project scripts
+    fn analyze_project_integration(&self, project_context: &str) -> ProjectStyleAnalysis {
+        let mut indentation = String::from("\t"); // Default to tabs
+        let mut naming_convention = String::from("snake_case");
+        let mut comment_style = String::from("# ");
+        let mut signal_patterns = Vec::new();
+        let mut export_patterns = Vec::new();
+        let mut common_functions = Vec::new();
+        let mut godot_version = String::from("4.x");
+        let mut file_organization = String::from("res://scripts/");
+
+        // Detect indentation style
+        let mut tab_count = 0;
+        let mut space_count = 0;
+        for line in project_context.lines() {
+            if line.starts_with('\t') {
+                tab_count += 1;
+            } else if line.starts_with("    ") {
+                space_count += 1;
+            }
+        }
+        if space_count > tab_count {
+            indentation = String::from("    ");
+        }
+
+        // Extract signal patterns
+        for line in project_context.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("signal ") {
+                signal_patterns.push(trimmed.to_string());
+            }
+            if trimmed.starts_with("@export") {
+                export_patterns.push(trimmed.to_string());
+            }
+            if trimmed.starts_with("func _") {
+                if let Some(func_name) = trimmed.split('(').next() {
+                    common_functions.push(func_name.to_string());
+                }
+            }
+        }
+
+        // Detect Godot version from syntax
+        if project_context.contains("@export") || project_context.contains("@onready") {
+            godot_version = String::from("4.x");
+        } else if project_context.contains("export var") || project_context.contains("onready var") {
+            godot_version = String::from("3.x");
+        }
+
+        // Detect file organization patterns
+        if project_context.contains("res://scripts/") {
+            file_organization = String::from("res://scripts/");
+        } else if project_context.contains("res://src/") {
+            file_organization = String::from("res://src/");
+        }
+
+        ProjectStyleAnalysis {
+            indentation,
+            naming_convention,
+            comment_style,
+            signal_patterns,
+            export_patterns,
+            common_functions,
+            godot_version,
+            file_organization,
+        }
+    }
+
+    /// Extract node type from user request or project context
+    fn extract_target_node_type(&self, user_input: &str, project_context: &str) -> Option<String> {
+        // Common Godot node types
+        let node_types = vec![
+            "CharacterBody2D", "CharacterBody3D", "Area2D", "Area3D",
+            "RigidBody2D", "RigidBody3D", "Sprite2D", "Sprite3D",
+            "Node2D", "Node3D", "Control", "CanvasLayer",
+            "AnimationPlayer", "Timer", "Camera2D", "Camera3D",
+            "StaticBody2D", "StaticBody3D", "CollisionShape2D", "CollisionShape3D",
+            "Label", "Button", "TextureRect", "Panel",
+        ];
+
+        // Check user input first
+        for node_type in &node_types {
+            if user_input.contains(node_type) {
+                return Some(node_type.to_string());
+            }
+        }
+
+        // Check project context for node type hints
+        for node_type in &node_types {
+            if project_context.contains(node_type) {
+                return Some(node_type.to_string());
+            }
+        }
+
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl StrandsAgent for GDScriptAgent {
+    async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
+        let start_time = std::time::Instant::now();
+
+        // STEP 1: Extract target node type
+        let target_node_type = self.extract_target_node_type(
+            &context.user_input,
+            &context.project_context
+        );
+
+        // STEP 2: Fetch online references and best practices
+        let online_refs = self.fetch_online_references(
+            &context.user_input,
+            target_node_type.as_deref()
+        ).await?;
+
+        // STEP 3: Query official Godot documentation
+        let official_docs = self.fetch_official_docs(
+            target_node_type.as_deref(),
+            &context.docs_kb
+        ).await?;
+
+        // STEP 4: Analyze project integration requirements
+        let project_style = self.analyze_project_integration(&context.project_context);
+
+        // Build comprehensive context from all sources
+        let node_type_section = if let Some(ref nt) = target_node_type {
+            format!("Target Node Type: {}\n", nt)
+        } else {
+            String::from("Node type not specified - infer from context\n")
+        };
+
+        let style_guide = format!(
+            r#"Project Style Guide (MUST FOLLOW):
+- Indentation: {}
+- Naming Convention: {}
+- Comment Style: {}
+- Godot Version: {}
+- File Organization: {}
+- Signal Patterns: {}
+- Export Patterns: {}
+- Common Lifecycle Methods: {}
+"#,
+            project_style.indentation,
+            project_style.naming_convention,
+            project_style.comment_style,
+            project_style.godot_version,
+            project_style.file_organization,
+            if project_style.signal_patterns.is_empty() {
+                "No signals found - use standard Godot 4.x syntax"
+            } else {
+                &project_style.signal_patterns.join(", ")
+            },
+            if project_style.export_patterns.is_empty() {
+                "No exports found - use @export syntax for Godot 4.x"
+            } else {
+                &project_style.export_patterns.join(", ")
+            },
+            if project_style.common_functions.is_empty() {
+                "_ready, _process, _physics_process"
+            } else {
+                &project_style.common_functions.join(", ")
+            }
+        );
+
+        let system_prompt = format!(r#"You are an expert GDScript code generation specialist for Godot.
+
+Your task is to generate high-quality, production-ready GDScript code by synthesizing information from multiple authoritative sources.
+
+{}
+
+=== SOURCE 1: ONLINE REFERENCES & BEST PRACTICES ===
+{}
+
+=== SOURCE 2: OFFICIAL GODOT DOCUMENTATION ===
+{}
+
+=== SOURCE 3: PROJECT INTEGRATION ANALYSIS ===
+{}
+
+Current Project Context:
+{}
+
+User Request:
+{}
+
+SYNTHESIS GUIDELINES:
+1. **Style Consistency**: STRICTLY match the project's existing coding style (indentation, naming, comments)
+2. **Best Practices**: Incorporate modern Godot 4.x best practices from online references
+3. **API Accuracy**: Use correct node APIs and methods from official documentation
+4. **Project Integration**: Ensure the generated code integrates seamlessly with existing scripts
+5. **Version Compatibility**: Use syntax appropriate for the detected Godot version ({})
+6. **File Organization**: Follow the project's file organization pattern for script paths
+7. **Signal & Export Patterns**: Match existing patterns for signals and exported variables
+8. **Error Handling**: Include appropriate error handling consistent with project style
+
+CODE GENERATION REQUIREMENTS:
+- Extend the correct node type (infer from context if not specified)
+- Include all necessary lifecycle methods (_ready, _process, _physics_process as appropriate)
+- Add @export variables for configurable parameters (Godot 4.x) or export var (Godot 3.x)
+- Define signals for important events
+- Add clear, helpful comments explaining functionality
+- Use proper type hints for variables and function parameters
+- Include error checking where appropriate
+- Follow the project's indentation style exactly
+
+Respond with a JSON object:
+{{
+  "script_content": "extends NodeType\n\n# Your generated GDScript code here",
+  "node_type": "The node type this script is for",
+  "script_path": "Suggested file path following project organization",
+  "description": "Brief description of what the script does",
+  "integration_notes": "Any notes about how this integrates with existing project code"
+}}
+
+STRICT OUTPUT RULES:
+- Respond ONLY with a valid JSON object (no prose before/after)
+- Ensure all strings properly escape special characters (use \\n for newlines, \\t for tabs)
+- No comments or trailing commas in the JSON
+- The script_content must be a valid GDScript string with proper escaping
+- Use the exact indentation style from the project analysis
+"#,
+            node_type_section,
+            online_refs,
+            official_docs,
+            style_guide,
+            context.project_context,
+            context.user_input,
+            project_style.godot_version
+        );
+
+        let response = call_llm(
+            &self.client,
+            &self.api_key,
+            &self.model,
+            &system_prompt,
+            &context.user_input,
+        ).await?;
+
+        let execution_time_ms = start_time.elapsed().as_millis() as u64;
+        let tokens_used = ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
+
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("godot_version".to_string(), Value::String(project_style.godot_version.clone()));
+        metadata.insert("indentation_style".to_string(), Value::String(
+            if project_style.indentation == "\t" { "tabs".to_string() } else { "spaces".to_string() }
+        ));
+        if let Some(nt) = target_node_type {
+            metadata.insert("target_node_type".to_string(), Value::String(nt));
+        }
+        metadata.insert("sources_used".to_string(), Value::String("online_refs,official_docs,project_analysis".to_string()));
+
+        Ok(AgentOutput {
+            content: response,
+            tokens_used,
+            execution_time_ms,
+            metadata,
+        })
+    }
+
+    fn get_name(&self) -> &str {
+        "GDScriptAgent"
+    }
+
+    fn get_model(&self) -> &str {
+        &self.model
+    }
+}
+
 /// Documentation Agent - Queries Official Godot Documentation
 pub struct DocumentationAgent {
     api_key: String,

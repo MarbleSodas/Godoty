@@ -174,7 +174,7 @@ Functions: func function_name(param: Type) -> ReturnType:"#),
             let mut metadata = HashMap::new();
             metadata.insert("type".to_string(), "documentation".to_string());
             metadata.insert("source".to_string(), "godot_official".to_string());
-            
+
             self.docs_kb.add_document(id.to_string(), content.to_string(), metadata).await?;
         }
 

@@ -8,7 +8,7 @@ use crate::metrics::{WorkflowMetrics, MetricsStore};
 use crate::guardrails::{Guardrails, GuardrailConfig, ValidationResult};
 use crate::strands_agent::{
     StrandsAgent, PlanningAgent, CodeGenerationAgent, ValidationAgent,
-    DocumentationAgent, AgentExecutionContext,
+    DocumentationAgent, GDScriptAgent, AgentExecutionContext,
 };
 
 /// Represents a thought or reasoning step in the agent's decision-making process
