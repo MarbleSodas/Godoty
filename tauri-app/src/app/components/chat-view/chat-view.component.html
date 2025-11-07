@@ -34,13 +34,13 @@
   <div *ngIf="session" class="flex flex-col flex-1 min-h-0 overflow-hidden">
     <!-- Messages Container -->
     <div class="flex-1 overflow-y-auto overflow-x-hidden p-6 scroll-smooth min-h-0" #messagesContainer (scroll)="onScroll()">
-      <div *ngIf="session.messages.length === 0" class="flex flex-col items-center justify-center h-full gap-4">
+      <div *ngIf="filteredMessages(session).length === 0" class="flex flex-col items-center justify-center h-full gap-4">
         <div class="text-5xl opacity-40 animate-sparkle">✨</div>
         <p class="text-white/50 text-base m-0">No messages yet. Start the conversation!</p>
       </div>
 
       <app-chat-message
-        *ngFor="let message of session.messages; trackBy: trackByMessageId"
+        *ngFor="let message of filteredMessages(session); trackBy: trackByMessageId"
         [message]="message"
         [showThoughts]="true"
       ></app-chat-message>

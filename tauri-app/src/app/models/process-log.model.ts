@@ -1,5 +1,5 @@
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
-export type LogCategory = 'agent_activity' | 'information_flow' | 'action';
+export type LogCategory = 'agent_activity' | 'information_flow' | 'action' | 'message_update' | 'chat_event';
 
 export interface ProcessLogEntry {
   id: string;
@@ -9,9 +9,11 @@ export interface ProcessLogEntry {
   message: string; // Plain-language summary
   agent?: string; // Agent name/identifier
   task?: string; // Current task/action being performed
+  actionType?: string; // e.g., "File Read", "API Call", "Message Update"
   status?: 'idle' | 'processing' | 'waiting' | 'completed' | 'error';
   sessionId?: string; // Optional association to a chat session
-  data?: any; // Optional structured details (input/output, tool results, etc.)
+  details?: any; // Structured details for display
+  data?: any; // Optional structured details (legacy/back-compat)
 }
 
 export interface ProcessLogGroup {

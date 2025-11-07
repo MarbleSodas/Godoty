@@ -1,4 +1,4 @@
-import { Component, Input, OnDestroy } from '@angular/core';
+import { Component, Input, OnDestroy, OnChanges, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ProcessLogService } from '../../services/process-log.service';
@@ -12,7 +12,7 @@ import { Subscription } from 'rxjs';
   templateUrl: './process-logs.component.html',
   styleUrls: ['./process-logs.component.css']
 })
-export class ProcessLogsComponent implements OnDestroy {
+export class ProcessLogsComponent implements OnDestroy, OnChanges {
   @Input() sessionId?: string | null;
 
   entries: ProcessLogEntry[] = [];
@@ -37,6 +37,12 @@ export class ProcessLogsComponent implements OnDestroy {
   ngOnDestroy(): void {
     this.sub?.unsubscribe();
   }
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['sessionId']) {
+      this.applyFilters();
+    }
+  }
+
 
   toggleExpand(id: string): void {
     this.expandedId = this.expandedId === id ? null : id;

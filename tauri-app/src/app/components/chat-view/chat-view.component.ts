@@ -99,6 +99,12 @@ export class ChatViewComponent implements OnChanges, AfterViewChecked, OnDestroy
     return new Date(timestamp * 1000).toLocaleTimeString();
   }
 
+  filteredMessages(session: ChatSession | null): ChatMessage[] {
+    if (!session || !session.messages) return [];
+    const sid = session.id;
+    return session.messages.filter(m => !m.sessionId || m.sessionId === sid);
+  }
+
   trackByMessageId(index: number, msg: ChatMessage): string {
     return msg.id;
   }

@@ -44,7 +44,7 @@
         <div class="text-xs text-white/60 mb-1 truncate">{{ getSessionPreview(session) }}</div>
         <div class="flex gap-3 text-xs text-white/50">
           <span>{{ formatDate(session.updated_at) }}</span>
-          <span>{{ session.messages.length }} msgs</span>
+          <span>{{ getFilteredCount(session) }} msgs</span>
         </div>
       </div>
       <button

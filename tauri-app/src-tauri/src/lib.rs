@@ -23,7 +23,7 @@ use websocket::WebSocketClient;
 use ai::AIProcessor;
 use storage::Storage;
 use project_indexer::{ProjectIndexer, ProjectIndex};
-use chat_session::{ChatSessionManager, ChatMessage, ContextSnapshot};
+use chat_session::{ChatSessionManager, ChatMessage, ContextSnapshot, MessageRole};
 use context_engine::ContextEngine;
 use knowledge_manager::KnowledgeManager;
 use agent::AgenticWorkflow;
@@ -1240,6 +1240,54 @@ async fn update_session_title(
     Ok("Session title updated".to_string())
 }
 
+// Append a system message to a specific session and persist it.
+#[tauri::command]
+fn append_system_message(
+    state: State<'_, AppState>,
+    session_id: String,
+    id: String,
+    content: String,
+    timestamp: Option<u64>,
+) -> Result<String, String> {
+    let mut manager = state.chat_session_manager.lock().unwrap();
+
+    // Find the target session without switching the active session
+    let session = manager
+        .get_session_mut(&session_id)
+        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+    // De-dup: if a message with the same id already exists, do nothing
+    if session.messages.iter().any(|m| m.id == id) {
+        return Ok("duplicate_ignored".to_string());
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let msg = ChatMessage {
+        id,
+        role: MessageRole::System,
+        content,
+        timestamp: timestamp.unwrap_or(now),
+        thought_process: None,
+        context_used: None,
+        visual_snapshot_b64: None,
+        visual_snapshot_meta: None,
+    };
+
+    session.add_message(msg);
+
+    // Persist the updated session
+    let storage = state.storage.lock().unwrap();
+    storage
+        .save_chat_session(session)
+        .map_err(|e| format!("Failed to save session: {}", e))?;
+
+    Ok("ok".to_string())
+}
+
 /// Initialize knowledge bases
 #[tauri::command]
 async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String, String> {
@@ -1786,6 +1834,7 @@ pub fn run() {
             delete_session,
             clear_all_sessions,
             update_session_title,
+            append_system_message,
             get_workflow_metrics,
             get_metrics_summary,
             clear_metrics

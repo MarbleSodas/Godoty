@@ -26,8 +26,10 @@ export class ProcessLogService {
           message: payload?.message || 'Event',
           agent: payload?.agent,
           task: payload?.task,
+          actionType: (payload as any)?.actionType || (payload as any)?.data?.actionType,
           status: payload?.status,
           sessionId: payload?.sessionId,
+          details: (payload as any)?.details || (payload as any)?.data,
           data: payload?.data,
         };
         this.zone.run(() => this.append(entry));

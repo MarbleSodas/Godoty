@@ -57,11 +57,16 @@ export class SessionManagerComponent {
   }
 
   getSessionPreview(session: ChatSession): string {
-    if (session.messages.length === 0) {
+    const msgs = (session.messages || []).filter(m => !m.sessionId || m.sessionId === session.id);
+    if (msgs.length === 0) {
       return 'No messages yet';
     }
-    const lastMessage = session.messages[session.messages.length - 1];
+    const lastMessage = msgs[msgs.length - 1];
     return lastMessage.content.substring(0, 60) + (lastMessage.content.length > 60 ? '...' : '');
+  }
+
+  getFilteredCount(session: ChatSession): number {
+    return (session.messages || []).filter(m => !m.sessionId || m.sessionId === session.id).length;
   }
 
   trackBySessionId(_index: number, s: ChatSession): string {

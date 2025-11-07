@@ -4,6 +4,8 @@ import { RouterOutlet, RouterLink } from '@angular/router';
 import { invoke } from '@tauri-apps/api/core';
 import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus } from './models/command.model';
 import { ProcessLogService } from './services/process-log.service';
+import { ProcessLogEntry } from './models/process-log.model';
+
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
 import { SettingsPanelComponent } from './components/settings-panel/settings-panel.component';
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
@@ -41,6 +43,45 @@ export class AppComponent implements OnInit {
 
   // Processing state
   isProcessing: boolean = false;
+  // Inline chat logging helpers
+  private logChatUpdate(
+    actionType: string,
+    details: any,
+    status: 'idle' | 'processing' | 'waiting' | 'completed' | 'error' = 'processing',
+    message?: string
+  ): void {
+    this.logs.add({
+      level: 'info',
+      category: 'message_update',
+      message: message || actionType,
+      actionType,
+      status,
+      sessionId: this.activeSession?.id || this._tempSessionId || undefined,
+      data: details,
+      details,
+    } as any);
+  }
+
+  // Merge ephemeral inline system log messages into the latest server session
+  private mergeInlineSystemLogs(session: ChatSession): ChatSession {
+    if (!this.activeSession) return session;
+    const targetId = session.id;
+    const existingSystemLogs = (this.activeSession.messages || []).filter(
+      (m) => m.role === 'system' && (m.id?.startsWith?.('log-') ?? false) && m.sessionId === targetId
+    );
+    if (!existingSystemLogs.length) return session;
+
+    const incomingIds = new Set((session.messages || []).map((m) => m.id));
+    const toAdd = existingSystemLogs.filter((m) => !incomingIds.has(m.id));
+    if (!toAdd.length) return session;
+
+    const merged: ChatSession = {
+      ...session,
+      messages: [...session.messages, ...toAdd].sort((a, b) => a.timestamp - b.timestamp),
+    };
+    return merged;
+  }
+
   processingStatus: MessageStatus | null = null;
 
   ngOnInit(): void {
@@ -97,10 +138,13 @@ export class AppComponent implements OnInit {
     this.isProcessing = true;
     this.processingStatus = 'sending';
 
+    this.logChatUpdate('Status Change', { status: 'sending' }, 'processing', 'Message status updated');
+
     // Create an optimistic user message for instant UI feedback
     const nowSec = Math.floor(Date.now() / 1000);
     const optimisticMessage: ChatMessage = {
       id: `tmp-${nowSec}-${Math.random().toString(36).slice(2, 8)}`,
+      sessionId: this.activeSession?.id || this._tempSessionId || undefined,
       role: 'user',
       content: input,
       timestamp: nowSec,
@@ -140,15 +184,15 @@ export class AppComponent implements OnInit {
         }
       };
       this.activeSession = tempSession;
+    this.logChatUpdate('Message Created', { id: optimisticMessage.id, role: 'user', length: input.length }, 'processing');
+
       this.chatSessions = [tempSession, ...this.chatSessions];
     }
 
     // Stream backend activity logs as inline system chat messages during processing
     const startMs = Date.now();
     const logsSub = this.logs.onEntry().subscribe((entry) => {
-      if (!this.activeSession) return;
       if (entry.timestamp && entry.timestamp < startMs) return; // ignore old entries
-      if (entry.sessionId && this.activeSession.id !== entry.sessionId) return; // different session
 
       const statusMap: Record<string, MessageStatus> = {
         idle: 'thinking',
@@ -162,16 +206,62 @@ export class AppComponent implements OnInit {
       if (entry.agent) parts.push(entry.agent);
       if (entry.task) parts.push(`— ${entry.task}`);
       const bracket = parts.length ? ` [${parts.join(' ')}]` : '';
-      const text = `${(entry.level || 'info').toUpperCase()}${bracket}: ${entry.message}`;
+      const actionStr = (entry as any).actionType ? ` (${(entry as any).actionType})` : '';
+      const details = (entry as any).details || (entry as any).data;
+      const knownKeys = ['path','file','function','url','status','status_code','tool','command','args','durationMs','bytes','line_count'];
+      const detailParts: string[] = [];
+      if (details && typeof details === 'object') {
+        for (const k of knownKeys) {
+          if (k in (details as any)) {
+            const v = (details as any)[k];
+            const sval = typeof v === 'string' ? v : JSON.stringify(v);
+            detailParts.push(`${k}=${sval}`);
+          }
+        }
+      }
+      const extra = detailParts.length ? ` — ${detailParts.join(' ')}` : '';
+      const text = `${(entry.level || 'info').toUpperCase()}${bracket}${actionStr}: ${entry.message}${extra}`;
+
+      // If first real-time log references a real session while we're on a temp session, pivot immediately
+      if (this.activeSession && this._tempSessionId && entry.sessionId && this.activeSession.id === this._tempSessionId && entry.sessionId !== this._tempSessionId) {
+        const realId = entry.sessionId;
+        const migrated: ChatSession = {
+          ...this.activeSession,
+          id: realId,
+          messages: this.activeSession.messages.map(m => (!m.sessionId || m.sessionId === this._tempSessionId ? { ...m, sessionId: realId } : m))
+        };
+        this.activeSession = migrated;
+        this.chatSessions = this.chatSessions.map(s => s.id === this._tempSessionId ? migrated : (s.id === realId ? migrated : s));
+        this._tempSessionId = null;
+      }
+
+      // If the log belongs to another session (not temp pivot), persist it to backend but don't render in current view
+      if (this.activeSession && entry.sessionId && this.activeSession.id !== entry.sessionId) {
+        const persistTs = Math.floor(((entry.timestamp as number) || Date.now()) / 1000);
+        const persistId = `log-${entry.id}`;
+        void invoke('append_system_message', { sessionId: entry.sessionId, id: persistId, content: text, timestamp: persistTs }).catch(() => {});
+        return;
+      }
+
+      // Determine the sessionId for this message (prefer the active session after any pivot)
+      const sid = this.activeSession?.id || entry.sessionId || undefined;
 
       const msg: ChatMessage = {
         id: `log-${entry.id}`,
+        sessionId: sid,
         role: 'system',
         content: text,
         timestamp: Math.floor(((entry.timestamp as number) || Date.now()) / 1000),
         status: statusMap[(entry.status as string) || 'processing'] || 'thinking',
         isStreaming: false
       };
+
+      // Avoid duplicate UI entries
+      if (this.activeSession && this.activeSession.messages.some(m => m.id === msg.id)) {
+        return;
+      }
+
+      if (!this.activeSession) return;
 
       const updated: ChatSession = {
         ...this.activeSession,
@@ -180,15 +270,22 @@ export class AppComponent implements OnInit {
       };
       this.activeSession = updated;
       this.chatSessions = this.chatSessions.map(s => s.id === updated.id ? { ...s, messages: updated.messages, updated_at: updated.updated_at } : s);
+
+      // Persist the system message to backend for durability across reloads
+      void invoke('append_system_message', { sessionId: sid, id: msg.id, content: msg.content, timestamp: msg.timestamp }).catch(() => {});
     });
 
     try {
       // Update status to thinking before backend call to keep UI lively
       this.processingStatus = 'thinking';
+      this.logChatUpdate('Status Change', { status: 'thinking' }, 'processing', 'Message status updated');
+
       // Emit client-side log to kick off inline activity stream
       this.logs.add({ level: 'info', category: 'agent_activity', message: 'AI processing started', agent: 'Assistant', status: 'processing', sessionId: this.activeSession?.id || this._tempSessionId || undefined });
 
       const response = await invoke<string>('process_command_agentic', { input });
+
+      this.logChatUpdate('Status Change', { status: 'complete' }, 'completed', 'Message status updated');
 
       // Update status to complete
       this.processingStatus = 'complete';
@@ -224,11 +321,14 @@ export class AppComponent implements OnInit {
           // Update the matching session entry with the freshly loaded active session
           const real = this.activeSession;
           this.chatSessions = this.chatSessions.map(s => (s.id === real.id ? real : s));
+
         }
       }
     } catch (error) {
       this.processingStatus = 'error';
       this.logs.add({ level: 'error', category: 'agent_activity', message: 'AI processing failed', agent: 'Assistant', status: 'error', sessionId: this.activeSession?.id || this._tempSessionId || undefined, data: { error: String(error) } });
+      this.logChatUpdate('Status Change', { status: 'error' }, 'error', 'Message status updated');
+
 
       this.commands = this.commands.map(cmd =>
         cmd.id === command.id ? { ...cmd, status: 'error', response: String(error) } : cmd
@@ -253,6 +353,8 @@ export class AppComponent implements OnInit {
       // Clear processing state immediately (no artificial delay)
       this.isProcessing = false;
       this.processingStatus = null;
+      this.logChatUpdate('Status Change', { status: 'idle' }, 'idle', 'Message status updated');
+
     }
   }
 
@@ -279,6 +381,8 @@ export class AppComponent implements OnInit {
     try {
       const sessions = await invoke<ChatSession[]>('get_all_sessions');
       this.chatSessions = sessions;
+      this.logChatUpdate('Session List Updated', { count: sessions.length }, 'completed', 'Chat sessions updated');
+
       await this.loadActiveSession();
     } catch (error) {
       console.error('Failed to load chat sessions:', error);
@@ -288,8 +392,16 @@ export class AppComponent implements OnInit {
 
   async loadActiveSession(): Promise<void> {
     try {
-      this.activeSession = await invoke<ChatSession>('get_active_session');
+      const session = await invoke<ChatSession>('get_active_session');
+      if (session) {
+        const merged = this.mergeInlineSystemLogs(session);
+        this.activeSession = merged;
+      } else {
+        this.activeSession = null;
+      }
     } catch (error) {
+      // No active session is fine; suppress logging here
+
       // No active session is fine
       this.activeSession = null;
     }
@@ -298,6 +410,8 @@ export class AppComponent implements OnInit {
   async handleCreateSession(title: string): Promise<void> {
     try {
       await invoke('create_chat_session', { title });
+      this.logChatUpdate('Session Created', { title }, 'completed', 'Chat session created');
+
       await this.loadChatSessions();
     } catch (error) {
       console.error('Failed to create session:', error);
@@ -307,6 +421,8 @@ export class AppComponent implements OnInit {
   async handleSelectSession(sessionId: string): Promise<void> {
     try {
       await invoke('set_active_session', { sessionId });
+      this.logChatUpdate('Session Selected', { sessionId }, 'completed', 'Active session changed');
+
       await this.loadActiveSession();
     } catch (error) {
       console.error('Failed to select session:', error);
@@ -316,6 +432,8 @@ export class AppComponent implements OnInit {
   async handleDeleteSession(sessionId: string): Promise<void> {
     try {
       await invoke('delete_session', { sessionId });
+      this.logChatUpdate('Session Deleted', { sessionId }, 'completed', 'Chat session deleted');
+
       await this.loadChatSessions();
     } catch (error) {
       console.error('Failed to delete session:', error);
@@ -323,6 +441,8 @@ export class AppComponent implements OnInit {
   }
 
   async handleClearAllSessions(): Promise<void> {
+      this.logChatUpdate('All Sessions Cleared', {}, 'completed', 'All chat sessions cleared');
+
     try {
       await invoke('clear_all_sessions');
       await this.loadChatSessions();

@@ -308,6 +308,11 @@ impl ChatSessionManager {
             self.active_session_id = Some(session.id.clone());
         }
     }
+
+    /// Get a mutable reference to a session by ID (without changing active session)
+    pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut ChatSession> {
+        self.sessions.iter_mut().find(|s| s.id == session_id)
+    }
 }
 
 impl Default for ChatSessionManager {

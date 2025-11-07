@@ -33,6 +33,7 @@ export interface ProcessStatus {
 // Chat Session Models
 export interface ChatMessage {
   id: string;
+  sessionId?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;

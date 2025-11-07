@@ -48,10 +48,11 @@ export class ChatSelectorComponent {
   }
 
   getSessionPreview(session: ChatSession): string {
-    if (session.messages.length === 0) {
+    const msgs = (session.messages || []).filter(m => !m.sessionId || m.sessionId === session.id);
+    if (msgs.length === 0) {
       return 'No messages yet';
     }
-    const lastMessage = session.messages[session.messages.length - 1];
+    const lastMessage = msgs[msgs.length - 1];
     const preview = lastMessage.content.substring(0, 50);
     return preview.length < lastMessage.content.length ? `${preview}...` : preview;
   }

@@ -40,7 +40,7 @@
       ></app-settings-panel>
 
       <app-metrics-panel></app-metrics-panel>
-      <app-process-logs></app-process-logs>
+      <app-process-logs [sessionId]="activeSession?.id"></app-process-logs>
     </div>
   </main>
   <router-outlet></router-outlet>
