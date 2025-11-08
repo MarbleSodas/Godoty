@@ -1,0 +1,18 @@
+/* Agent Config Component - Migrated to Tailwind CSS */
+/* Using Tailwind utilities in the template */
+
+/* Custom styles for select dropdowns to match dark theme */
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%23ffffff' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+  background-position: right 0.5rem center;
+  background-repeat: no-repeat;
+  background-size: 1.5em 1.5em;
+  padding-right: 2.5rem;
+  appearance: none;
+}
+
+select option {
+  background-color: #1a1a1a;
+  color: white;
+}
+

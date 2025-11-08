@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
-use std::time::{SystemTime, Duration};
 
 /// Configuration for workflow guardrails
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,7 +77,7 @@ pub struct Guardrails {
 #[derive(Debug, Clone)]
 struct RequestRecord {
     timestamp: SystemTime,
-    tokens_used: u32,
+    _tokens_used: u32,
 }
 
 impl Guardrails {
@@ -116,7 +116,7 @@ impl Guardrails {
         let mut history = self.request_history.write().await;
         history.push(RequestRecord {
             timestamp: SystemTime::now(),
-            tokens_used,
+            _tokens_used: tokens_used,
         });
     }
 
@@ -170,12 +170,12 @@ impl Guardrails {
         for (idx, cmd) in commands.iter().enumerate() {
             if let Some(action) = cmd.get("action").and_then(|v| v.as_str()) {
                 // Check if action is allowed
-                if !self.config.allowed_command_types.contains(&action.to_string()) {
-                    errors.push(format!(
-                        "Command {}: Invalid action '{}'",
-                        idx + 1,
-                        action
-                    ));
+                if !self
+                    .config
+                    .allowed_command_types
+                    .contains(&action.to_string())
+                {
+                    errors.push(format!("Command {}: Invalid action '{}'", idx + 1, action));
                 }
 
                 // Validate command structure based on action
@@ -202,57 +202,97 @@ impl Guardrails {
         match action {
             // Scene/node creation
             "create_node" => {
-                if cmd.get("type").is_none() { return Err(anyhow!("Missing required field 'type'")); }
-                if cmd.get("name").is_none() { return Err(anyhow!("Missing required field 'name'")); }
+                if cmd.get("type").is_none() {
+                    return Err(anyhow!("Missing required field 'type'"));
+                }
+                if cmd.get("name").is_none() {
+                    return Err(anyhow!("Missing required field 'name'"));
+                }
             }
             "create_scene" => {
-                if cmd.get("name").is_none() { return Err(anyhow!("Missing required field 'name'")); }
-                if cmd.get("root_type").is_none() { return Err(anyhow!("Missing required field 'root_type'")); }
+                if cmd.get("name").is_none() {
+                    return Err(anyhow!("Missing required field 'name'"));
+                }
+                if cmd.get("root_type").is_none() {
+                    return Err(anyhow!("Missing required field 'root_type'"));
+                }
             }
             // Modification/deletion
             "modify_node" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
-                if cmd.get("properties").is_none() { return Err(anyhow!("Missing required field 'properties'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
+                if cmd.get("properties").is_none() {
+                    return Err(anyhow!("Missing required field 'properties'"));
+                }
             }
             "delete_node" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
             }
             // Scripts
             "attach_script" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
-                if cmd.get("script_content").is_none() { return Err(anyhow!("Missing required field 'script_content'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
+                if cmd.get("script_content").is_none() {
+                    return Err(anyhow!("Missing required field 'script_content'"));
+                }
             }
             // Editor actions / selection
             "open_scene" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
             }
             "select_nodes" => {
-                if cmd.get("paths").is_none() { return Err(anyhow!("Missing required field 'paths'")); }
+                if cmd.get("paths").is_none() {
+                    return Err(anyhow!("Missing required field 'paths'"));
+                }
             }
             "focus_node" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
             }
             // Structure editing
             "duplicate_node" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
             }
             "reparent_node" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
-                if cmd.get("new_parent").is_none() { return Err(anyhow!("Missing required field 'new_parent'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
+                if cmd.get("new_parent").is_none() {
+                    return Err(anyhow!("Missing required field 'new_parent'"));
+                }
             }
             "rename_node" => {
-                if cmd.get("path").is_none() { return Err(anyhow!("Missing required field 'path'")); }
-                if cmd.get("new_name").is_none() { return Err(anyhow!("Missing required field 'new_name'")); }
+                if cmd.get("path").is_none() {
+                    return Err(anyhow!("Missing required field 'path'"));
+                }
+                if cmd.get("new_name").is_none() {
+                    return Err(anyhow!("Missing required field 'new_name'"));
+                }
             }
             // Search
             "search_nodes_by_type" => {
-                if cmd.get("type").is_none() { return Err(anyhow!("Missing required field 'type'")); }
+                if cmd.get("type").is_none() {
+                    return Err(anyhow!("Missing required field 'type'"));
+                }
             }
             "search_nodes_by_name" => {
-                if cmd.get("name").is_none() { return Err(anyhow!("Missing required field 'name'")); }
+                if cmd.get("name").is_none() {
+                    return Err(anyhow!("Missing required field 'name'"));
+                }
             }
             "search_nodes_by_group" => {
-                if cmd.get("group").is_none() { return Err(anyhow!("Missing required field 'group'")); }
+                if cmd.get("group").is_none() {
+                    return Err(anyhow!("Missing required field 'group'"));
+                }
             }
             // Others either have no additional required fields beyond 'action' or are lenient
             _ => {}
@@ -268,8 +308,6 @@ pub struct ValidationResult {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
 }
-
-
 
 #[cfg(test)]
 mod tests {

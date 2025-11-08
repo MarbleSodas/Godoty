@@ -1,15 +1,19 @@
+use crate::agent::ExecutionPlan;
+use crate::knowledge_base::KnowledgeBase;
+use crate::llm_client::LlmFactory;
+use crate::llm_config::AgentType;
 use anyhow::Result;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use reqwest::Client;
-use crate::knowledge_base::KnowledgeBase;
-use crate::agent::ExecutionPlan;
 
 /// Base trait for all specialized agents
 #[async_trait::async_trait]
 pub trait StrandsAgent: Send + Sync {
     async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput>;
+    #[allow(dead_code)]
     fn get_name(&self) -> &str;
+    #[allow(dead_code)]
     fn get_model(&self) -> &str;
 }
 
@@ -17,12 +21,13 @@ pub trait StrandsAgent: Send + Sync {
 #[derive(Clone)]
 pub struct AgentExecutionContext {
     pub user_input: String,
-    pub chat_history: String,
+    pub _chat_history: String,
     pub project_context: String,
     pub plugin_kb: KnowledgeBase,
     pub docs_kb: KnowledgeBase,
     pub execution_plan: Option<ExecutionPlan>,
     pub previous_output: Option<String>,
+    pub visual_context: Option<String>,
 }
 
 /// Output from agent execution
@@ -39,6 +44,7 @@ pub struct PlanningAgent {
     api_key: String,
     client: Client,
     model: String,
+    llm_factory: Option<LlmFactory>,
 }
 
 impl PlanningAgent {
@@ -47,7 +53,13 @@ impl PlanningAgent {
             api_key: api_key.to_string(),
             client: Client::new(),
             model: "minimax/minimax-m2:free".to_string(),
+            llm_factory: None,
         }
+    }
+
+    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
+        self.llm_factory = llm_factory;
+        self
     }
 }
 
@@ -60,17 +72,27 @@ impl StrandsAgent for PlanningAgent {
         let plugin_docs = context.plugin_kb.search(&context.user_input, 5).await?;
         let godot_docs = context.docs_kb.search(&context.user_input, 5).await?;
 
-        let plugin_context = plugin_docs.iter()
+        let plugin_context = plugin_docs
+            .iter()
             .map(|d| format!("- {}: {}", d.id, d.content))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let docs_context = godot_docs.iter()
+        let docs_context = godot_docs
+            .iter()
             .map(|d| format!("- {}", d.content.chars().take(200).collect::<String>()))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let system_prompt = format!(r#"You are an AI planning agent for Godot game development.
+        // Include visual context if available
+        let visual_section = if let Some(ref visual) = context.visual_context {
+            format!("\n\nVisual Context (UI/Scene Analysis):\n{}\n", visual)
+        } else {
+            String::new()
+        };
+
+        let system_prompt = format!(
+            r#"You are an AI planning agent for Godot game development.
 Your task is to analyze the user's request and create a detailed execution plan.
 
 Available Plugin Commands:
@@ -80,7 +102,7 @@ Relevant Godot Documentation:
 {}
 
 Project Context:
-{}
+{}{}
 
 Create a step-by-step plan to accomplish the user's goal.
 Respond with a JSON object containing:
@@ -100,27 +122,50 @@ STRICT OUTPUT RULES:
 - Ensure all braces/brackets are closed; keep to <= 8 steps.
 
 "#,
-            plugin_context,
-            docs_context,
-            context.project_context
+            plugin_context, docs_context, context.project_context, visual_section
         );
 
-        let response = call_llm(
-            &self.client,
-            &self.api_key,
-            &self.model,
-            &system_prompt,
-            &context.user_input,
-        ).await?;
+        let response = if let Some(factory) = &self.llm_factory {
+            let client = factory.create_client_for_agent(AgentType::Planner)?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = context.user_input.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent = "PlanningAgent",
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation"
+            );
+            client
+                .generate_response_streaming_with_tools(&system_prompt, &context.user_input)
+                .await?
+        } else {
+            call_llm(
+                &self.client,
+                &self.api_key,
+                &self.model,
+                &system_prompt,
+                &context.user_input,
+            )
+            .await?
+        };
 
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
         // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
-        let tokens_used = ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
+        let tokens_used =
+            ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
 
         let mut metadata = serde_json::Map::new();
-        metadata.insert("plugin_docs_retrieved".to_string(), Value::Number(plugin_docs.len().into()));
-        metadata.insert("godot_docs_retrieved".to_string(), Value::Number(godot_docs.len().into()));
+        metadata.insert(
+            "plugin_docs_retrieved".to_string(),
+            Value::Number(plugin_docs.len().into()),
+        );
+        metadata.insert(
+            "godot_docs_retrieved".to_string(),
+            Value::Number(godot_docs.len().into()),
+        );
 
         Ok(AgentOutput {
             content: response,
@@ -144,6 +189,7 @@ pub struct CodeGenerationAgent {
     api_key: String,
     client: Client,
     model: String,
+    llm_factory: Option<LlmFactory>,
 }
 
 impl CodeGenerationAgent {
@@ -152,7 +198,13 @@ impl CodeGenerationAgent {
             api_key: api_key.to_string(),
             client: Client::new(),
             model: "qwen/qwen3-coder:free".to_string(),
+            llm_factory: None,
         }
+    }
+
+    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
+        self.llm_factory = llm_factory;
+        self
     }
 }
 
@@ -161,17 +213,21 @@ impl StrandsAgent for CodeGenerationAgent {
     async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
         let start_time = std::time::Instant::now();
 
-        let plan = context.execution_plan.as_ref()
+        let plan = context
+            .execution_plan
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Execution plan required for code generation"))?;
 
         // Get plugin examples
         let plugin_docs = context.plugin_kb.search(&context.user_input, 5).await?;
-        let plugin_examples = plugin_docs.iter()
+        let plugin_examples = plugin_docs
+            .iter()
             .map(|d| d.content.clone())
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let system_prompt = format!(r#"You are a command generation agent for Godot.
+        let system_prompt = format!(
+            r#"You are a command generation agent for Godot.
 
 Execution Plan:
 {}
@@ -187,16 +243,35 @@ Respond ONLY with the JSON array, no explanations.
             plugin_examples
         );
 
-        let response = call_llm(
-            &self.client,
-            &self.api_key,
-            &self.model,
-            &system_prompt,
-            &context.user_input,
-        ).await?;
+        let response = if let Some(factory) = &self.llm_factory {
+            let client = factory.create_client_for_agent(AgentType::CodeGenerator)?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = context.user_input.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent = "CodeGenerationAgent",
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation"
+            );
+            client
+                .generate_response_streaming_with_tools(&system_prompt, &context.user_input)
+                .await?
+        } else {
+            call_llm(
+                &self.client,
+                &self.api_key,
+                &self.model,
+                &system_prompt,
+                &context.user_input,
+            )
+            .await?
+        };
 
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
-        let tokens_used = ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
+        let tokens_used =
+            ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
 
         Ok(AgentOutput {
             content: response,
@@ -220,6 +295,7 @@ pub struct ValidationAgent {
     api_key: String,
     client: Client,
     model: String,
+    llm_factory: Option<LlmFactory>,
 }
 
 impl ValidationAgent {
@@ -228,7 +304,13 @@ impl ValidationAgent {
             api_key: api_key.to_string(),
             client: Client::new(),
             model: "minimax/minimax-m2:free".to_string(),
+            llm_factory: None,
         }
+    }
+
+    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
+        self.llm_factory = llm_factory;
+        self
     }
 }
 
@@ -239,15 +321,19 @@ impl StrandsAgent for ValidationAgent {
 
         // Get all plugin documentation for validation
         let all_plugin_docs = context.plugin_kb.get_all_documents().await;
-        let plugin_schema = all_plugin_docs.iter()
+        let plugin_schema = all_plugin_docs
+            .iter()
             .map(|d| d.content.clone())
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let commands_to_validate = context.previous_output.as_ref()
+        let commands_to_validate = context
+            .previous_output
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No commands to validate"))?;
 
-        let system_prompt = format!(r#"You are a validation agent for Godot commands.
+        let system_prompt = format!(
+            r#"You are a validation agent for Godot commands.
 
 Plugin Command Schema and Examples:
 {}
@@ -270,16 +356,35 @@ Respond with a JSON object:
             plugin_schema
         );
 
-        let response = call_llm(
-            &self.client,
-            &self.api_key,
-            &self.model,
-            &system_prompt,
-            commands_to_validate,
-        ).await?;
+        let response = if let Some(factory) = &self.llm_factory {
+            let client = factory.create_client_for_agent(AgentType::Validator)?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = commands_to_validate.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent = "ValidationAgent",
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation"
+            );
+            client
+                .generate_response_streaming_with_tools(&system_prompt, commands_to_validate)
+                .await?
+        } else {
+            call_llm(
+                &self.client,
+                &self.api_key,
+                &self.model,
+                &system_prompt,
+                commands_to_validate,
+            )
+            .await?
+        };
 
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
-        let tokens_used = ((system_prompt.len() + commands_to_validate.len() + response.len()) / 4) as u32;
+        let tokens_used =
+            ((system_prompt.len() + commands_to_validate.len() + response.len()) / 4) as u32;
 
         Ok(AgentOutput {
             content: response,
@@ -303,6 +408,7 @@ pub struct DocumentationAgent {
     api_key: String,
     client: Client,
     model: String,
+    llm_factory: Option<LlmFactory>,
 }
 
 impl DocumentationAgent {
@@ -311,7 +417,13 @@ impl DocumentationAgent {
             api_key: api_key.to_string(),
             client: Client::new(),
             model: "minimax/minimax-m2:free".to_string(),
+            llm_factory: None,
         }
+    }
+
+    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
+        self.llm_factory = llm_factory;
+        self
     }
 }
 
@@ -323,12 +435,14 @@ impl StrandsAgent for DocumentationAgent {
         // Search documentation knowledge base
         let docs = context.docs_kb.search(&context.user_input, 10).await?;
 
-        let docs_content = docs.iter()
+        let docs_content = docs
+            .iter()
             .map(|d| format!("## {}\n{}", d.id, d.content))
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let system_prompt = format!(r#"You are a documentation agent for Godot.
+        let system_prompt = format!(
+            r#"You are a documentation agent for Godot.
 
 Retrieved Documentation:
 {}
@@ -339,19 +453,41 @@ Focus on API usage, best practices, and examples.
             docs_content
         );
 
-        let response = call_llm(
-            &self.client,
-            &self.api_key,
-            &self.model,
-            &system_prompt,
-            &context.user_input,
-        ).await?;
+        let response = if let Some(factory) = &self.llm_factory {
+            let client = factory.create_client_for_agent(AgentType::Documentation)?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = context.user_input.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent = "DocumentationAgent",
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation"
+            );
+            client
+                .generate_response_streaming_with_tools(&system_prompt, &context.user_input)
+                .await?
+        } else {
+            call_llm(
+                &self.client,
+                &self.api_key,
+                &self.model,
+                &system_prompt,
+                &context.user_input,
+            )
+            .await?
+        };
 
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
-        let tokens_used = ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
+        let tokens_used =
+            ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
 
         let mut metadata = serde_json::Map::new();
-        metadata.insert("docs_retrieved".to_string(), Value::Number(docs.len().into()));
+        metadata.insert(
+            "docs_retrieved".to_string(),
+            Value::Number(docs.len().into()),
+        );
 
         Ok(AgentOutput {
             content: response,
@@ -395,11 +531,28 @@ async fn call_llm(
     #[derive(Deserialize)]
     struct ChatResponse {
         choices: Vec<Choice>,
+        #[serde(default)]
+        usage: Option<Usage>,
     }
 
     #[derive(Deserialize)]
     struct Choice {
         message: ChatMessage,
+        #[serde(default)]
+        finish_reason: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Usage {
+        #[allow(dead_code)]
+        #[serde(default)]
+        prompt_tokens: u32,
+        #[allow(dead_code)]
+        #[serde(default)]
+        completion_tokens: u32,
+        #[allow(dead_code)]
+        #[serde(default)]
+        total_tokens: u32,
     }
 
     let request = ChatRequest {
@@ -415,8 +568,19 @@ async fn call_llm(
             },
         ],
         temperature: 0.7,
-        max_tokens: 8192,
+        max_tokens: 16384, // Increased from 8192 to prevent truncation
     };
+
+    let sys_prev = system_prompt.chars().take(200).collect::<String>();
+    let user_prev = user_input.chars().take(200).collect::<String>();
+    tracing::debug!(
+        provider = "OpenRouter",
+        model = %model,
+        endpoint = "https://openrouter.ai/api/v1/chat/completions",
+        system_prompt_preview = %sys_prev,
+        user_input_preview = %user_prev,
+        "Agent LLM invocation (fallback)"
+    );
 
     let response = client
         .post("https://openrouter.ai/api/v1/chat/completions")
@@ -429,13 +593,37 @@ async fn call_llm(
         .await?;
 
     if !response.status().is_success() {
-        return Err(anyhow::anyhow!("LLM API request failed: {}", response.status()));
+        return Err(anyhow::anyhow!(
+            "LLM API request failed: {}",
+            response.status()
+        ));
     }
 
     let response_text = response.text().await?;
-    let chat_response: ChatResponse = serde_json::from_str(&response_text)?;
+    let chat_response: ChatResponse = serde_json::from_str(&response_text).map_err(|e| {
+        let preview = response_text.chars().take(500).collect::<String>();
+        anyhow::anyhow!(
+            "Failed to parse LLM response JSON: {}. Raw preview: {}",
+            e,
+            preview
+        )
+    })?;
 
     if let Some(choice) = chat_response.choices.first() {
+        // Check if response was truncated due to token limit
+        if let Some(ref finish_reason) = choice.finish_reason {
+            if finish_reason == "length" {
+                tracing::warn!(
+                    model = %model,
+                    usage = ?chat_response.usage,
+                    response_len = response_text.len(),
+                    "LLM response was truncated due to max_tokens limit. Consider increasing max_tokens or reducing prompt size."
+                );
+                // Log the full response for debugging
+                tracing::debug!(full_response = %response_text, "Full truncated response");
+            }
+        }
+
         Ok(choice.message.content.clone())
     } else {
         Err(anyhow::anyhow!("No response from LLM"))

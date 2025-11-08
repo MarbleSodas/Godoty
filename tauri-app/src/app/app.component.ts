@@ -2,12 +2,13 @@ import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterOutlet, RouterLink } from '@angular/router';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus } from './models/command.model';
+import { IndexingStatus, IndexingStatusResponse, IndexingStatusEvent } from './models/indexing-status.model';
 import { ProcessLogService } from './services/process-log.service';
 import { ProcessLogEntry } from './models/process-log.model';
 
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
-import { SettingsPanelComponent } from './components/settings-panel/settings-panel.component';
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
 import { SessionManagerComponent } from './components/session-manager/session-manager.component';
 import { ProcessLogsComponent } from './components/process-logs/process-logs.component';
@@ -21,7 +22,6 @@ import { MetricsPanelComponent } from './components/metrics-panel/metrics-panel.
     RouterOutlet,
     RouterLink,
     StatusPanelComponent,
-    SettingsPanelComponent,
     ChatViewComponent,
     SessionManagerComponent,
     ProcessLogsComponent,
@@ -36,6 +36,7 @@ export class AppComponent implements OnInit {
   connectionStatus: ConnectionStatus = 'disconnected';
   apiKey: string = '';
   projectPath: string = '';
+  indexingStatus: IndexingStatus | null = null;
 
   // Chat session management
   chatSessions: ChatSession[] = [];
@@ -87,6 +88,8 @@ export class AppComponent implements OnInit {
   ngOnInit(): void {
     this.loadApiKey();
     this.loadProjectPath();
+    this.loadIndexingStatus();
+    this.listenToIndexingStatusChanges();
     this.connectToGodot();
     this.loadChatSessions();
   }
@@ -104,6 +107,32 @@ export class AppComponent implements OnInit {
       this.projectPath = await invoke<string>('get_godot_project_path');
     } catch (error) {
       console.error('Failed to load project path:', error);
+    }
+  }
+
+  async loadIndexingStatus(): Promise<void> {
+    try {
+      const response = await invoke<IndexingStatusResponse>('get_indexing_status');
+      this.indexingStatus = response.status;
+      if (response.projectPath) {
+        this.projectPath = response.projectPath;
+      }
+    } catch (error) {
+      console.error('Failed to load indexing status:', error);
+    }
+  }
+
+  async listenToIndexingStatusChanges(): Promise<void> {
+    try {
+      await listen<IndexingStatusEvent>('indexing-status-changed', (event) => {
+        console.log('Indexing status changed:', event.payload);
+        this.indexingStatus = event.payload.status;
+        if (event.payload.projectPath) {
+          this.projectPath = event.payload.projectPath;
+        }
+      });
+    } catch (error) {
+      console.error('Failed to listen to indexing status changes:', error);
     }
   }
 
@@ -246,13 +275,17 @@ export class AppComponent implements OnInit {
       // Determine the sessionId for this message (prefer the active session after any pivot)
       const sid = this.activeSession?.id || entry.sessionId || undefined;
 
+      const msgStatus: MessageStatus = (entry.category === 'tool_call' && entry.agent === 'WebSearch' && entry.status === 'started')
+        ? 'searching_web'
+        : (statusMap[(entry.status as string) || 'processing'] || 'thinking');
+
       const msg: ChatMessage = {
         id: `log-${entry.id}`,
         sessionId: sid,
         role: 'system',
         content: text,
         timestamp: Math.floor(((entry.timestamp as number) || Date.now()) / 1000),
-        status: statusMap[(entry.status as string) || 'processing'] || 'thinking',
+        status: msgStatus,
         isStreaming: false
       };
 

@@ -1,8 +1,8 @@
+use crate::chat_session::ChatSession;
+use crate::project_indexer::ProjectIndex;
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use crate::project_indexer::ProjectIndex;
-use crate::chat_session::ChatSession;
 
 // Bundled, high-signal Godot docs used as a fast offline cache
 const BUNDLED_GODOT_DOCS: &str = include_str!("../assets/godot_docs_bundled.md");
@@ -65,8 +65,6 @@ struct Choice {
     message: ApiChatMessage,
 }
 
-
-
 /// Comprehensive context engine that manages all context sources
 #[derive(Clone)]
 pub struct ContextEngine {
@@ -103,7 +101,9 @@ impl ContextEngine {
     /// Proactively fetch a broad slice of Godot docs and cache them for reuse
     pub async fn prefetch_common_godot_docs(&self) -> Result<()> {
         // If already present, skip
-        if self.get_cached_docs().await.is_some() { return Ok(()); }
+        if self.get_cached_docs().await.is_some() {
+            return Ok(());
+        }
 
         // Seed with bundled docs to ensure immediate availability
         {
@@ -115,12 +115,14 @@ impl ContextEngine {
 
         // Optionally enrich/refresh from Context7 using a wide topic query
         let enrichment_query = "nodes scenes Control Node2D CharacterBody2D signals ownership PackedScene NodePath editor tool scripts common pitfalls";
-        let enriched = self.fetch_from_context7(enrichment_query).await.unwrap_or_else(|_| BUNDLED_GODOT_DOCS.to_string());
+        let enriched = self
+            .fetch_from_context7(enrichment_query)
+            .await
+            .unwrap_or_else(|_| BUNDLED_GODOT_DOCS.to_string());
         let mut cache = self.godot_docs_cache.lock().await;
         *cache = Some(enriched);
         Ok(())
     }
-
 
     /// Build comprehensive context from all sources
     pub async fn build_comprehensive_context(
@@ -257,7 +259,10 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
         {
             Ok(resp) => resp,
             Err(e) => {
-                eprintln!("OpenRouter API request error: {}. Falling back to raw input for context query", e);
+                eprintln!(
+                    "OpenRouter API request error: {}. Falling back to raw input for context query",
+                    e
+                );
                 return Ok(user_input.to_string());
             }
         };
@@ -325,10 +330,17 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
                 .split(|c: char| !c.is_alphanumeric() && c != '_')
                 .filter(|t| !t.is_empty())
                 .collect();
-            if let Some(tok) = candidates.iter().find(|t| t.chars().any(|c| c.is_uppercase())) {
+            if let Some(tok) = candidates
+                .iter()
+                .find(|t| t.chars().any(|c| c.is_uppercase()))
+            {
                 return (*tok).to_string();
             }
-            candidates.iter().max_by_key(|t| t.len()).map(|s| s.to_string()).unwrap_or_else(|| "Godot".to_string())
+            candidates
+                .iter()
+                .max_by_key(|t| t.len())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Godot".to_string())
         }
 
         let topic = derive_topic(query);
@@ -349,9 +361,15 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
                     if resp.status().is_success() {
                         if let Ok(body) = resp.text().await {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                                let extracted = v.get("docs").and_then(|x| x.as_str())
+                                let extracted = v
+                                    .get("docs")
+                                    .and_then(|x| x.as_str())
                                     .or_else(|| v.get("content").and_then(|x| x.as_str()))
-                                    .or_else(|| v.get("data").and_then(|d| d.get("content")).and_then(|x| x.as_str()))
+                                    .or_else(|| {
+                                        v.get("data")
+                                            .and_then(|d| d.get("content"))
+                                            .and_then(|x| x.as_str())
+                                    })
                                     .map(|s| s.to_string());
                                 context7_docs = extracted.or_else(|| Some(v.to_string()));
                             } else {
@@ -359,7 +377,10 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
                             }
                         }
                     } else {
-                        eprintln!("Context7 gateway returned non-success status: {}", resp.status());
+                        eprintln!(
+                            "Context7 gateway returned non-success status: {}",
+                            resp.status()
+                        );
                     }
                 }
                 Err(err) => {
@@ -380,9 +401,7 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
 
         let merged = format!(
             "{}\n\n# Context7 Enrichment (Topic: {})\n{}",
-            BUNDLED_GODOT_DOCS,
-            topic,
-            context7_part
+            BUNDLED_GODOT_DOCS, topic, context7_part
         );
 
         Ok(merged)
@@ -487,7 +506,6 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
                     script.functions.len(),
                     script.classes.len()
                 ));
-
             }
         }
 
@@ -513,13 +531,19 @@ pub struct ComprehensiveContext {
     pub tutorial_context: Option<String>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn dummy_index() -> ProjectIndex {
-        ProjectIndex { scenes: vec![], scripts: vec![], resources: vec![], project_path: ".".into(), godot_version: None }
+        ProjectIndex {
+            scenes: vec![],
+            scripts: vec![],
+            resources: vec![],
+            project_path: ".".into(),
+            godot_version: None,
+            godot_executable_path: None,
+        }
     }
 
     #[tokio::test]
@@ -549,4 +573,3 @@ mod tests {
         assert!(formatted.contains("# Current Project Context"));
     }
 }
-

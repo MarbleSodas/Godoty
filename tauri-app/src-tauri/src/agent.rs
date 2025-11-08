@@ -1,15 +1,17 @@
+use crate::guardrails::{GuardrailConfig, Guardrails, ValidationResult};
+use crate::knowledge_base::KnowledgeBase;
+use crate::llm_client::LlmFactory;
+use crate::llm_config::AgentType;
+use crate::metrics::{MetricsStore, WorkflowMetrics};
+use crate::project_indexer::ProjectIndex;
+use crate::strands_agent::{
+    AgentExecutionContext, CodeGenerationAgent, DocumentationAgent, PlanningAgent, StrandsAgent,
+    ValidationAgent,
+};
 use anyhow::Result;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use reqwest::Client;
-use crate::knowledge_base::KnowledgeBase;
-use crate::project_indexer::ProjectIndex;
-use crate::metrics::{WorkflowMetrics, MetricsStore};
-use crate::guardrails::{Guardrails, GuardrailConfig, ValidationResult};
-use crate::strands_agent::{
-    StrandsAgent, PlanningAgent, CodeGenerationAgent, ValidationAgent,
-    DocumentationAgent, AgentExecutionContext,
-};
 
 /// Represents a thought or reasoning step in the agent's decision-making process
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +22,15 @@ pub struct AgentThought {
     pub observation: Option<String>,
 }
 
+/// Visual context data for UI-related tasks
+#[derive(Clone, Debug, Default)]
+pub struct VisualContext {
+    pub _screenshot_base64: Option<String>,
+    pub _screenshot_metadata: Option<Value>,
+    pub visual_analysis: Option<String>,
+    pub is_ui_task: bool,
+}
+
 /// Agent context containing all information needed for decision-making
 #[derive(Clone)]
 pub struct AgentContext {
@@ -28,6 +39,7 @@ pub struct AgentContext {
     pub chat_history: String,
     pub plugin_kb: KnowledgeBase,
     pub docs_kb: KnowledgeBase,
+    pub visual_context: VisualContext,
 }
 
 /// Agentic workflow orchestrator with Strands agents
@@ -37,6 +49,7 @@ pub struct AgenticWorkflow {
     client: Client,
     guardrails: Guardrails,
     metrics_store: Option<MetricsStore>,
+    llm_factory: Option<LlmFactory>,
 }
 
 impl AgenticWorkflow {
@@ -46,15 +59,18 @@ impl AgenticWorkflow {
             client: Client::new(),
             guardrails: Guardrails::with_defaults(),
             metrics_store: None,
+            llm_factory: None,
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_guardrails(api_key: &str, config: GuardrailConfig) -> Self {
         Self {
             api_key: api_key.to_string(),
             client: Client::new(),
             guardrails: Guardrails::new(config),
             metrics_store: None,
+            llm_factory: None,
         }
     }
 
@@ -63,12 +79,79 @@ impl AgenticWorkflow {
         self
     }
 
+    pub fn with_llm_factory(mut self, llm_factory: LlmFactory) -> Self {
+        self.llm_factory = Some(llm_factory);
+        self
+    }
+
+    /// Detect if the user input involves UI/scene modifications
+    pub fn is_ui_task(user_input: &str) -> bool {
+        let input_lower = user_input.to_lowercase();
+
+        // UI-related keywords
+        let ui_keywords = [
+            "ui",
+            "button",
+            "label",
+            "panel",
+            "control",
+            "layout",
+            "scene",
+            "node",
+            "canvas",
+            "viewport",
+            "container",
+            "edit ui",
+            "modify ui",
+            "change ui",
+            "update ui",
+            "edit scene",
+            "modify scene",
+            "change scene",
+            "update scene",
+            "edit button",
+            "modify button",
+            "change button",
+            "update button",
+            "edit layout",
+            "modify layout",
+            "change layout",
+            "update layout",
+            "add button",
+            "add label",
+            "add panel",
+            "add control",
+            "create button",
+            "create label",
+            "create panel",
+            "create control",
+            "remove button",
+            "remove label",
+            "remove panel",
+            "remove control",
+            "delete button",
+            "delete label",
+            "delete panel",
+            "delete control",
+            "position",
+            "size",
+            "anchor",
+            "margin",
+            "theme",
+            "sprite",
+            "texture",
+            "image",
+            "visual",
+        ];
+
+        ui_keywords
+            .iter()
+            .any(|keyword| input_lower.contains(keyword))
+    }
+
     /// Execute the agentic workflow with Strands agents
     #[tracing::instrument(skip(self, context))]
-    pub async fn execute(
-        &self,
-        context: &AgentContext,
-    ) -> Result<AgentResponse> {
+    pub async fn execute(&self, context: &AgentContext) -> Result<AgentResponse> {
         // Initialize metrics
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut metrics = WorkflowMetrics::new(request_id.clone(), context.user_input.clone());
@@ -90,16 +173,29 @@ impl AgenticWorkflow {
             context.project_index.scripts.len()
         );
 
+        // Prepare visual context string for agents
+        let visual_context_str = if context.visual_context.is_ui_task {
+            if let Some(ref analysis) = context.visual_context.visual_analysis {
+                Some(format!("Visual Analysis:\n{}", analysis))
+            } else {
+                Some("Visual context requested but analysis not available".to_string())
+            }
+        } else {
+            None
+        };
+
         // Step 1: Documentation Agent - Retrieve relevant Godot documentation
-        let doc_agent = DocumentationAgent::new(&self.api_key);
+        let doc_agent =
+            DocumentationAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
         let doc_context = AgentExecutionContext {
             user_input: context.user_input.clone(),
-            chat_history: context.chat_history.clone(),
+            _chat_history: context.chat_history.clone(),
             project_context: project_context.clone(),
             plugin_kb: context.plugin_kb.clone(),
             docs_kb: context.docs_kb.clone(),
             execution_plan: None,
             previous_output: None,
+            visual_context: visual_context_str.clone(),
         };
 
         let doc_start = std::time::Instant::now();
@@ -119,8 +215,14 @@ impl AgenticWorkflow {
             step: 1,
             thought: "Retrieved relevant Godot documentation".to_string(),
             action: Some("documentation_retrieval".to_string()),
-            observation: Some(format!("Retrieved {} docs",
-                doc_output.metadata.get("docs_retrieved").and_then(|v| v.as_u64()).unwrap_or(0))),
+            observation: Some(format!(
+                "Retrieved {} docs",
+                doc_output
+                    .metadata
+                    .get("docs_retrieved")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+            )),
         });
         metrics.reasoning_steps += 1;
 
@@ -128,25 +230,33 @@ impl AgenticWorkflow {
         iteration += 1;
         self.guardrails.check_iteration_limit(iteration)?;
 
-        let planning_agent = PlanningAgent::new(&self.api_key);
+        let planning_agent =
+            PlanningAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
         let planning_context = AgentExecutionContext {
             user_input: context.user_input.clone(),
-            chat_history: context.chat_history.clone(),
+            _chat_history: context.chat_history.clone(),
             project_context: project_context.clone(),
             plugin_kb: context.plugin_kb.clone(),
             docs_kb: context.docs_kb.clone(),
             execution_plan: None,
             previous_output: Some(doc_output.content.clone()),
+            visual_context: visual_context_str.clone(),
         };
 
         let plan_start = std::time::Instant::now();
         let plan_output = planning_agent.execute(&planning_context).await?;
         metrics.planning_time_ms = plan_start.elapsed().as_millis() as u64;
         metrics.planning_tokens = plan_output.tokens_used;
-        metrics.plugin_kb_queries += plan_output.metadata.get("plugin_docs_retrieved")
-            .and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        metrics.docs_kb_queries += plan_output.metadata.get("godot_docs_retrieved")
-            .and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        metrics.plugin_kb_queries += plan_output
+            .metadata
+            .get("plugin_docs_retrieved")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        metrics.docs_kb_queries += plan_output
+            .metadata
+            .get("godot_docs_retrieved")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
 
         tracing::debug!(
             planning_tokens = metrics.planning_tokens,
@@ -163,9 +273,28 @@ impl AgenticWorkflow {
 
         // Parse execution plan with salvage/repair
         let plan_raw = Self::extract_json(&plan_output.content)?;
+
+        // Validate JSON completeness before parsing
+        let trimmed_raw = plan_raw.trim();
+        if !trimmed_raw.ends_with('}') && !trimmed_raw.ends_with(']') {
+            tracing::warn!(
+                raw_json_len = plan_raw.len(),
+                last_50_chars = %plan_raw.chars().rev().take(50).collect::<Vec<_>>().iter().rev().collect::<String>(),
+                "Plan JSON appears incomplete (doesn't end with }} or ])"
+            );
+        }
+
         let plan: ExecutionPlan = match serde_json::from_str::<ExecutionPlan>(&plan_raw) {
             Ok(p) => p,
             Err(e1) => {
+                // Log the FULL raw JSON for debugging
+                tracing::error!(
+                    parse_error = %e1,
+                    raw_json_len = plan_raw.len(),
+                    full_raw_json = %plan_raw,
+                    "Failed to parse execution plan JSON"
+                );
+
                 if let Some(trimmed) = Self::trim_to_balanced_json_block(&plan_raw) {
                     match serde_json::from_str::<ExecutionPlan>(&trimmed) {
                         Ok(p2) => p2,
@@ -179,11 +308,17 @@ Return ONLY a valid JSON object with this exact shape (no extra text):
   "estimated_complexity": "low" | "medium" | "high"
 }
 Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                            let repaired = self.call_llm(repair_prompt, &plan_raw).await?;
+                            let repaired = self
+                                .call_llm_with_agent_type(
+                                    repair_prompt,
+                                    &plan_raw,
+                                    Some(AgentType::Planner),
+                                )
+                                .await?;
                             let repaired_json = Self::extract_json(&repaired)?;
                             serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                                let prev = plan_raw.chars().take(500).collect::<String>();
-                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                                tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired JSON");
+                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
                             })?
                         }
                     }
@@ -197,11 +332,17 @@ Return ONLY a valid JSON object with this exact shape (no extra text):
   "estimated_complexity": "low" | "medium" | "high"
 }
 Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                    let repaired = self.call_llm(repair_prompt, &plan_raw).await?;
+                    let repaired = self
+                        .call_llm_with_agent_type(
+                            repair_prompt,
+                            &plan_raw,
+                            Some(AgentType::Planner),
+                        )
+                        .await?;
                     let repaired_json = Self::extract_json(&repaired)?;
                     serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                        let prev = plan_raw.chars().take(500).collect::<String>();
-                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                        tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired JSON (no balanced block)");
+                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
                     })?
                 }
             }
@@ -225,17 +366,22 @@ Ensure all braces/brackets are closed. No comments or trailing commas."#;
             self.guardrails.check_iteration_limit(iteration)?;
             tracing::debug!(attempt = retry + 1, "Code generation attempt starting");
 
-            let code_gen_agent = CodeGenerationAgent::new(&self.api_key);
+            let code_gen_agent =
+                CodeGenerationAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
             let code_gen_context = AgentExecutionContext {
                 user_input: context.user_input.clone(),
-                chat_history: context.chat_history.clone(),
+                _chat_history: context.chat_history.clone(),
                 project_context: project_context.clone(),
                 plugin_kb: context.plugin_kb.clone(),
                 docs_kb: context.docs_kb.clone(),
                 execution_plan: Some(plan.clone()),
                 previous_output: validation_result.as_ref().map(|v| {
-                    format!("Previous validation errors: {:?}\nPlease fix these issues.", v.errors)
+                    format!(
+                        "Previous validation errors: {:?}\nPlease fix these issues.",
+                        v.errors
+                    )
                 }),
+                visual_context: visual_context_str.clone(),
             };
 
             let gen_start = std::time::Instant::now();
@@ -245,10 +391,29 @@ Ensure all braces/brackets are closed. No comments or trailing commas."#;
 
             // Parse generated commands (accept array or single object) with robust salvage
             let gen_raw = Self::extract_json(&gen_output.content)?;
+
+            // Validate JSON completeness before parsing
+            let trimmed_gen = gen_raw.trim();
+            if !trimmed_gen.ends_with('}') && !trimmed_gen.ends_with(']') {
+                tracing::warn!(
+                    raw_json_len = gen_raw.len(),
+                    last_50_chars = %gen_raw.chars().rev().take(50).collect::<Vec<_>>().iter().rev().collect::<String>(),
+                    "Generated commands JSON appears incomplete (doesn't end with }} or ])"
+                );
+            }
+
             // Attempt direct parse
             let gen_val: serde_json::Value = match serde_json::from_str(&gen_raw) {
                 Ok(v) => v,
                 Err(first_err) => {
+                    // Log the FULL raw JSON for debugging
+                    tracing::error!(
+                        parse_error = %first_err,
+                        raw_json_len = gen_raw.len(),
+                        full_raw_json = %gen_raw,
+                        "Failed to parse generated commands JSON"
+                    );
+
                     // Try trimming to a balanced JSON block
                     if let Some(trimmed) = Self::trim_to_balanced_json_block(&gen_raw) {
                         if let Ok(v2) = serde_json::from_str::<serde_json::Value>(&trimmed) {
@@ -263,12 +428,19 @@ Ensure all braces/brackets are closed. No comments or trailing commas."#;
                                     let repair_prompt = r#"You will receive a possibly malformed JSON array of Godoty commands.
 Return ONLY a valid JSON array of command objects (no extra text).
 Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
-                                    let repaired = self.call_llm(repair_prompt, &gen_raw).await?;
+                                    let repaired = self
+                                        .call_llm_with_agent_type(
+                                            repair_prompt,
+                                            &gen_raw,
+                                            Some(AgentType::CodeGenerator),
+                                        )
+                                        .await?;
                                     let repaired_json = Self::extract_json(&repaired)?;
-                                    let repaired_sanitized = sanitize_json_control_chars(&repaired_json);
+                                    let repaired_sanitized =
+                                        sanitize_json_control_chars(&repaired_json);
                                     serde_json::from_str::<serde_json::Value>(&repaired_sanitized).map_err(|e| {
-                                        let preview = gen_raw.chars().take(500).collect::<String>();
-                                        anyhow::anyhow!("Failed to parse generated commands JSON: {}. Raw preview: {}. First error: {}", e, preview, first_err)
+                                        tracing::error!(full_repaired_json = %repaired_sanitized, "Failed to parse repaired commands JSON");
+                                        anyhow::anyhow!("Failed to parse generated commands JSON: {}. First error: {}. See logs for full JSON.", e, first_err)
                                     })?
                                 }
                             }
@@ -279,8 +451,8 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
                         match serde_json::from_str::<serde_json::Value>(&sanitized) {
                             Ok(v3) => v3,
                             Err(e) => {
-                                let preview = gen_raw.chars().take(500).collect::<String>();
-                                return Err(anyhow::anyhow!("Failed to parse generated commands JSON: {}. Raw preview: {}. First error: {}", e, preview, first_err));
+                                tracing::error!(full_sanitized_json = %sanitized, "Failed to parse sanitized commands JSON");
+                                return Err(anyhow::anyhow!("Failed to parse generated commands JSON: {}. First error: {}. See logs for full JSON.", e, first_err));
                             }
                         }
                     }
@@ -289,16 +461,30 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
             let generated_commands: Vec<Value> = match gen_val {
                 serde_json::Value::Array(arr) => arr,
                 serde_json::Value::Object(_) => vec![gen_val],
-                other => return Err(anyhow::anyhow!(format!("Expected JSON array or object for generated commands, got {}", other))),
+                other => {
+                    return Err(anyhow::anyhow!(format!(
+                        "Expected JSON array or object for generated commands, got {}",
+                        other
+                    )))
+                }
             };
             metrics.commands_generated = generated_commands.len() as u32;
-            tracing::debug!(attempt = retry + 1, commands_generated = metrics.commands_generated, generation_tokens = metrics.generation_tokens, "Code generation completed");
+            tracing::debug!(
+                attempt = retry + 1,
+                commands_generated = metrics.commands_generated,
+                generation_tokens = metrics.generation_tokens,
+                "Code generation completed"
+            );
 
             thoughts.push(AgentThought {
                 step: thoughts.len() + 1,
-                thought: format!("Generated {} commands (attempt {})", generated_commands.len(), retry + 1),
+                thought: format!(
+                    "Generated {} commands (attempt {})",
+                    generated_commands.len(),
+                    retry + 1
+                ),
                 action: Some("command_generation".to_string()),
-                observation: Some(format!("Commands ready for validation")),
+                observation: Some("Commands ready for validation".to_string()),
             });
             metrics.reasoning_steps += 1;
 
@@ -312,11 +498,19 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
             if !guardrail_validation.valid {
                 metrics.validation_errors += guardrail_validation.errors.len() as u32;
                 metrics.validation_warnings += guardrail_validation.warnings.len() as u32;
-                tracing::warn!(errors = metrics.validation_errors, warnings = metrics.validation_warnings, attempt = retry + 1, "Guardrail validation failed");
+                tracing::warn!(
+                    errors = metrics.validation_errors,
+                    warnings = metrics.validation_warnings,
+                    attempt = retry + 1,
+                    "Guardrail validation failed"
+                );
 
                 thoughts.push(AgentThought {
                     step: thoughts.len() + 1,
-                    thought: format!("Guardrail validation failed with {} errors", guardrail_validation.errors.len()),
+                    thought: format!(
+                        "Guardrail validation failed with {} errors",
+                        guardrail_validation.errors.len()
+                    ),
                     action: Some("guardrail_validation".to_string()),
                     observation: Some(guardrail_validation.errors.join("; ")),
                 });
@@ -327,21 +521,26 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
                     metrics.retry_attempts += 1;
                     continue;
                 } else {
-                    return Err(anyhow::anyhow!("Validation failed after {} retries: {:?}",
-                        max_retries, guardrail_validation.errors));
+                    return Err(anyhow::anyhow!(
+                        "Validation failed after {} retries: {:?}",
+                        max_retries,
+                        guardrail_validation.errors
+                    ));
                 }
             }
 
             // Then use AI validation agent for deeper validation
-            let validation_agent = ValidationAgent::new(&self.api_key);
+            let validation_agent =
+                ValidationAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
             let validation_context = AgentExecutionContext {
                 user_input: context.user_input.clone(),
-                chat_history: context.chat_history.clone(),
+                _chat_history: context.chat_history.clone(),
                 project_context: project_context.clone(),
                 plugin_kb: context.plugin_kb.clone(),
                 docs_kb: context.docs_kb.clone(),
                 execution_plan: Some(plan.clone()),
                 previous_output: Some(serde_json::to_string(&generated_commands)?),
+                visual_context: visual_context_str.clone(),
             };
 
             let val_start = std::time::Instant::now();
@@ -360,19 +559,36 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
             }
 
             let val_raw = Self::extract_json(&val_output.content)?;
-            let ai_validation: AIValidationResult = serde_json::from_str(&val_raw).map_err(|e| {
-                let preview = if val_raw.len() > 500 { &val_raw[..500] } else { &val_raw };
-                anyhow::anyhow!("Failed to parse validation JSON: {}. Raw preview: {}", e, preview)
-            })?;
+            let ai_validation: AIValidationResult =
+                serde_json::from_str(&val_raw).map_err(|e| {
+                    tracing::error!(
+                        parse_error = %e,
+                        raw_json_len = val_raw.len(),
+                        full_raw_json = %val_raw,
+                        "Failed to parse validation JSON"
+                    );
+                    anyhow::anyhow!(
+                        "Failed to parse validation JSON: {}. See logs for full JSON.",
+                        e
+                    )
+                })?;
 
             metrics.validation_errors += ai_validation.errors.len() as u32;
             metrics.validation_warnings += ai_validation.warnings.len() as u32;
-            tracing::debug!(ai_valid = ai_validation.valid, ai_errors = ai_validation.errors.len(), ai_warnings = ai_validation.warnings.len(), "AI validation completed");
+            tracing::debug!(
+                ai_valid = ai_validation.valid,
+                ai_errors = ai_validation.errors.len(),
+                ai_warnings = ai_validation.warnings.len(),
+                "AI validation completed"
+            );
 
             thoughts.push(AgentThought {
                 step: thoughts.len() + 1,
-                thought: format!("AI validation: {} errors, {} warnings",
-                    ai_validation.errors.len(), ai_validation.warnings.len()),
+                thought: format!(
+                    "AI validation: {} errors, {} warnings",
+                    ai_validation.errors.len(),
+                    ai_validation.warnings.len()
+                ),
                 action: Some("ai_validation".to_string()),
                 observation: Some(if ai_validation.valid {
                     "Commands validated successfully".to_string()
@@ -383,7 +599,9 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
             metrics.reasoning_steps += 1;
 
             if ai_validation.valid {
-                commands = ai_validation.validated_commands.unwrap_or(generated_commands);
+                commands = ai_validation
+                    .validated_commands
+                    .unwrap_or(generated_commands);
                 metrics.commands_validated = commands.len() as u32;
                 break;
             } else if retry < max_retries {
@@ -394,14 +612,19 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
                 });
                 metrics.retry_attempts += 1;
             } else {
-                return Err(anyhow::anyhow!("AI validation failed after {} retries: {:?}",
-                    max_retries, ai_validation.errors));
+                return Err(anyhow::anyhow!(
+                    "AI validation failed after {} retries: {:?}",
+                    max_retries,
+                    ai_validation.errors
+                ));
             }
         }
 
         // Check token budget
-        metrics.total_tokens = metrics.planning_tokens + metrics.generation_tokens +
-            metrics.validation_tokens + metrics.documentation_tokens;
+        metrics.total_tokens = metrics.planning_tokens
+            + metrics.generation_tokens
+            + metrics.validation_tokens
+            + metrics.documentation_tokens;
         self.guardrails.check_token_budget(metrics.total_tokens)?;
 
         // Record request for rate limiting
@@ -409,7 +632,13 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
 
         // Finalize metrics
         metrics.finalize(true, None);
-        tracing::info!(total_tokens = metrics.total_tokens, commands_generated = metrics.commands_generated, commands_validated = metrics.commands_validated, retry_attempts = metrics.retry_attempts, "Agentic workflow completed successfully");
+        tracing::info!(
+            total_tokens = metrics.total_tokens,
+            commands_generated = metrics.commands_generated,
+            commands_validated = metrics.commands_validated,
+            retry_attempts = metrics.retry_attempts,
+            "Agentic workflow completed successfully"
+        );
 
         // Save metrics if store is available
         if let Some(store) = &self.metrics_store {
@@ -434,24 +663,27 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
     }
 
     /// Plan the task by breaking it down into steps
-
+    #[allow(dead_code)]
     async fn plan_task(
         &self,
         context: &AgentContext,
         plugin_knowledge: &[crate::knowledge_base::KnowledgeDocument],
         docs_knowledge: &[crate::knowledge_base::KnowledgeDocument],
     ) -> Result<ExecutionPlan> {
-        let plugin_context = plugin_knowledge.iter()
+        let plugin_context = plugin_knowledge
+            .iter()
             .map(|d| format!("- {}: {}", d.id, d.content))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let docs_context = docs_knowledge.iter()
+        let docs_context = docs_knowledge
+            .iter()
             .map(|d| format!("- {}", d.content.chars().take(200).collect::<String>()))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let system_prompt = format!(r#"You are an AI planning agent for Godot game development.
+        let system_prompt = format!(
+            r#"You are an AI planning agent for Godot game development.
 Your task is to analyze the user's request and create a detailed execution plan.
 
 Available Plugin Commands Context:
@@ -488,13 +720,38 @@ STRICT OUTPUT RULES:
             context.project_index.scripts.len()
         );
 
-        let response = self.call_llm(&system_prompt, &context.user_input).await?;
+        let response = self
+            .call_llm_with_agent_type(
+                &system_prompt,
+                &context.user_input,
+                Some(AgentType::Planner),
+            )
+            .await?;
         // Extract potential JSON from the response (handles code fences and extra text)
         let plan_json = Self::extract_json(&response)?;
+
+        // Validate JSON completeness before parsing
+        let trimmed_plan = plan_json.trim();
+        if !trimmed_plan.ends_with('}') && !trimmed_plan.ends_with(']') {
+            tracing::warn!(
+                raw_json_len = plan_json.len(),
+                last_50_chars = %plan_json.chars().rev().take(50).collect::<Vec<_>>().iter().rev().collect::<String>(),
+                "Plan JSON appears incomplete (doesn't end with }} or ])"
+            );
+        }
+
         // Parse the plan with salvage/repair
         let plan: ExecutionPlan = match serde_json::from_str::<ExecutionPlan>(&plan_json) {
             Ok(p) => p,
             Err(e1) => {
+                // Log the FULL raw JSON for debugging
+                tracing::error!(
+                    parse_error = %e1,
+                    raw_json_len = plan_json.len(),
+                    full_raw_json = %plan_json,
+                    "Failed to parse execution plan JSON in plan_task"
+                );
+
                 if let Some(trimmed) = Self::trim_to_balanced_json_block(&plan_json) {
                     match serde_json::from_str::<ExecutionPlan>(&trimmed) {
                         Ok(p2) => p2,
@@ -507,11 +764,17 @@ Return ONLY a valid JSON object with this exact shape (no extra text):
   "estimated_complexity": "low" | "medium" | "high"
 }
 Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                            let repaired = self.call_llm(repair_prompt, &plan_json).await?;
+                            let repaired = self
+                                .call_llm_with_agent_type(
+                                    repair_prompt,
+                                    &plan_json,
+                                    Some(AgentType::Planner),
+                                )
+                                .await?;
                             let repaired_json = Self::extract_json(&repaired)?;
                             serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                                let prev = plan_json.chars().take(500).collect::<String>();
-                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                                tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired plan JSON in plan_task");
+                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
                             })?
                         }
                     }
@@ -524,11 +787,17 @@ Return ONLY a valid JSON object with this exact shape (no extra text):
   "estimated_complexity": "low" | "medium" | "high"
 }
 Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                    let repaired = self.call_llm(repair_prompt, &plan_json).await?;
+                    let repaired = self
+                        .call_llm_with_agent_type(
+                            repair_prompt,
+                            &plan_json,
+                            Some(AgentType::Planner),
+                        )
+                        .await?;
                     let repaired_json = Self::extract_json(&repaired)?;
                     serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                        let prev = plan_json.chars().take(500).collect::<String>();
-                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Raw preview: {}. Repair error: {}", e1, prev, e3)
+                        tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired plan JSON (no balanced block) in plan_task");
+                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
                     })?
                 }
             }
@@ -538,6 +807,7 @@ Ensure all braces/brackets are closed. No comments or trailing commas."#;
     }
 
     /// Generate commands based on the execution plan
+    #[allow(dead_code)]
     async fn generate_commands(
         &self,
         context: &AgentContext,
@@ -546,14 +816,16 @@ Ensure all braces/brackets are closed. No comments or trailing commas."#;
         _docs_knowledge: &[crate::knowledge_base::KnowledgeDocument],
     ) -> Result<Vec<Value>> {
         // Build comprehensive context for command generation
-        let plugin_examples = plugin_knowledge.iter()
+        let plugin_examples = plugin_knowledge
+            .iter()
             .map(|d| d.content.clone())
             .collect::<Vec<_>>()
             .join("\n\n");
 
         let allowed_actions_list = self.guardrails.config.allowed_command_types.join(", ");
 
-        let system_prompt = format!(r#"You are a command generation agent for Godot.
+        let system_prompt = format!(
+            r#"You are a command generation agent for Godot.
 
 Execution Plan:
 {}
@@ -586,25 +858,91 @@ Respond ONLY with the JSON array, no explanations.
             allowed_actions_list
         );
 
-        let response = self.call_llm(&system_prompt, &context.user_input).await?;
+        let response = self
+            .call_llm_with_agent_type(
+                &system_prompt,
+                &context.user_input,
+                Some(AgentType::CodeGenerator),
+            )
+            .await?;
 
         // Extract and parse commands (accept array or single object)
         let raw = Self::extract_json(&response)?;
+
+        // Validate JSON completeness before parsing
+        let trimmed_raw = raw.trim();
+        if !trimmed_raw.ends_with('}') && !trimmed_raw.ends_with(']') {
+            tracing::warn!(
+                raw_json_len = raw.len(),
+                last_50_chars = %raw.chars().rev().take(50).collect::<Vec<_>>().iter().rev().collect::<String>(),
+                "Commands JSON appears incomplete (doesn't end with }} or ])"
+            );
+        }
+
         let val: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-            let preview = if raw.len() > 500 { &raw[..500] } else { &raw };
-            anyhow::anyhow!("Failed to parse commands JSON: {}. Raw preview: {}", e, preview)
+            tracing::error!(
+                parse_error = %e,
+                raw_json_len = raw.len(),
+                full_raw_json = %raw,
+                "Failed to parse commands JSON in generate_commands"
+            );
+            anyhow::anyhow!(
+                "Failed to parse commands JSON: {}. See logs for full JSON.",
+                e
+            )
         })?;
         let commands: Vec<Value> = match val {
             serde_json::Value::Array(arr) => arr,
             serde_json::Value::Object(_) => vec![val],
-            other => return Err(anyhow::anyhow!(format!("Expected JSON array or object for commands, got {}", other))),
+            other => {
+                return Err(anyhow::anyhow!(format!(
+                    "Expected JSON array or object for commands, got {}",
+                    other
+                )))
+            }
         };
 
         Ok(commands)
     }
 
-    /// Call the LLM API
+    /// Call the LLM API with optional agent type for factory-based routing
+    async fn call_llm_with_agent_type(
+        &self,
+        system_prompt: &str,
+        user_input: &str,
+        agent_type: Option<AgentType>,
+    ) -> Result<String> {
+        // If LlmFactory is configured and agent_type is provided, use it
+        if let (Some(factory), Some(ref agent_type)) = (&self.llm_factory, agent_type) {
+            let client = factory.create_client_for_agent(agent_type.clone())?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = user_input.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent_type = ?agent_type,
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation"
+            );
+            return client
+                .generate_response_streaming_with_tools(system_prompt, user_input)
+                .await;
+        }
+
+        // Fallback to default OpenRouter implementation
+        self.call_llm_default(system_prompt, user_input).await
+    }
+
+    /// Call the LLM API (backward compatibility - uses default model)
+    #[allow(dead_code)]
     async fn call_llm(&self, system_prompt: &str, user_input: &str) -> Result<String> {
+        self.call_llm_with_agent_type(system_prompt, user_input, None)
+            .await
+    }
+
+    /// Default LLM implementation using OpenRouter
+    async fn call_llm_default(&self, system_prompt: &str, user_input: &str) -> Result<String> {
         #[derive(Serialize)]
         struct ChatRequest {
             model: String,
@@ -622,11 +960,28 @@ Respond ONLY with the JSON array, no explanations.
         #[derive(Deserialize)]
         struct ChatResponse {
             choices: Vec<Choice>,
+            #[serde(default)]
+            usage: Option<Usage>,
         }
 
         #[derive(Deserialize)]
         struct Choice {
             message: ChatMessage,
+            #[serde(default)]
+            finish_reason: Option<String>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct Usage {
+            #[allow(dead_code)]
+            #[serde(default)]
+            prompt_tokens: u32,
+            #[allow(dead_code)]
+            #[serde(default)]
+            completion_tokens: u32,
+            #[allow(dead_code)]
+            #[serde(default)]
+            total_tokens: u32,
         }
 
         let request = ChatRequest {
@@ -642,10 +997,23 @@ Respond ONLY with the JSON array, no explanations.
                 },
             ],
             temperature: 0.7,
-            max_tokens: 8192,
+            max_tokens: 16384, // Increased from 8192 to prevent truncation
         };
 
-        let response = self.client
+        let sys_prev = system_prompt.chars().take(200).collect::<String>();
+        let user_prev = user_input.chars().take(200).collect::<String>();
+        tracing::warn!("Using default LLM fallback path; configuration-based factory not applied. Consider configuring AgentLlmConfig and ApiKeyStore.");
+        tracing::debug!(
+            provider = "OpenRouter",
+            model = %"minimax/minimax-m2:free",
+            endpoint = "https://openrouter.ai/api/v1/chat/completions",
+            system_prompt_preview = %sys_prev,
+            user_input_preview = %user_prev,
+            "Agent LLM invocation (fallback)"
+        );
+
+        let response = self
+            .client
             .post("https://openrouter.ai/api/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -656,16 +1024,36 @@ Respond ONLY with the JSON array, no explanations.
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("LLM API request failed: {}", response.status()));
+            return Err(anyhow::anyhow!(
+                "LLM API request failed: {}",
+                response.status()
+            ));
         }
 
         let response_text = response.text().await?;
         let chat_response: ChatResponse = serde_json::from_str(&response_text).map_err(|e| {
-            let preview = response_text.chars().take(200).collect::<String>();
-            anyhow::anyhow!("Failed to parse LLM chat response JSON: {}. Raw preview: {}", e, preview)
+            let preview = response_text.chars().take(500).collect::<String>();
+            anyhow::anyhow!(
+                "Failed to parse LLM chat response JSON: {}. Raw preview: {}",
+                e,
+                preview
+            )
         })?;
 
         if let Some(choice) = chat_response.choices.first() {
+            // Check if response was truncated due to token limit
+            if let Some(ref finish_reason) = choice.finish_reason {
+                if finish_reason == "length" {
+                    tracing::warn!(
+                        usage = ?chat_response.usage,
+                        response_len = response_text.len(),
+                        "LLM response was truncated due to max_tokens limit. Consider increasing max_tokens or reducing prompt size."
+                    );
+                    // Log the full response for debugging
+                    tracing::debug!(full_response = %response_text, "Full truncated response");
+                }
+            }
+
             Ok(choice.message.content.clone())
         } else {
             Err(anyhow::anyhow!("No response from LLM"))
@@ -692,7 +1080,9 @@ Respond ONLY with the JSON array, no explanations.
             if let Some(end_offset) = s[json_start..].find("```") {
                 let json_end = json_start + end_offset;
                 let block = s[json_start..json_end].trim();
-                if !block.is_empty() { return Ok(block.to_string()); }
+                if !block.is_empty() {
+                    return Ok(block.to_string());
+                }
             }
         }
         if let Some(pos) = s.find("```JSON") {
@@ -700,10 +1090,11 @@ Respond ONLY with the JSON array, no explanations.
             if let Some(end_offset) = s[json_start..].find("```") {
                 let json_end = json_start + end_offset;
                 let block = s[json_start..json_end].trim();
-                if !block.is_empty() { return Ok(block.to_string()); }
+                if !block.is_empty() {
+                    return Ok(block.to_string());
+                }
             }
         }
-
 
         // Fallback: first fenced block of any type that looks like JSON
         if let Some(start) = s.find("```") {
@@ -711,8 +1102,8 @@ Respond ONLY with the JSON array, no explanations.
             if let Some(end) = s[first_block_start..].find("```") {
                 let json_end = first_block_start + end;
                 let block = s[first_block_start..json_end].trim();
-                if block.starts_with('{') || block.starts_with('[') {
-                    if !block.is_empty() { return Ok(block.to_string()); }
+                if (block.starts_with('{') || block.starts_with('[')) && !block.is_empty() {
+                    return Ok(block.to_string());
                 }
             }
         }
@@ -722,7 +1113,9 @@ Respond ONLY with the JSON array, no explanations.
             if let Some(array_end) = s.rfind(']') {
                 if array_end > array_start {
                     let candidate = s[array_start..=array_end].trim();
-                    if !candidate.is_empty() { return Ok(candidate.to_string()); }
+                    if !candidate.is_empty() {
+                        return Ok(candidate.to_string());
+                    }
                 }
             }
         }
@@ -730,7 +1123,9 @@ Respond ONLY with the JSON array, no explanations.
             if let Some(obj_end) = s.rfind('}') {
                 if obj_end > obj_start {
                     let candidate = s[obj_start..=obj_end].trim();
-                    if !candidate.is_empty() { return Ok(candidate.to_string()); }
+                    if !candidate.is_empty() {
+                        return Ok(candidate.to_string());
+                    }
                 }
             }
         }
@@ -743,56 +1138,59 @@ Respond ONLY with the JSON array, no explanations.
         ))
     }
 
-        /// Trim to the first balanced JSON object or array within the given string.
-        /// Returns Some(json_substring) if a balanced block is found; otherwise None.
-        fn trim_to_balanced_json_block(s: &str) -> Option<String> {
-            let bytes = s.as_bytes();
+    /// Trim to the first balanced JSON object or array within the given string.
+    /// Returns Some(json_substring) if a balanced block is found; otherwise None.
+    fn trim_to_balanced_json_block(s: &str) -> Option<String> {
+        let bytes = s.as_bytes();
 
-            // Find first '{' or '['
-            let mut start = None;
-            for (i, &b) in bytes.iter().enumerate() {
-                if b == b'{' || b == b'[' {
-                    start = Some((i, b));
-                    break;
-                }
+        // Find first '{' or '['
+        let mut start = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'{' || b == b'[' {
+                start = Some((i, b));
+                break;
             }
-            let (start_idx, open_b) = start?;
-            let (open_ch, close_ch) = if open_b == b'{' { ('{', '}') } else { ('[', ']') };
+        }
+        let (start_idx, open_b) = start?;
+        let (open_ch, close_ch) = if open_b == b'{' {
+            ('{', '}')
+        } else {
+            ('[', ']')
+        };
 
-            // Scan for matching close using depth, respecting strings and escapes
-            let mut depth: i32 = 0;
-            let mut in_string = false;
-            let mut escaped = false;
-            for (offset, ch) in s[start_idx..].char_indices() {
-                if in_string {
-                    if escaped {
-                        escaped = false;
-                        continue;
-                    }
-                    match ch {
-                        '\\' => escaped = true,
-                        '"' => in_string = false,
-                        _ => {}
-                    }
+        // Scan for matching close using depth, respecting strings and escapes
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (offset, ch) in s[start_idx..].char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
                     continue;
                 }
                 match ch {
-                    '"' => in_string = true,
-
-                    c if c == open_ch => depth += 1,
-                    c if c == close_ch => {
-                        depth -= 1;
-                        if depth == 0 {
-                            let end_abs = start_idx + offset;
-                            return Some(s[start_idx..=end_abs].to_string());
-                        }
-                    }
+                    '\\' => escaped = true,
+                    '"' => in_string = false,
                     _ => {}
                 }
+                continue;
             }
-            None
-        }
+            match ch {
+                '"' => in_string = true,
 
+                c if c == open_ch => depth += 1,
+                c if c == close_ch => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let end_abs = start_idx + offset;
+                        return Some(s[start_idx..=end_abs].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
 }
 
 // Helper deserializer: accept either a string or any JSON value and convert to string
@@ -827,7 +1225,6 @@ where
             Ok(vec![t])
         }
         other => Err(serde::de::Error::custom(format!(
-
             "expected array or object, got {}",
             other
         ))),
@@ -865,7 +1262,9 @@ where
 }
 
 // Helper deserializer for Option<Vec<Value>> to accept null/missing, array, or single object
-fn opt_one_or_many<'de, D>(deserializer: D) -> std::result::Result<Option<Vec<serde_json::Value>>, D::Error>
+fn opt_one_or_many<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<serde_json::Value>>, D::Error>
 where
     D: serde::de::Deserializer<'de>,
 {
@@ -888,7 +1287,8 @@ where
 {
     let v = serde_json::Value::deserialize(deserializer)?;
     match v {
-        serde_json::Value::Number(n) => n.as_u64()
+        serde_json::Value::Number(n) => n
+            .as_u64()
             .ok_or_else(|| serde::de::Error::custom("expected unsigned integer for step_number"))
             .map(|u| u as usize),
         serde_json::Value::String(s) => s.parse::<usize>().map_err(serde::de::Error::custom),
@@ -912,28 +1312,34 @@ fn sanitize_json_control_chars(s: &str) -> String {
                 continue;
             }
             match ch {
-                '\\' => { out.push('\\'); escaped = true; }
-                '"' => { out.push('"'); in_string = false; }
-                c if (c as u32) <= 0x1F => {
-                    match c {
-                        '\n' => out.push_str("\\n"),
-                        '\r' => out.push_str("\\r"),
-                        '\t' => out.push_str("\\t"),
-                        _ => out.push_str(&format!("\\u{:04x}", c as u32)),
-                    }
+                '\\' => {
+                    out.push('\\');
+                    escaped = true;
                 }
+                '"' => {
+                    out.push('"');
+                    in_string = false;
+                }
+                c if (c as u32) <= 0x1F => match c {
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    _ => out.push_str(&format!("\\u{:04x}", c as u32)),
+                },
                 _ => out.push(ch),
             }
         } else {
             match ch {
-                '"' => { out.push('"'); in_string = true; }
+                '"' => {
+                    out.push('"');
+                    in_string = true;
+                }
                 _ => out.push(ch),
             }
         }
     }
     out
 }
-
 
 /// Execution plan created by the planner agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -971,4 +1377,3 @@ pub struct KnowledgeUsed {
     pub plugin_docs: Vec<String>,
     pub godot_docs: Vec<String>,
 }
-

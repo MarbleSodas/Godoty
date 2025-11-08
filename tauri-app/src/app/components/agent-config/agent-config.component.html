@@ -1,0 +1,251 @@
+<!-- Scrollable container with dark theme styling -->
+<div class="fixed inset-0 overflow-y-auto bg-gradient-to-br from-godot-gray-darker via-godot-gray-darkest to-godot-gray-darker">
+  <div class="min-h-full p-8">
+    <div class="max-w-5xl mx-auto">
+      <!-- Header -->
+      <div class="mb-4">
+        <button (click)="goBack()" class="btn-secondary">← Back</button>
+      </div>
+
+      <div class="mb-8">
+        <h1 class="text-3xl font-bold bg-gradient-to-br from-white to-indigo-100 bg-clip-text text-transparent mb-2">
+          ⚙️ Agent LLM Configuration
+        </h1>
+        <p class="text-white/70 text-sm">
+          Configure API keys and model assignments for each agent in the agentic workflow
+        </p>
+      </div>
+
+      <!-- Loading State -->
+      <div *ngIf="loading" class="glass-card p-12 text-center">
+        <div class="inline-block animate-spin text-4xl mb-4">⚙️</div>
+        <p class="text-white/70">Loading configuration...</p>
+      </div>
+
+      <!-- Error Message -->
+      <div *ngIf="error" class="mb-6 p-4 rounded-xl bg-red-500/15 border-2 border-red-500/30 text-red-400">
+        <div class="flex items-start gap-3">
+          <span class="text-xl">⚠️</span>
+          <div class="flex-1">
+            <p class="font-semibold mb-1">Error</p>
+            <p class="text-sm">{{ error }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Success Message -->
+      <div *ngIf="successMessage" class="mb-6 p-4 rounded-xl bg-green-500/15 border-2 border-green-500/30 text-green-400">
+        <div class="flex items-start gap-3">
+          <span class="text-xl">✅</span>
+          <div class="flex-1">
+            <p class="font-semibold mb-1">Success</p>
+            <p class="text-sm">{{ successMessage }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Configuration Form -->
+      <div *ngIf="!loading && config && apiKeys" class="flex flex-col gap-6">
+
+        <!-- API Keys Section -->
+        <section class="glass-card p-6">
+          <div class="mb-6">
+            <h2 class="text-xl font-semibold text-white mb-2 flex items-center gap-2">
+              <span>🔑</span>
+              <span>API Keys</span>
+            </h2>
+            <p class="text-white/70 text-sm">
+              Configure API keys for each LLM provider. Keys are stored securely in your OS keychain.
+            </p>
+          </div>
+
+          <div class="flex flex-col gap-4">
+            <div *ngFor="let provider of providers" class="grid grid-cols-[180px_1fr] gap-4 items-center">
+              <label [for]="'api-key-' + provider" class="text-white/90 font-medium">
+                {{ getProviderDisplayName(provider) }}
+              </label>
+              <div class="flex items-center gap-3">
+                <input
+                  [id]="'api-key-' + provider"
+                  type="password"
+                  [value]="getApiKey(provider)"
+                  (input)="setApiKey(provider, $any($event.target).value)"
+                  placeholder="Enter API key for {{ getProviderDisplayName(provider) }}"
+                  class="input-field font-mono text-sm flex-1"
+                />
+                <span class="text-xs"
+                      [class.text-green-400]="hasApiKey(provider)"
+                      [class.text-amber-400]="!hasApiKey(provider)">
+                  {{ hasApiKey(provider) ? '✅ Key set' : '⚠️ Not set' }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Agent-to-LLM Mapping Section -->
+        <section class="glass-card p-6">
+          <div class="mb-6">
+            <h2 class="text-xl font-semibold text-white mb-2 flex items-center gap-2">
+              <span>🤖</span>
+          <div class="mb-4 flex flex-wrap items-center gap-3">
+            <div class="text-white/70 text-sm">Current: {{ getCurrentPresetLabel() }}</div>
+            <select [(ngModel)]="selectedPresetKey"
+                    class="px-3 py-2 rounded-lg bg-black/30 border-2 border-white/25 text-white text-sm">
+              <option [ngValue]="''" disabled>Select preset</option>
+              <option *ngFor="let p of presets"
+                      [ngValue]="p.key"
+                      [disabled]="p.requiredProvider && !hasApiKey(p.requiredProvider)">
+                {{ p.label }}{{ p.requiredProvider && !hasApiKey(p.requiredProvider) ? ' (no key)' : '' }}
+              </option>
+            </select>
+            <button class="btn-secondary"
+                    (click)="applySelectedPreset()"
+                    [disabled]="!selectedPresetKey || !isPresetEnabled(selectedPresetKey)">
+              Apply Preset
+            </button>
+          </div>
+
+              <span>Agent-to-LLM Mapping</span>
+            </h2>
+            <p class="text-white/70 text-sm">
+              Configure which LLM provider and model each agent should use
+            </p>
+          </div>
+
+          <div class="overflow-x-auto">
+            <div class="min-w-[600px]">
+              <!-- Table Header -->
+              <div class="grid grid-cols-[2fr_1.5fr_2.5fr] gap-2 mb-2 px-4 py-3 bg-white/5 rounded-lg border border-white/10">
+                <div class="font-semibold text-white/90">Agent</div>
+                <div class="font-semibold text-white/90">Provider</div>
+                <div class="font-semibold text-white/90">Model</div>
+              </div>
+
+              <!-- Table Rows -->
+              <div class="flex flex-col gap-2">
+                <div *ngFor="let agentType of agentTypes"
+                     class="grid grid-cols-[2fr_1.5fr_2.5fr] gap-2 px-4 py-3 bg-black/20 rounded-lg border border-white/10 hover:bg-black/30 hover:border-white/20 transition-all">
+                  <div class="flex items-center">
+                    <span class="font-medium text-white">{{ getAgentTypeLabel(agentType) }}</span>
+                  </div>
+                  <div class="flex items-center">
+                    <select
+                      [ngModel]="getAgentConfig(agentType)?.provider || LlmProvider.OpenRouter"
+                      (ngModelChange)="updateAgentProvider(agentType, $any($event))"
+                      class="w-full px-3 py-2 rounded-lg bg-black/30 border-2 border-white/25 text-white text-sm focus:outline-none focus:border-primary-400 focus:ring-4 focus:ring-primary-400/10 transition-all"
+                    >
+                      <option *ngFor="let provider of providers"
+                              [ngValue]="provider"
+                              [disabled]="!hasApiKey(provider)">
+                        {{ displayProviderLabel(provider) }}
+                      </option>
+                    </select>
+                    <div class="text-xs text-amber-400 mt-1" *ngIf="!hasApiKey(getAgentConfig(agentType)?.provider || LlmProvider.OpenRouter)">
+                      ⚠️ No API key configured for this provider
+                    </div>
+                  </div>
+                  <div class="flex items-center">
+                    <select
+                      [ngModel]="getAgentConfig(agentType)?.model_name || (getModelsForProvider(getAgentConfig(agentType)?.provider || LlmProvider.OpenRouter)[0] || '')"
+                      (ngModelChange)="updateAgentModel(agentType, $any($event))"
+                      class="w-full px-3 py-2 rounded-lg bg-black/30 border-2 border-white/25 text-white text-sm font-mono focus:outline-none focus:border-primary-400 focus:ring-4 focus:ring-primary-400/10 transition-all"
+                      [disabled]="getModelsForProvider(getAgentConfig(agentType)?.provider || LlmProvider.OpenRouter).length === 0"
+                    >
+                      <option *ngIf="getModelsForProvider(getAgentConfig(agentType)?.provider || LlmProvider.OpenRouter).length === 0"
+                              [ngValue]="''" disabled>
+                        No models available — set API key
+                      </option>
+                      <option
+                        *ngFor="let model of getModelsForProvider(getAgentConfig(agentType)?.provider || LlmProvider.OpenRouter)"
+                        [ngValue]="model"
+                      >
+                        {{ model }}
+                      </option>
+                    </select>
+                  </div>
+                </div>
+        <!-- Godot Project & Executable Paths -->
+        <section class="glass-card p-6">
+          <div class="mb-6 flex items-center justify-between">
+            <h2 class="text-xl font-semibold text-white mb-2 flex items-center gap-2">
+              <span>📁</span>
+              <span>Project & Godot Paths</span>
+            </h2>
+            <app-project-indexer-status
+              [projectPath]="projectPath"
+              [status]="indexingStatus"
+            ></app-project-indexer-status>
+          </div>
+
+          <!-- Project Path -->
+          <div class="mb-6">
+            <label class="block text-white/90 font-medium mb-2">Godot Project Path</label>
+
+            <div *ngIf="!editingProjectPath" class="flex items-center justify-between gap-3">
+              <code class="text-white/80 text-sm break-all">{{ projectPath || 'Not set' }}</code>
+              <button class="btn-secondary" (click)="editingProjectPath = true; tempProjectPath = projectPath || ''">Edit</button>
+            </div>
+
+            <div *ngIf="editingProjectPath" class="flex items-center gap-3">
+              <input
+                [(ngModel)]="tempProjectPath"
+                placeholder="Enter project.godot directory path"
+                class="input-field font-mono text-sm flex-1"
+              />
+              <button class="btn-secondary" (click)="cancelProjectPath()">Cancel</button>
+              <button class="btn-secondary" (click)="saveProjectPath()">Save</button>
+            </div>
+          </div>
+
+          <!-- Executable Path -->
+          <div>
+            <label class="block text-white/90 font-medium mb-2">Godot Executable (for this project)</label>
+
+            <div *ngIf="!editingExecPath" class="flex items-center justify-between gap-3">
+              <code class="text-white/80 text-sm break-all">{{ godotExecPath || 'Not set' }}</code>
+              <div class="flex items-center gap-2">
+                <button class="btn-secondary" (click)="editingExecPath = true; tempExecPath = godotExecPath || ''">Edit</button>
+                <button class="btn-secondary" [disabled]="!godotExecPath" (click)="removeExecPath()">Remove</button>
+              </div>
+            </div>
+
+            <div *ngIf="editingExecPath" class="flex items-center gap-3">
+              <input
+                [(ngModel)]="tempExecPath"
+                placeholder="Enter path to Godot executable"
+                class="input-field font-mono text-sm flex-1"
+              />
+              <button class="btn-secondary" (click)="editingExecPath = false">Cancel</button>
+              <button class="btn-secondary" (click)="saveExecPath()">Save</button>
+            </div>
+          </div>
+        </section>
+
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Action Buttons -->
+        <div class="flex justify-end gap-4 pt-4">
+          <button
+            (click)="applyPresetByKey('Mixed')"
+            class="btn-secondary"
+            [disabled]="saving"
+          >
+            🔄 Apply Mixed Preset
+          </button>
+          <button
+            (click)="saveConfiguration()"
+            class="px-6 py-3 rounded-lg font-semibold bg-gradient-to-r from-green-500 to-green-600 text-white border-2 border-green-600 hover:from-green-600 hover:to-green-700 hover:-translate-y-0.5 hover:shadow-lg transition-all active:translate-y-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none"
+            [disabled]="saving"
+          >
+            {{ saving ? '💾 Saving...' : '💾 Save Configuration' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+

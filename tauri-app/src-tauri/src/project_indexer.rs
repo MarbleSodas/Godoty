@@ -1,7 +1,17 @@
+use crate::storage::Storage;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "message")]
+pub enum IndexingStatus {
+    NotStarted,
+    Indexing,
+    Complete,
+    Failed(String),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectIndex {
@@ -10,6 +20,7 @@ pub struct ProjectIndex {
     pub resources: Vec<ResourceInfo>,
     pub project_path: String,
     pub godot_version: Option<String>,
+    pub godot_executable_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,13 +56,152 @@ pub struct ResourceInfo {
 
 pub struct ProjectIndexer {
     project_path: PathBuf,
+    godot_executable_path: Option<String>,
 }
 
 impl ProjectIndexer {
     pub fn new(project_path: &str) -> Self {
         Self {
             project_path: PathBuf::from(project_path),
+            godot_executable_path: None,
         }
+    }
+
+    /// Create a new ProjectIndexer with a specific Godot executable path
+    pub fn with_godot_executable(
+        project_path: &str,
+        godot_executable_path: Option<String>,
+    ) -> Self {
+        Self {
+            project_path: PathBuf::from(project_path),
+            godot_executable_path,
+        }
+    }
+
+    /// Set the Godot executable path for this indexer
+    #[allow(dead_code)]
+    pub fn set_godot_executable_path(&mut self, path: Option<String>) {
+        self.godot_executable_path = path;
+    }
+
+    /// Check if a project needs indexing by checking if valid cached data exists
+    /// Returns true if the project should be indexed (no cache or invalid cache)
+    pub fn needs_indexing(project_path: &str, storage: &Storage) -> bool {
+        // Check if there's a valid cached index (24 hours validity)
+        !storage.is_project_index_valid(project_path, 24 * 60 * 60)
+    }
+
+    /// Index the project if needed, otherwise load from cache
+    /// This implements the automatic initial indexing behavior
+    pub fn index_or_load(
+        project_path: &str,
+        godot_executable_path: Option<String>,
+        storage: &Storage,
+    ) -> Result<ProjectIndex> {
+        // Try to load from cache first
+        if !Self::needs_indexing(project_path, storage) {
+            if let Ok(cached_index) = storage.load_project_index(project_path) {
+                println!("Loaded project index from cache for: {}", project_path);
+                return Ok(cached_index);
+            }
+        }
+
+        // No valid cache found, perform indexing
+        println!("Indexing project (no valid cache found): {}", project_path);
+        let indexer = Self::with_godot_executable(project_path, godot_executable_path);
+        let index = indexer.index_project()?;
+
+        // Save to cache
+        storage.save_project_index(&index, project_path)?;
+
+        Ok(index)
+    }
+
+    /// Detect the Godot executable path using various strategies
+    pub fn detect_godot_executable(&self) -> Option<String> {
+        // Strategy 1: Use the explicitly set path if available
+        if let Some(ref path) = self.godot_executable_path {
+            if Path::new(path).exists() {
+                return Some(path.clone());
+            }
+        }
+
+        // Strategy 2: Check common installation locations
+        let common_paths = Self::get_common_godot_paths();
+        for path in common_paths {
+            if Path::new(&path).exists() {
+                return Some(path);
+            }
+        }
+
+        // Strategy 3: Try to find in PATH
+        if let Some(path) = Self::find_in_path("godot") {
+            return Some(path);
+        }
+
+        None
+    }
+
+    /// Get common Godot installation paths based on the OS
+    fn get_common_godot_paths() -> Vec<String> {
+        let mut paths = Vec::new();
+
+        #[cfg(target_os = "windows")]
+        {
+            paths.push("C:\\Program Files\\Godot\\godot.exe".to_string());
+            paths.push("C:\\Program Files (x86)\\Godot\\godot.exe".to_string());
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                paths.push(format!("{}\\Godot\\godot.exe", local_app_data));
+            }
+            if let Ok(program_files) = std::env::var("PROGRAMFILES") {
+                paths.push(format!("{}\\Godot\\godot.exe", program_files));
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            paths.push("/Applications/Godot.app/Contents/MacOS/Godot".to_string());
+            if let Ok(home) = std::env::var("HOME") {
+                paths.push(format!(
+                    "{}/Applications/Godot.app/Contents/MacOS/Godot",
+                    home
+                ));
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            paths.push("/usr/bin/godot".to_string());
+            paths.push("/usr/local/bin/godot".to_string());
+            if let Ok(home) = std::env::var("HOME") {
+                paths.push(format!("{}/.local/bin/godot", home));
+                paths.push(format!("{}/bin/godot", home));
+            }
+        }
+
+        paths
+    }
+
+    /// Find an executable in the system PATH
+    fn find_in_path(executable: &str) -> Option<String> {
+        if let Ok(path_var) = std::env::var("PATH") {
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            for path in path_var.split(separator) {
+                let mut full_path = PathBuf::from(path);
+                full_path.push(executable);
+
+                // On Windows, try with .exe extension
+                #[cfg(target_os = "windows")]
+                {
+                    full_path.set_extension("exe");
+                }
+
+                if full_path.exists() {
+                    return full_path.to_string_lossy().to_string().into();
+                }
+            }
+        }
+        None
     }
 
     pub fn index_project(&self) -> Result<ProjectIndex> {
@@ -72,8 +222,13 @@ impl ProjectIndexer {
                     }
                 }
                 found
-            } else { None }
+            } else {
+                None
+            }
         };
+
+        // Detect Godot executable path
+        let godot_executable_path = self.detect_godot_executable();
 
         let mut index = ProjectIndex {
             scenes: Vec::new(),
@@ -81,6 +236,7 @@ impl ProjectIndexer {
             resources: Vec::new(),
             project_path: self.project_path.to_string_lossy().to_string(),
             godot_version,
+            godot_executable_path,
         };
 
         // Index scenes (.tscn files)
@@ -330,4 +486,3 @@ impl ProjectIndexer {
         })
     }
 }
-

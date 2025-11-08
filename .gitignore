@@ -35,3 +35,8 @@ tauri-app/src-tauri/godot_docs_index/
 *.faiss
 *.pkl
 
+# Sensitive Configuration
+.keys.json
+*/.keys.json
+.env
+

@@ -73,6 +73,8 @@ func execute_command(command: Dictionary):
 			return _clear_debug_output(command)
 		"get_debug_output":
 			return _get_debug_output(command)
+		"get_project_path":
+			return _get_project_path(command)
 		_:
 			return {
 				"status": "error",
@@ -1100,4 +1102,16 @@ func _make_unique_name(parent: Node, base: String) -> String:
 				return candidate
 			i += 1
 		return candidate
+
+func _get_project_path(command: Dictionary) -> Dictionary:
+	# Get the absolute path to the project directory
+	var project_path = ProjectSettings.globalize_path("res://")
+	print("Godoty: get_project_path called, returning: ", project_path)
+	return {
+		"status": "success",
+		"message": "Retrieved project path",
+		"data": {
+			"project_path": project_path
+		}
+	}
 

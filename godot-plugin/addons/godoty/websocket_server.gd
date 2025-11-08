@@ -1,6 +1,7 @@
 extends Node
 
 signal command_received(command: Dictionary)
+signal client_connected(ws: WebSocketPeer)
 
 var server: TCPServer
 var peers: Array[StreamPeerTCP] = []
@@ -70,6 +71,9 @@ func _process(_delta):
 				websocket_peers.append(ws)
 				peers.remove_at(i)
 				print("Godoty: WebSocket connection established")
+
+				# Emit signal for new client connection
+				client_connected.emit(ws)
 
 				continue
 

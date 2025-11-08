@@ -5,8 +5,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 fn main() {
     // Initialize tracing with RUST_LOG support; default to 'info' if not set
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     fmt()
         .with_env_filter(env_filter)

@@ -1,11 +1,12 @@
-use anyhow::{Result, anyhow};
-use serde_json::Value;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[derive(Clone)]
 pub struct WebSocketClient {
@@ -16,11 +17,10 @@ impl WebSocketClient {
     #[tracing::instrument]
     pub async fn connect(url: &str) -> Result<Self> {
         tracing::debug!("Connecting to WebSocket");
-        let (ws_stream, _) = connect_async(url).await
-            .map_err(|e| {
-                tracing::error!(error = %e, "WebSocket connection failed");
-                anyhow!("WebSocket connection failed: {}", e)
-            })?;
+        let (ws_stream, _) = connect_async(url).await.map_err(|e| {
+            tracing::error!(error = %e, "WebSocket connection failed");
+            anyhow!("WebSocket connection failed: {}", e)
+        })?;
         tracing::debug!("WebSocket connection established");
 
         Ok(Self {
@@ -37,11 +37,10 @@ impl WebSocketClient {
         let cmd_preview: String = cmd_str.chars().take(200).collect();
         tracing::debug!(command_preview = %cmd_preview, "Sending command over WebSocket");
         let message = Message::Text(cmd_str);
-        stream.send(message).await
-            .map_err(|e| {
-                tracing::error!(error = %e, "Failed to send message");
-                anyhow!("Failed to send message: {}", e)
-            })?;
+        stream.send(message).await.map_err(|e| {
+            tracing::error!(error = %e, "Failed to send message");
+            anyhow!("Failed to send message: {}", e)
+        })?;
 
         // Wait for response
         if let Some(msg) = stream.next().await {
@@ -62,4 +61,3 @@ impl WebSocketClient {
         Err(anyhow!("No response received"))
     }
 }
-

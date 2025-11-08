@@ -1,9 +1,9 @@
 use anyhow::Result;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
-use reqwest::Client;
+use std::path::Path;
 
 /// Represents a document in the knowledge base
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,9 +37,14 @@ impl KnowledgeBase {
     }
 
     /// Add a document to the knowledge base
-    pub async fn add_document(&self, id: String, content: String, metadata: HashMap<String, String>) -> Result<()> {
+    pub async fn add_document(
+        &self,
+        id: String,
+        content: String,
+        metadata: HashMap<String, String>,
+    ) -> Result<()> {
         let embedding = self.generate_embedding(&content).await?;
-        
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
@@ -54,21 +59,21 @@ impl KnowledgeBase {
         };
 
         let mut docs = self.documents.write().await;
-        
+
         // Remove existing document with same ID if it exists
         docs.retain(|d| d.id != id);
-        
+
         docs.push(document);
-        
+
         Ok(())
     }
 
     /// Search for documents using semantic similarity
     pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<KnowledgeDocument>> {
         let query_embedding = self.generate_embedding(query).await?;
-        
+
         let docs = self.documents.read().await;
-        
+
         let mut scored_docs: Vec<(f32, KnowledgeDocument)> = docs
             .iter()
             .filter_map(|doc| {
@@ -85,7 +90,11 @@ impl KnowledgeBase {
         scored_docs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         // Take top K results
-        Ok(scored_docs.into_iter().take(top_k).map(|(_, doc)| doc).collect())
+        Ok(scored_docs
+            .into_iter()
+            .take(top_k)
+            .map(|(_, doc)| doc)
+            .collect())
     }
 
     /// Generate embedding for text using OpenRouter API
@@ -107,24 +116,36 @@ impl KnowledgeBase {
         }
 
         let request = EmbeddingRequest {
-            model: "text-embedding-3-small".to_string(),
+            model: "openai/text-embedding-3-small".to_string(),
             input: text.to_string(),
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://openrouter.ai/api/v1/embeddings")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://github.com/godoty/godoty")
+            .header("X-Title", "Godoty AI Assistant")
             .json(&request)
             .send()
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Embedding API request failed: {}", response.status()));
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(anyhow::anyhow!(
+                "Embedding API request failed: {} - {}",
+                status,
+                body
+            ));
         }
 
         let embedding_response: EmbeddingResponse = response.json().await?;
-        
+
         if let Some(data) = embedding_response.data.first() {
             Ok(data.embedding.clone())
         } else {
@@ -133,20 +154,20 @@ impl KnowledgeBase {
     }
 
     /// Save knowledge base to disk
-    pub async fn save_to_disk(&self, storage_dir: &PathBuf) -> Result<()> {
-        let mut path = storage_dir.clone();
+    pub async fn save_to_disk(&self, storage_dir: &Path) -> Result<()> {
+        let mut path = storage_dir.to_path_buf();
         path.push(format!("{}_kb.json", self.name));
 
         let docs = self.documents.read().await;
         let json = serde_json::to_string_pretty(&*docs)?;
         fs::write(path, json)?;
-        
+
         Ok(())
     }
 
     /// Load knowledge base from disk
-    pub async fn load_from_disk(&self, storage_dir: &PathBuf) -> Result<()> {
-        let mut path = storage_dir.clone();
+    pub async fn load_from_disk(&self, storage_dir: &Path) -> Result<()> {
+        let mut path = storage_dir.to_path_buf();
         path.push(format!("{}_kb.json", self.name));
 
         if !path.exists() {
@@ -169,6 +190,7 @@ impl KnowledgeBase {
     }
 
     /// Clear all documents
+    #[allow(dead_code)]
     pub async fn clear(&self) -> Result<()> {
         let mut docs = self.documents.write().await;
         docs.clear();
@@ -198,4 +220,3 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
     dot_product / (magnitude_a * magnitude_b)
 }
-

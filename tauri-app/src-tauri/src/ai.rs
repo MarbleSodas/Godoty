@@ -1,8 +1,8 @@
+use crate::project_indexer::ProjectIndex;
 use anyhow::Result;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use reqwest::Client;
-use crate::project_indexer::ProjectIndex;
 
 #[derive(Serialize, Deserialize)]
 struct ChatMessage {
@@ -57,7 +57,12 @@ impl AIProcessor {
         }
     }
 
-    pub async fn process_input(&self, input: &str, context: &str, project_index: &ProjectIndex) -> Result<Vec<Value>> {
+    pub async fn process_input(
+        &self,
+        input: &str,
+        context: &str,
+        project_index: &ProjectIndex,
+    ) -> Result<Vec<Value>> {
         let available_commands = r#"Available commands:
 
 SCENE & INSPECTION
@@ -125,7 +130,8 @@ DEBUG
    {{"action": "clear_debug_output"}}
 "#;
 
-        let system_prompt = format!(r#"You are an AI assistant that helps users create game elements in Godot.
+        let system_prompt = format!(
+            r#"You are an AI assistant that helps users create game elements in Godot.
 Your task is to convert natural language descriptions into a series of JSON commands that can be executed by the Godot editor.
 
 You have access to the following context:
@@ -255,7 +261,8 @@ Remember: Look at the existing scene structures in the context to match the proj
             max_tokens: Some(4096),
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://openrouter.ai/api/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -268,7 +275,10 @@ Remember: Look at the existing scene structures in the context to match the proj
         // Check if the response is successful
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
 
             // Try to parse as error response
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
@@ -295,16 +305,19 @@ Remember: Look at the existing scene structures in the context to match the proj
                     let content = &choice.message.content;
 
                     // Extract JSON from the response (handle markdown code blocks)
-                    let json_content = Self::extract_json(content)
-                        .map_err(|e| anyhow::anyhow!("Failed to extract JSON from AI response: {}", e))?;
+                    let json_content = Self::extract_json(content).map_err(|e| {
+                        anyhow::anyhow!("Failed to extract JSON from AI response: {}", e)
+                    })?;
 
                     // Parse the JSON array from the response
-                    let commands: Vec<Value> = serde_json::from_str(&json_content)
-                        .map_err(|e| anyhow::anyhow!(
-                            "Failed to parse JSON commands: {}. Content: {}",
-                            e,
-                            &json_content[..json_content.len().min(200)]
-                        ))?;
+                    let commands: Vec<Value> =
+                        serde_json::from_str(&json_content).map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to parse JSON commands: {}. Content: {}",
+                                e,
+                                &json_content[..json_content.len().min(200)]
+                            )
+                        })?;
 
                     Ok(commands)
                 } else {
@@ -336,7 +349,7 @@ Remember: Look at the existing scene structures in the context to match the proj
         // Check if content is wrapped in markdown code blocks
         if let Some(start) = trimmed.find("```json") {
             let json_start = start + 7; // Length of "```json"
-            // Find the closing ``` after the opening ```json
+                                        // Find the closing ``` after the opening ```json
             if let Some(end_offset) = trimmed[json_start..].find("```") {
                 let json_end = json_start + end_offset;
                 return Ok(trimmed[json_start..json_end].trim().to_string());

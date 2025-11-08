@@ -44,6 +44,7 @@ func _enter_tree():
 
 	# Connect signals
 	websocket_server.command_received.connect(_on_command_received)
+	websocket_server.client_connected.connect(_on_client_connected)
 
 	# Create dock UI
 	dock = preload("res://addons/godoty/dock.tscn").instantiate()
@@ -112,6 +113,21 @@ func _on_status_changed(status: String):
 func _on_debug_message(entry: Dictionary):
 	var msg := "[Dbg] %s — %s" % [entry.get("message", ""), str(entry.get("data", []))]
 	_update_dock_status(msg)
+
+func _on_client_connected(ws: WebSocketPeer):
+	print("Godoty: Client connected, sending project path...")
+	# Send project path information to the newly connected client
+	var project_path = ProjectSettings.globalize_path("res://")
+	var welcome_message = {
+		"type": "project_info",
+		"status": "success",
+		"data": {
+			"project_path": project_path
+		}
+	}
+	var json_string = JSON.stringify(welcome_message)
+	ws.send_text(json_string)
+	print("Godoty: Sent project path to client: ", project_path)
 
 func _update_dock_status(message: String):
 	if dock and dock.has_method("update_status"):

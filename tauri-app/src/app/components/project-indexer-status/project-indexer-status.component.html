@@ -1,0 +1,28 @@
+<div class="flex flex-col gap-2">
+  <!-- Project Path Display -->
+  <div class="flex items-start gap-2">
+    <span class="text-sm font-medium text-white/70 whitespace-nowrap">Project:</span>
+    <span class="text-sm break-all" [class]="projectPath ? 'text-white/90' : 'text-white/50'">
+      {{ projectPath || 'Not configured' }}
+    </span>
+  </div>
+
+  <!-- Indexing Status Display -->
+  <div class="flex items-center gap-2">
+    <span class="text-sm font-medium text-white/70 whitespace-nowrap">Status:</span>
+    <div class="flex items-center gap-2">
+      <span class="text-lg">{{ getStatusIcon() }}</span>
+      <span class="text-sm" [class]="getStatusColor()">
+        {{ getStatusText() }}
+      </span>
+    </div>
+  </div>
+
+  <!-- Loading animation for Indexing state -->
+  <div *ngIf="status?.type === 'Indexing'" class="mt-1">
+    <div class="w-full bg-white/10 rounded-full h-1.5">
+      <div class="bg-blue-400 h-1.5 rounded-full animate-pulse" style="width: 100%"></div>
+    </div>
+  </div>
+</div>
+

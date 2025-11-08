@@ -14,20 +14,20 @@ pub struct WorkflowMetrics {
     pub generation_tokens: u32,
     pub validation_tokens: u32,
     pub documentation_tokens: u32,
-    
+
     // Execution time (milliseconds)
     pub total_time_ms: u64,
     pub planning_time_ms: u64,
     pub generation_time_ms: u64,
     pub validation_time_ms: u64,
     pub kb_search_time_ms: u64,
-    
+
     // Knowledge base metrics
     pub plugin_kb_queries: u32,
     pub docs_kb_queries: u32,
     pub total_docs_retrieved: u32,
     pub avg_relevance_score: f32,
-    
+
     // Success metrics
     pub commands_generated: u32,
     pub commands_validated: u32,
@@ -35,11 +35,11 @@ pub struct WorkflowMetrics {
     pub validation_warnings: u32,
     pub reasoning_steps: u32,
     pub retry_attempts: u32,
-    
+
     // Timestamps
     pub started_at: u64,
     pub completed_at: u64,
-    
+
     // Request metadata
     pub request_id: String,
     pub user_input: String,
@@ -89,7 +89,7 @@ impl WorkflowMetrics {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        self.total_time_ms = ((self.completed_at - self.started_at) * 1000) as u64;
+        self.total_time_ms = (self.completed_at - self.started_at) * 1000;
         self.success = success;
         self.error_message = error_message;
     }
@@ -136,7 +136,7 @@ impl MetricsStore {
     /// Get metrics summary
     pub async fn get_summary(&self) -> MetricsSummary {
         let store = self.metrics.read().await;
-        
+
         if store.is_empty() {
             return MetricsSummary::default();
         }
@@ -146,7 +146,7 @@ impl MetricsStore {
         let total_tokens: u32 = store.iter().map(|m| m.total_tokens).sum();
         let avg_time_ms = store.iter().map(|m| m.total_time_ms).sum::<u64>() / store.len() as u64;
         let total_commands = store.iter().map(|m| m.commands_generated).sum();
-        
+
         MetricsSummary {
             total_requests,
             successful_requests,
@@ -179,4 +179,3 @@ pub struct MetricsSummary {
     pub avg_time_ms: u64,
     pub total_commands_generated: u32,
 }
-

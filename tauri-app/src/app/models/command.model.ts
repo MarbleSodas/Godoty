@@ -18,6 +18,7 @@ export type MessageStatus =
   | 'researching_tutorials' // AI is researching tutorials (low precedence)
   | 'generating'   // AI is generating response
   | 'streaming'    // AI response is streaming in
+  | 'searching_web' // AI is performing web search
   | 'executing'    // AI is executing a command/action
   | 'complete'     // Message/response is complete
   | 'error';       // Error occurred
@@ -44,6 +45,31 @@ export interface ChatMessage {
   // Optional visual snapshot attached to this message
   visual_snapshot_b64?: string;
   visual_snapshot_meta?: any;
+  metrics?: MessageMetrics;
+  tool_calls?: ToolCall[];
+}
+
+export interface MessageMetrics {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  tool_call_times?: ToolCallMetric[];
+  cost_estimate_usd?: number;
+}
+
+export interface ToolCallMetric {
+  name: string;
+  duration_ms: number;
+}
+
+export interface ToolCall {
+  id?: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string; // raw JSON string (can be partial during streaming)
+  };
 }
 
 export interface ThoughtStep {

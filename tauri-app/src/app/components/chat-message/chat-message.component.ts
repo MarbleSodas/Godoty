@@ -57,6 +57,8 @@ export class ChatMessageComponent {
         return '⚡';
       case 'streaming':
         return '📝';
+      case 'searching_web':
+        return '🔎';
       case 'executing':
         return '⚙️';
       case 'complete':
@@ -80,6 +82,8 @@ export class ChatMessageComponent {
         return 'Thinking';
       case 'gathering':
         return 'Gathering Data';
+      case 'searching_web':
+        return 'Searching the web';
       case 'generating':
         return 'Generating';
       case 'streaming':
@@ -106,6 +110,7 @@ export class ChatMessageComponent {
       case 'gathering':
       case 'generating':
       case 'streaming':
+      case 'searching_web':
       case 'executing':
         return 'status-processing';
       case 'complete':
@@ -122,6 +127,7 @@ export class ChatMessageComponent {
            this.message.status === 'gathering' ||
            this.message.status === 'generating' ||
            this.message.status === 'streaming' ||
+           this.message.status === 'searching_web' ||
            this.message.status === 'executing';
   }
 

@@ -118,5 +118,47 @@
       </div>
     </div>
   </div>
+
+  <!-- Tool Calls Section -->
+  <div *ngIf="message.tool_calls && message.tool_calls.length > 0" class="mt-4 p-4 bg-amber-500/12 rounded-lg border border-amber-500/35">
+    <div class="flex items-center gap-2 mb-3 font-semibold text-white/90">
+      <span class="text-lg">🛠️</span>
+      <span class="text-sm">Tool Calls</span>
+    </div>
+    <div class="flex flex-col gap-2">
+      <div *ngFor="let tc of message.tool_calls; let i = index" class="text-sm text-white/85 bg-black/25 p-3 rounded border-l-2 border-amber-500/50">
+        <div class="font-semibold text-amber-400">{{ i + 1 }}. {{ tc.function.name }}</div>
+        <pre class="text-white/80 whitespace-pre-wrap break-words text-xs mt-1">{{ tc.function.arguments }}</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metrics Section -->
+  <ng-container *ngIf="message.metrics as m">
+    <div class="mt-4 p-4 bg-slate-500/12 rounded-lg border border-slate-500/35">
+      <div class="flex items-center gap-2 mb-3 font-semibold text-white/90">
+        <span class="text-lg">📊</span>
+        <span class="text-sm">Metrics</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <div class="text-white/80">Input tokens: <span class="font-semibold">{{ m.input_tokens }}</span></div>
+        <div class="text-white/80">Output tokens: <span class="font-semibold">{{ m.output_tokens }}</span></div>
+        <div class="text-white/80">Total tokens: <span class="font-semibold">{{ m.total_tokens }}</span></div>
+        <div class="text-white/80">Latency: <span class="font-semibold">{{ m.latency_ms }} ms</span></div>
+        <div *ngIf="m.cost_estimate_usd != null" class="text-white/80">Cost: <span class="font-semibold">${{ m.cost_estimate_usd!.toFixed(4) }}</span></div>
+      </div>
+      <ng-container *ngIf="m.tool_call_times as tct">
+        <div *ngIf="tct.length" class="mt-2">
+          <div class="text-white/80 text-sm mb-1">Tool timings:</div>
+          <div class="flex flex-col gap-1">
+            <div *ngFor="let t of tct" class="text-xs text-white/75 bg-black/25 rounded px-2 py-1">
+              ⏱️ {{ t.name }} — {{ t.duration_ms }} ms
+            </div>
+          </div>
+        </div>
+      </ng-container>
+    </div>
+  </ng-container>
+
 </div>
 

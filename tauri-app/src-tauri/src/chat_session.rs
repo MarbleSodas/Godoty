@@ -15,6 +15,8 @@ pub struct ChatMessage {
     // Optional visual snapshot attached to this message (base64 PNG + metadata)
     pub visual_snapshot_b64: Option<String>,
     pub visual_snapshot_meta: Option<serde_json::Value>,
+    #[serde(default)]
+    pub metrics: Option<MessageMetrics>,
 }
 
 /// Role of the message sender
@@ -64,6 +66,7 @@ pub struct ChatSession {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub total_commands: usize,
+
     pub successful_commands: usize,
     pub failed_commands: usize,
     pub total_tokens_used: usize,
@@ -84,6 +87,7 @@ impl ChatSession {
             created_at: now,
             updated_at: now,
             project_path,
+
             metadata: SessionMetadata {
                 total_commands: 0,
                 successful_commands: 0,
@@ -151,29 +155,32 @@ impl ChatSession {
     /// Build accumulated context from all messages
     pub fn build_accumulated_context(&self) -> String {
         let mut context = String::new();
-        
+
         context.push_str("# Chat History Context\n\n");
-        
+
         for (idx, msg) in self.messages.iter().enumerate() {
             let role_label = match msg.role {
                 MessageRole::User => "👤 User",
                 MessageRole::Assistant => "🤖 Assistant",
                 MessageRole::System => "⚙️ System",
             };
-            
+
             context.push_str(&format!("## Message {} - {}\n", idx + 1, role_label));
             context.push_str(&format!("{}\n\n", msg.content));
-            
+
             // Include thought process if available
             if let Some(thoughts) = &msg.thought_process {
                 context.push_str("### Thought Process:\n");
                 for thought in thoughts {
-                    context.push_str(&format!("{}. {}\n", thought.step_number, thought.description));
+                    context.push_str(&format!(
+                        "{}. {}\n",
+                        thought.step_number, thought.description
+                    ));
                 }
                 context.push('\n');
             }
         }
-        
+
         context
     }
 }
@@ -193,6 +200,7 @@ impl ChatMessage {
             context_used: None,
             visual_snapshot_b64: None,
             visual_snapshot_meta: None,
+            metrics: None,
         }
     }
 
@@ -216,10 +224,9 @@ impl ChatMessage {
             context_used,
             visual_snapshot_b64,
             visual_snapshot_meta,
+            metrics: None,
         }
     }
-
-
 }
 
 /// Manager for handling multiple chat sessions
@@ -237,7 +244,11 @@ impl ChatSessionManager {
     }
 
     /// Create a new session and set it as active
-    pub fn create_session(&mut self, title: Option<String>, project_path: Option<String>) -> String {
+    pub fn create_session(
+        &mut self,
+        title: Option<String>,
+        project_path: Option<String>,
+    ) -> String {
         let session = ChatSession::new(title, project_path);
         let session_id = session.id.clone();
         self.sessions.push(session);
@@ -247,17 +258,17 @@ impl ChatSessionManager {
 
     /// Get the active session
     pub fn get_active_session(&self) -> Option<&ChatSession> {
-        self.active_session_id.as_ref().and_then(|id| {
-            self.sessions.iter().find(|s| &s.id == id)
-        })
+        self.active_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
     }
 
     /// Get the active session mutably
     pub fn get_active_session_mut(&mut self) -> Option<&mut ChatSession> {
         let active_id = self.active_session_id.clone();
-        active_id.as_ref().and_then(move |id| {
-            self.sessions.iter_mut().find(|s| &s.id == id)
-        })
+        active_id
+            .as_ref()
+            .and_then(move |id| self.sessions.iter_mut().find(|s| &s.id == id))
     }
 
     /// Set active session by ID
@@ -277,13 +288,21 @@ impl ChatSessionManager {
 
     /// Delete a session
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
-        let index = self.sessions.iter().position(|s| s.id == session_id)
+        let index = self
+            .sessions
+            .iter()
+            .position(|s| s.id == session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
         self.sessions.remove(index);
 
         // If we deleted the active session, clear it
-        if self.active_session_id.as_ref().map(|id| id == session_id).unwrap_or(false) {
+        if self
+            .active_session_id
+            .as_ref()
+            .map(|id| id == session_id)
+            .unwrap_or(false)
+        {
             self.active_session_id = None;
         }
 
@@ -292,7 +311,9 @@ impl ChatSessionManager {
 
     /// Update the title of a session
     pub fn update_session_title(&mut self, session_id: &str, new_title: String) -> Result<()> {
-        let session = self.sessions.iter_mut()
+        let session = self
+            .sessions
+            .iter_mut()
             .find(|s| s.id == session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
@@ -321,3 +342,19 @@ impl Default for ChatSessionManager {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MessageMetrics {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub total_tokens: u32,
+    pub latency_ms: u64,
+    #[serde(default)]
+    pub tool_call_times: Vec<ToolCallMetric>,
+    pub cost_estimate_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolCallMetric {
+    pub name: String,
+    pub duration_ms: u64,
+}
