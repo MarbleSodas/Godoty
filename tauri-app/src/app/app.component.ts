@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterOutlet, RouterLink } from '@angular/router';
 import { invoke } from '@tauri-apps/api/core';
@@ -8,6 +8,8 @@ import { IndexingStatus, IndexingStatusResponse, IndexingStatusEvent } from './m
 import { ProcessLogService } from './services/process-log.service';
 import { ProcessLogEntry } from './models/process-log.model';
 
+import { LlmStreamService } from './services/llm-stream.service';
+import { Subscription } from 'rxjs';
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
 import { SessionManagerComponent } from './components/session-manager/session-manager.component';
@@ -30,8 +32,8 @@ import { MetricsPanelComponent } from './components/metrics-panel/metrics-panel.
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css']
 })
-export class AppComponent implements OnInit {
-  constructor(private logs: ProcessLogService) {}
+export class AppComponent implements OnInit, OnDestroy {
+  constructor(private logs: ProcessLogService, private stream: LlmStreamService) {}
   commands: Command[] = [];
   connectionStatus: ConnectionStatus = 'disconnected';
   apiKey: string = '';
@@ -43,6 +45,10 @@ export class AppComponent implements OnInit {
   activeSession: ChatSession | null = null;
 
   // Processing state
+  // Streaming state
+  private streamSubs: Subscription[] = [];
+  private streamingMsgIds = new Map<string, string>();
+
   isProcessing: boolean = false;
   // Inline chat logging helpers
   private logChatUpdate(
@@ -87,6 +93,58 @@ export class AppComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadApiKey();
+    // Subscribe to LLM streaming tokens
+    this.streamSubs.push(
+      this.stream.onDelta().subscribe(evt => {
+        const sid = (evt.sessionId as string) || this.activeSession?.id || undefined;
+        if (!sid) return;
+        if (!this.activeSession || (this.activeSession.id !== sid)) return; // only stream into current session
+
+        // Ensure a streaming assistant message exists for this session
+        let msgId = this.streamingMsgIds.get(sid);
+        if (!msgId) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          msgId = `stream-${sid}-${nowSec}`;
+          this.streamingMsgIds.set(sid, msgId);
+          const msg: ChatMessage = {
+            id: msgId,
+            sessionId: sid,
+            role: 'assistant',
+            content: '',
+            timestamp: nowSec,
+            status: 'streaming',
+            isStreaming: true
+          };
+          const created: ChatSession = {
+            ...this.activeSession,
+            messages: [...this.activeSession.messages, msg],
+            updated_at: nowSec
+          };
+          this.activeSession = created;
+          this.chatSessions = this.chatSessions.map(s => s.id === created.id ? { ...s, messages: created.messages, updated_at: created.updated_at } : s);
+        }
+        // Append delta
+        const id = msgId!;
+        const updatedMsgs = this.activeSession.messages.map(m => m.id === id ? { ...m, content: (m.content || '') + (evt.delta || '') } : m);
+        this.activeSession = { ...this.activeSession, messages: updatedMsgs, updated_at: Math.floor(Date.now()/1000) } as ChatSession;
+        this.chatSessions = this.chatSessions.map(s => s.id === this.activeSession!.id ? { ...s, messages: updatedMsgs, updated_at: this.activeSession!.updated_at } : s);
+      })
+    );
+
+    this.streamSubs.push(
+      this.stream.onCompleted().subscribe(evt => {
+        const sid = (evt.sessionId as string) || this.activeSession?.id || undefined;
+        if (!sid) return;
+        // Mark the streaming message as complete (frontend-only). Backend will save the final assistant message.
+        const id = this.streamingMsgIds.get(sid);
+        if (id && this.activeSession && this.activeSession.id === sid) {
+          const updatedMsgs = this.activeSession.messages.map(m => m.id === id ? { ...m, isStreaming: false, status: 'complete' } : m);
+          this.activeSession = { ...this.activeSession, messages: updatedMsgs, updated_at: Math.floor(Date.now()/1000) } as ChatSession;
+          this.chatSessions = this.chatSessions.map(s => s.id === this.activeSession!.id ? { ...s, messages: updatedMsgs, updated_at: this.activeSession!.updated_at } : s);
+        }
+        this.streamingMsgIds.delete(sid);
+      })
+    );
     this.loadProjectPath();
     this.loadIndexingStatus();
     this.listenToIndexingStatusChanges();
@@ -273,6 +331,13 @@ export class AppComponent implements OnInit {
       }
 
       // Determine the sessionId for this message (prefer the active session after any pivot)
+
+      // Suppress inline system log injection into the chat UI to keep assistant streaming clean
+      const SHOW_LOGS_IN_CHAT = false;
+      if (!SHOW_LOGS_IN_CHAT) {
+        return;
+      }
+
       const sid = this.activeSession?.id || entry.sessionId || undefined;
 
       const msgStatus: MessageStatus = (entry.category === 'tool_call' && entry.agent === 'WebSearch' && entry.status === 'started')
@@ -447,6 +512,7 @@ export class AppComponent implements OnInit {
 
       await this.loadChatSessions();
     } catch (error) {
+
       console.error('Failed to create session:', error);
     }
   }
@@ -488,5 +554,12 @@ export class AppComponent implements OnInit {
     const timestamp = new Date().toLocaleString();
     await this.handleCreateSession(`Chat ${timestamp}`);
   }
+  ngOnDestroy(): void {
+    for (const s of this.streamSubs) {
+      try { s.unsubscribe(); } catch {}
+    }
+    this.streamSubs = [];
+  }
+
 }
 

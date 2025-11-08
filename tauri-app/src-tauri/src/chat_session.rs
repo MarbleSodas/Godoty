@@ -60,6 +60,8 @@ pub struct ChatSession {
     pub updated_at: u64,
     pub project_path: Option<String>,
     pub metadata: SessionMetadata,
+    #[serde(default)]
+    pub letta_agent_id: Option<String>,
 }
 
 /// Metadata about the session
@@ -94,6 +96,7 @@ impl ChatSession {
                 failed_commands: 0,
                 total_tokens_used: 0,
             },
+            letta_agent_id: None,
         }
     }
 

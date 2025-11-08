@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export enum LlmProvider {
   OpenRouter = 'OpenRouter',
-  ZaiGlm = 'ZaiGlm'
+  Claude = 'Claude'
 }
 
 export enum AgentType {
@@ -30,7 +30,7 @@ export interface ApiKeyStore {
 
 
 export interface LlmPreset {
-  key: 'Mixed' | 'ZaiGlm';
+  key: 'Mixed' | 'Claude';
   label: string;
   // If set, this preset should only be enabled when this provider has a configured API key
   requiredProvider: LlmProvider | null;
@@ -103,7 +103,7 @@ export class AgentConfigService {
         },
         [AgentType.Validator]: {
           provider: LlmProvider.OpenRouter,
-          model_name: 'z-ai/glm-4.5-air:free'
+          model_name: 'qwen/qwen3-235b-a22b:free'
         },
         [AgentType.Documentation]: {
           provider: LlmProvider.OpenRouter,
@@ -120,7 +120,7 @@ export class AgentConfigService {
     return {
       keys: {
         [LlmProvider.OpenRouter]: '',
-        [LlmProvider.ZaiGlm]: ''
+        [LlmProvider.Claude]: ''
       }
     };
   }
@@ -136,23 +136,23 @@ export class AgentConfigService {
       config: this.getDefaultConfig()
     };
 
-    const zaiglm: LlmPreset = {
-      key: 'ZaiGlm',
-      label: 'Z.ai Preset',
-      requiredProvider: LlmProvider.ZaiGlm,
+    const claude: LlmPreset = {
+      key: 'Claude',
+      label: 'Claude Preset',
+      requiredProvider: LlmProvider.Claude,
       config: {
         agents: {
-          [AgentType.Planner]: { provider: LlmProvider.ZaiGlm, model_name: 'glm-4.5' },
-          [AgentType.CodeGenerator]: { provider: LlmProvider.ZaiGlm, model_name: 'glm-4.5' },
-          [AgentType.Vision]: { provider: LlmProvider.ZaiGlm, model_name: 'glm-4v' },
-          [AgentType.Researcher]: { provider: LlmProvider.ZaiGlm, model_name: 'glm-4-long' },
-          [AgentType.Validator]: { provider: LlmProvider.ZaiGlm, model_name: 'glm-4-air' },
-          [AgentType.Documentation]: { provider: LlmProvider.ZaiGlm, model_name: 'glm-4-plus' },
+          [AgentType.Planner]: { provider: LlmProvider.Claude, model_name: 'claude-3-5-haiku-20241022' },
+          [AgentType.CodeGenerator]: { provider: LlmProvider.Claude, model_name: 'claude-3-5-sonnet-20241022' },
+          [AgentType.Vision]: { provider: LlmProvider.Claude, model_name: 'claude-3-5-sonnet-20241022' },
+          [AgentType.Researcher]: { provider: LlmProvider.Claude, model_name: 'claude-3-5-sonnet-20241022' },
+          [AgentType.Validator]: { provider: LlmProvider.Claude, model_name: 'claude-3-5-sonnet-20241022' },
+          [AgentType.Documentation]: { provider: LlmProvider.Claude, model_name: 'claude-3-5-haiku-20241022' },
         }
       }
     };
 
-    return [mixed, zaiglm];
+    return [mixed, claude];
   }
 }
 

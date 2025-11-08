@@ -231,7 +231,7 @@ User: "Fix the jumping mechanic"
 Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
 
         let request = ChatRequest {
-            model: "z-ai/glm-4.5-air:free".to_string(),
+            model: "qwen/qwen3-235b-a22b:free".to_string(),
             messages: vec![
                 ApiChatMessage {
                     role: "system".to_string(),

@@ -1,0 +1,56 @@
+# LiteLLM Proxy configuration for Godoty
+# Start with: `litellm --config tauri-app/litellm.config.yaml`
+# The proxy will read provider API keys from your shell environment.
+# Recommended env vars:
+#   OPENROUTER_API_KEY=...
+#   ANTHROPIC_API_KEY=...
+#   LITELLM_PROXY_API_KEY=sk-proxy-example
+
+# Define friendly model names and map them to provider-specific models
+model_list:
+  # Planner (default free model via OpenRouter)
+  - model_name: planner-free
+    litellm_params:
+      model: openrouter/minimax/minimax-m2:free
+
+  # Code generation
+  - model_name: coder-free
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder:free
+
+  # High-context reasoning / validation
+  - model_name: validator-free
+    litellm_params:
+      model: openrouter/qwen/qwen3-235b-a22b:free
+
+  # Documentation agent
+  - model_name: docs-free
+    litellm_params:
+      model: openrouter/meta-llama/llama-3.3-70b-instruct:free
+
+  # Vision
+  - model_name: vision-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-nano-12b-v2-vl:free
+
+  # Anthropic Claude (official API)
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+
+# Optional global settings
+litellm_settings:
+  telemetry: false
+  # Add callbacks for logging/metrics if desired, e.g., lunary, sse
+  # success_callback: ["lunary"]
+  # failure_callback: ["lunary"]
+
+# Require API key to call the proxy
+general_settings:
+  master_key: ${LITELLM_PROXY_API_KEY}
+
+# Notes:
+# - Your app will call the proxy using OpenAI-compatible endpoints:
+#   POST ${BASE_URL}/v1/chat/completions with Authorization: Bearer <LITELLM_API_KEY>
+# - Use the `model` value as any of the `model_name` entries above (e.g., "coder-free").
+

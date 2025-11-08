@@ -643,7 +643,7 @@ impl Storage {
     /// Save API keys securely using the OS keychain
     pub fn save_api_keys(&self, keys: &ApiKeyStore) -> Result<()> {
         for (provider, key) in &keys.keys {
-            let account = format!("{:?}", provider); // e.g., "OpenAI", "ZaiGlm"
+            let account = format!("{:?}", provider); // e.g., "OpenRouter", "Claude"
             let entry = Entry::new("Godoty", &account)?;
             entry.set_password(key)?;
         }

@@ -1,8 +1,8 @@
 use crate::agent::ExecutionPlan;
 use crate::knowledge_base::KnowledgeBase;
-use crate::llm_client::LlmFactory;
+use crate::llm_client::{LiteLlmClient, LlmClient, LlmFactory};
 use crate::llm_config::AgentType;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -508,124 +508,33 @@ Focus on API usage, best practices, and examples.
 
 /// Helper function to call LLM API
 async fn call_llm(
-    client: &Client,
-    api_key: &str,
+    _client: &Client,
+    _api_key: &str,
     model: &str,
     system_prompt: &str,
     user_input: &str,
 ) -> Result<String> {
-    #[derive(Serialize)]
-    struct ChatRequest {
-        model: String,
-        messages: Vec<ChatMessage>,
-        temperature: f32,
-        max_tokens: i32,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    struct ChatMessage {
-        role: String,
-        content: String,
-    }
-
-    #[derive(Deserialize)]
-    struct ChatResponse {
-        choices: Vec<Choice>,
-        #[serde(default)]
-        usage: Option<Usage>,
-    }
-
-    #[derive(Deserialize)]
-    struct Choice {
-        message: ChatMessage,
-        #[serde(default)]
-        finish_reason: Option<String>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct Usage {
-        #[allow(dead_code)]
-        #[serde(default)]
-        prompt_tokens: u32,
-        #[allow(dead_code)]
-        #[serde(default)]
-        completion_tokens: u32,
-        #[allow(dead_code)]
-        #[serde(default)]
-        total_tokens: u32,
-    }
-
-    let request = ChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt.to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user_input.to_string(),
-            },
-        ],
-        temperature: 0.7,
-        max_tokens: 16384, // Increased from 8192 to prevent truncation
-    };
-
-    let sys_prev = system_prompt.chars().take(200).collect::<String>();
-    let user_prev = user_input.chars().take(200).collect::<String>();
-    tracing::debug!(
-        provider = "OpenRouter",
-        model = %model,
-        endpoint = "https://openrouter.ai/api/v1/chat/completions",
-        system_prompt_preview = %sys_prev,
-        user_input_preview = %user_prev,
-        "Agent LLM invocation (fallback)"
-    );
-
-    let response = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .header("HTTP-Referer", "https://github.com/godoty/godoty")
-        .header("X-Title", "Godoty AI Assistant")
-        .json(&request)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "LLM API request failed: {}",
-            response.status()
+    // Route exclusively via LiteLLM unified client
+    let base = std::env::var("LITELLM_BASE_URL").unwrap_or_default();
+    let key = std::env::var("LITELLM_API_KEY").unwrap_or_default();
+    if base.trim().is_empty() || key.trim().is_empty() {
+        return Err(anyhow!(
+            "LiteLLM not configured. Set LITELLM_BASE_URL and LITELLM_API_KEY."
         ));
     }
 
-    let response_text = response.text().await?;
-    let chat_response: ChatResponse = serde_json::from_str(&response_text).map_err(|e| {
-        let preview = response_text.chars().take(500).collect::<String>();
-        anyhow::anyhow!(
-            "Failed to parse LLM response JSON: {}. Raw preview: {}",
-            e,
-            preview
-        )
-    })?;
+    let llm = LiteLlmClient::new(base, key, model.to_string());
+    let sys_prev = system_prompt.chars().take(200).collect::<String>();
+    let user_prev = user_input.chars().take(200).collect::<String>();
+    tracing::debug!(
+        provider = "LiteLLM",
+        model = %model,
+        endpoint = "<litellm>/v1/chat/completions",
+        system_prompt_preview = %sys_prev,
+        user_input_preview = %user_prev,
+        "Agent LLM invocation via LiteLLM"
+    );
 
-    if let Some(choice) = chat_response.choices.first() {
-        // Check if response was truncated due to token limit
-        if let Some(ref finish_reason) = choice.finish_reason {
-            if finish_reason == "length" {
-                tracing::warn!(
-                    model = %model,
-                    usage = ?chat_response.usage,
-                    response_len = response_text.len(),
-                    "LLM response was truncated due to max_tokens limit. Consider increasing max_tokens or reducing prompt size."
-                );
-                // Log the full response for debugging
-                tracing::debug!(full_response = %response_text, "Full truncated response");
-            }
-        }
-
-        Ok(choice.message.content.clone())
-    } else {
-        Err(anyhow::anyhow!("No response from LLM"))
-    }
+    let out = llm.generate_response(system_prompt, user_input).await?;
+    Ok(out)
 }

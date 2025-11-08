@@ -5,7 +5,8 @@ use std::collections::HashMap;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LlmProvider {
     OpenRouter, // For services like OpenRouter that aggregate multiple providers
-    ZaiGlm,     // Z.AI GLM official API
+    #[serde(alias = "ZaiGlm")] // Backward compat: map old saved configs
+    Claude, // Anthropic Claude official API
 }
 
 /// Types of agents in the agentic workflow
@@ -69,7 +70,7 @@ impl Default for AgentLlmConfig {
             AgentType::Validator,
             ModelSelection {
                 provider: LlmProvider::OpenRouter,
-                model_name: "z-ai/glm-4.5-air:free".to_string(),
+                model_name: "qwen/qwen3-235b-a22b:free".to_string(),
             },
         );
         agents.insert(
@@ -120,7 +121,6 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
             "qwen/qwen3-coder:free".to_string(),
             "qwen/qwen3-235b-a22b:free".to_string(),
             "meta-llama/llama-3.3-70b-instruct:free".to_string(),
-            "z-ai/glm-4.5-air:free".to_string(),
             "nvidia/nemotron-nano-12b-v2-vl:free".to_string(),
             "google/gemini-2.0-flash-thinking-exp:free".to_string(),
             "google/gemini-2.0-flash-exp:free".to_string(),
@@ -129,18 +129,12 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
         ],
     );
 
-    // Z.AI GLM official API models
+    // Anthropic Claude official API models
     models.insert(
-        LlmProvider::ZaiGlm,
+        LlmProvider::Claude,
         vec![
-            "glm-4.5".to_string(),
-            "glm-4".to_string(),
-            "glm-4-air".to_string(),
-            "glm-4-plus".to_string(),
-            "glm-4-long".to_string(),
-            "glm-4v".to_string(),
-            "glm-4.5-flash".to_string(),
-            "glm-4.6".to_string(),
+            "claude-3-5-sonnet-20241022".to_string(),
+            "claude-3-5-haiku-20241022".to_string(),
         ],
     );
 
@@ -149,8 +143,5 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
 
 /// Helper to list all known providers
 pub fn all_providers() -> Vec<LlmProvider> {
-    vec![
-        LlmProvider::OpenRouter,
-        LlmProvider::ZaiGlm,
-    ]
+    vec![LlmProvider::OpenRouter, LlmProvider::Claude]
 }

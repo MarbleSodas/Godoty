@@ -11,6 +11,7 @@ mod context_engine;
 mod guardrails;
 mod knowledge_base;
 mod knowledge_manager;
+mod letta_backend;
 mod llm_client;
 mod llm_config;
 mod metrics;
@@ -19,7 +20,6 @@ mod storage;
 mod strands_agent;
 mod tscn_utils;
 mod tutorial_processor;
-mod vision_processor;
 mod web_search;
 mod websocket;
 
@@ -29,6 +29,7 @@ use ai::AIProcessor;
 use chat_session::{ChatMessage, ChatSessionManager, ContextSnapshot, MessageRole};
 use context_engine::ContextEngine;
 use knowledge_manager::KnowledgeManager;
+use letta_backend::LettaBackend;
 use llm_config::{AgentLlmConfig, ApiKeyStore, LlmProvider};
 use metrics::MetricsStore;
 use project_indexer::{IndexingStatus, ProjectIndex, ProjectIndexer};
@@ -731,7 +732,7 @@ async fn process_command(
         .await
         .map_err(|e| format!("Failed to build context: {}", e))?;
     let mut context = context_engine.format_context_for_ai(&comprehensive);
-    let mut visual_analysis_used = false;
+    let visual_analysis_used = false;
     let mut tutorial_research_used = false;
     let mut snapshot_b64_to_attach: Option<String> = None;
     let mut snapshot_meta_to_attach: Option<serde_json::Value> = None;
@@ -761,20 +762,6 @@ async fn process_command(
                             // Attach snapshot to the message later
                             snapshot_b64_to_attach = Some(image_b64.to_string());
                             snapshot_meta_to_attach = Some(meta.clone());
-
-                            let vp = crate::vision_processor::VisionProcessor::new(&api_key);
-                            match vp.analyze_visual_context(image_b64, &meta).await {
-                                Ok(analysis) => {
-                                    context.push_str("# Visual Analysis (Viewport/Inspector)\n");
-                                    context.push_str(&analysis);
-                                    context.push_str("\n\n");
-                                    visual_analysis_used = true;
-                                }
-                                Err(e) => {
-                                    context
-                                        .push_str(&format!("[Visual Analysis] Error: {}\n\n", e));
-                                }
-                            }
                         }
                     }
                 }
@@ -797,7 +784,7 @@ async fn process_command(
                 let storage = state.storage.lock().unwrap();
                 storage.load_tutorials(version_key).unwrap_or_default()
             } else {
-                let tp = crate::tutorial_processor::TutorialProcessor::new(&api_key);
+                let tp = crate::tutorial_processor::TutorialProcessor::new();
                 let fetched = tp
                     .fetch_godot_tutorials(&comprehensive.context_query, version_key)
                     .await
@@ -1828,8 +1815,7 @@ async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String
     // Initialize agentic workflow with metrics and LLM factory
     {
         let agent_llm_config = state.agent_llm_config.lock().unwrap().clone();
-        let api_key_store = state.api_key_store.lock().unwrap().clone();
-        let llm_factory = llm_client::LlmFactory::new(agent_llm_config, api_key_store);
+        let llm_factory = llm_client::LlmFactory::new(agent_llm_config);
 
         let mut agentic_workflow = state.agentic_workflow.lock().unwrap();
         *agentic_workflow = Some(
@@ -1979,8 +1965,7 @@ async fn process_command_agentic(
         };
 
         let agent_llm_config = state.agent_llm_config.lock().unwrap().clone();
-        let api_key_store = state.api_key_store.lock().unwrap().clone();
-        let llm_factory = llm_client::LlmFactory::new(agent_llm_config, api_key_store);
+        let llm_factory = llm_client::LlmFactory::new(agent_llm_config);
 
         let mut agentic_workflow = state.agentic_workflow.lock().unwrap();
         *agentic_workflow = Some(
@@ -2254,42 +2239,8 @@ async fn process_command_agentic(
                                     .map(|s| s.to_string());
                                 let meta: Option<Value> = data.get("meta").cloned();
 
-                                // Analyze the visual context if we have an image
-                                let analysis: Option<String> = if let Some(ref img) = image_b64 {
-                                    if !img.is_empty() {
-                                        let vp =
-                                            crate::vision_processor::VisionProcessor::new(&api_key);
-                                        match vp
-                                            .analyze_visual_context(
-                                                img,
-                                                &meta
-                                                    .clone()
-                                                    .unwrap_or_else(|| serde_json::json!({})),
-                                            )
-                                            .await
-                                        {
-                                            Ok(analysis_text) => Some(analysis_text),
-                                            Err(e) => {
-                                                emit_log(
-                                                    &window,
-                                                    "warn",
-                                                    "agent_activity",
-                                                    &format!("Visual analysis failed: {}", e),
-                                                    Some("Assistant"),
-                                                    Some("VisualContext"),
-                                                    Some("warning"),
-                                                    session_id_for_logs.clone(),
-                                                    None,
-                                                );
-                                                None
-                                            }
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                };
+                                // Visual analysis handled by Vision agent; no inline call here
+                                let analysis: Option<String> = None;
 
                                 (image_b64, meta, analysis)
                             } else {
@@ -2333,58 +2284,185 @@ async fn process_command_agentic(
         }
     };
 
-    let agent_response = match workflow.execute(&agent_context).await {
-        Ok(r) => r,
-        Err(e) => {
-            // Emit error log for agentic workflow failure
-            emit_log(
-                &window,
-                "error",
-                "agent_activity",
-                &format!("Agentic workflow failed: {}", e),
-                Some("AgenticWorkflow"),
-                Some("Execute"),
-                Some("error"),
-                session_id_for_logs.clone(),
-                None,
-            );
+    // Choose backend: Letta (stateful agents) or Strands (legacy)
+    let backend = std::env::var("AGENT_BACKEND")
+        .unwrap_or_else(|_| "strands".to_string())
+        .to_lowercase();
 
-            // Append assistant error message to chat and persist
-            {
-                let mut manager = state.chat_session_manager.lock().unwrap();
-                if let Some(session) = manager.get_active_session_mut() {
-                    let mut msg = ChatMessage::assistant(
-                        format!("Agentic workflow failed: {}", e),
-                        None,
-                        None,
-                        None,
+    let agent_response = {
+        if backend == "letta" {
+            let backend_client = match LettaBackend::new_from_env() {
+                Ok(b) => b,
+                Err(e) => {
+                    emit_log(
+                        &window,
+                        "error",
+                        "agent_activity",
+                        &format!("Letta config error: {}", e),
+                        Some("LettaBackend"),
+                        Some("Init"),
+                        Some("error"),
+                        session_id_for_logs.clone(),
                         None,
                     );
-                    // Attach basic metrics
-                    msg.metrics = Some(chat_session::MessageMetrics {
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        total_tokens: 0,
-                        latency_ms: processing_start.elapsed().as_millis() as u64,
-                        tool_call_times: {
-                            let mut v = Vec::new();
-                            if let Some(ms) = web_search_time_ms {
-                                v.push(chat_session::ToolCallMetric {
-                                    name: "web_search".into(),
-                                    duration_ms: ms,
-                                });
-                            }
-                            v
-                        },
-                        cost_estimate_usd: None,
-                    });
-                    session.add_message(msg);
-                    let storage = state.storage.lock().unwrap();
-                    let _ = storage.save_chat_session(session);
+                    {
+                        let mut manager = state.chat_session_manager.lock().unwrap();
+                        if let Some(session) = manager.get_active_session_mut() {
+                            let mut msg = ChatMessage::assistant(
+                                format!("Letta not configured: {}", e),
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            msg.metrics = Some(chat_session::MessageMetrics {
+                                input_tokens: 0,
+                                output_tokens: 0,
+                                total_tokens: 0,
+                                latency_ms: processing_start.elapsed().as_millis() as u64,
+                                tool_call_times: {
+                                    let mut v = Vec::new();
+                                    if let Some(ms) = web_search_time_ms {
+                                        v.push(chat_session::ToolCallMetric {
+                                            name: "web_search".into(),
+                                            duration_ms: ms,
+                                        });
+                                    }
+                                    v
+                                },
+                                cost_estimate_usd: None,
+                            });
+                            session.add_message(msg);
+                            let storage = state.storage.lock().unwrap();
+                            let _ = storage.save_chat_session(session);
+                        }
+                    }
+                    return Err(format!("Letta not configured: {}", e));
+                }
+            };
+            let existing_letta_agent_id: Option<String> = {
+                let manager = state.chat_session_manager.lock().unwrap();
+                manager
+                    .get_active_session()
+                    .and_then(|s| s.letta_agent_id.clone())
+            };
+            match backend_client
+                .execute(
+                    &window,
+                    session_id_for_logs.as_deref(),
+                    &agent_context,
+                    existing_letta_agent_id.as_deref(),
+                )
+                .await
+            {
+                Ok((r, used_agent_id)) => {
+                    // Persist agent id for this session
+                    if let Ok(mut manager) = state.chat_session_manager.lock() {
+                        if let Some(session) = manager.get_active_session_mut() {
+                            session.letta_agent_id = Some(used_agent_id.clone());
+                            let storage = state.storage.lock().unwrap();
+                            let _ = storage.save_chat_session(session);
+                        }
+                    }
+                    r
+                }
+                Err(e) => {
+                    emit_log(
+                        &window,
+                        "error",
+                        "agent_activity",
+                        &format!("Letta workflow failed: {}", e),
+                        Some("LettaBackend"),
+                        Some("Execute"),
+                        Some("error"),
+                        session_id_for_logs.clone(),
+                        None,
+                    );
+                    {
+                        let mut manager = state.chat_session_manager.lock().unwrap();
+                        if let Some(session) = manager.get_active_session_mut() {
+                            let mut msg = ChatMessage::assistant(
+                                format!("Letta workflow failed: {}", e),
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            msg.metrics = Some(chat_session::MessageMetrics {
+                                input_tokens: 0,
+                                output_tokens: 0,
+                                total_tokens: 0,
+                                latency_ms: processing_start.elapsed().as_millis() as u64,
+                                tool_call_times: {
+                                    let mut v = Vec::new();
+                                    if let Some(ms) = web_search_time_ms {
+                                        v.push(chat_session::ToolCallMetric {
+                                            name: "web_search".into(),
+                                            duration_ms: ms,
+                                        });
+                                    }
+                                    v
+                                },
+                                cost_estimate_usd: None,
+                            });
+                            session.add_message(msg);
+                            let storage = state.storage.lock().unwrap();
+                            let _ = storage.save_chat_session(session);
+                        }
+                    }
+                    return Err(format!("Letta workflow failed: {}", e));
                 }
             }
-
-            return Err(format!("Agentic workflow failed: {}", e));
+        } else {
+            match workflow.execute(&agent_context).await {
+                Ok(r) => r,
+                Err(e) => {
+                    emit_log(
+                        &window,
+                        "error",
+                        "agent_activity",
+                        &format!("Agentic workflow failed: {}", e),
+                        Some("AgenticWorkflow"),
+                        Some("Execute"),
+                        Some("error"),
+                        session_id_for_logs.clone(),
+                        None,
+                    );
+                    {
+                        let mut manager = state.chat_session_manager.lock().unwrap();
+                        if let Some(session) = manager.get_active_session_mut() {
+                            let mut msg = ChatMessage::assistant(
+                                format!("Agentic workflow failed: {}", e),
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            msg.metrics = Some(chat_session::MessageMetrics {
+                                input_tokens: 0,
+                                output_tokens: 0,
+                                total_tokens: 0,
+                                latency_ms: processing_start.elapsed().as_millis() as u64,
+                                tool_call_times: {
+                                    let mut v = Vec::new();
+                                    if let Some(ms) = web_search_time_ms {
+                                        v.push(chat_session::ToolCallMetric {
+                                            name: "web_search".into(),
+                                            duration_ms: ms,
+                                        });
+                                    }
+                                    v
+                                },
+                                cost_estimate_usd: None,
+                            });
+                            session.add_message(msg);
+                            let storage = state.storage.lock().unwrap();
+                            let _ = storage.save_chat_session(session);
+                        }
+                    }
+                    return Err(format!("Agentic workflow failed: {}", e));
+                }
+            }
         }
     };
 

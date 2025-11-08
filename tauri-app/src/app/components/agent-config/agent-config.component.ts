@@ -110,7 +110,7 @@ export class AgentConfigComponent implements OnInit {
       const trimmed = key.trim();
       if (!trimmed) return false; // allow empty (user may not use provider)
       if (/\s/.test(trimmed)) return true;
-      if (p === LlmProvider.ZaiGlm && trimmed.length < 20) return true;
+      if (p === LlmProvider.Claude && trimmed.length < 20) return true;
       return false;
     });
     if (invalidProvider) {
@@ -235,14 +235,14 @@ export class AgentConfigComponent implements OnInit {
     const key = (this.apiKeys?.keys[provider] || '').trim();
     if (!key) return false;
     if (/\s/.test(key)) return false;
-    if (provider === LlmProvider.ZaiGlm && key.length < 20) return false;
+    if (provider === LlmProvider.Claude && key.length < 20) return false;
     return true;
   }
 
   getProviderDisplayName(provider: LlmProvider): string {
     const displayNames: Record<LlmProvider, string> = {
       [LlmProvider.OpenRouter]: 'OpenRouter',
-      [LlmProvider.ZaiGlm]: 'Z.ai'
+      [LlmProvider.Claude]: 'Claude'
     };
     return displayNames[provider] || provider;
   }
