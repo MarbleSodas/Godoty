@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub enum LlmProvider {
     OpenRouter, // For services like OpenRouter that aggregate multiple providers
     ZaiGlm,     // Z.AI GLM official API
+    LiteLLM,    // Local LiteLLM proxy (sidecar)
 }
 
 /// Types of agents in the agentic workflow
@@ -40,42 +41,42 @@ impl Default for AgentLlmConfig {
         agents.insert(
             AgentType::Planner,
             ModelSelection {
-                provider: LlmProvider::OpenRouter,
+                provider: LlmProvider::LiteLLM,
                 model_name: "minimax/minimax-m2:free".to_string(),
             },
         );
         agents.insert(
             AgentType::CodeGenerator,
             ModelSelection {
-                provider: LlmProvider::OpenRouter,
+                provider: LlmProvider::LiteLLM,
                 model_name: "qwen/qwen3-coder:free".to_string(),
             },
         );
         agents.insert(
             AgentType::Vision,
             ModelSelection {
-                provider: LlmProvider::OpenRouter,
+                provider: LlmProvider::LiteLLM,
                 model_name: "nvidia/nemotron-nano-12b-v2-vl:free".to_string(),
             },
         );
         agents.insert(
             AgentType::Researcher,
             ModelSelection {
-                provider: LlmProvider::OpenRouter,
+                provider: LlmProvider::LiteLLM,
                 model_name: "qwen/qwen3-235b-a22b:free".to_string(),
             },
         );
         agents.insert(
             AgentType::Validator,
             ModelSelection {
-                provider: LlmProvider::OpenRouter,
+                provider: LlmProvider::LiteLLM,
                 model_name: "z-ai/glm-4.5-air:free".to_string(),
             },
         );
         agents.insert(
             AgentType::Documentation,
             ModelSelection {
-                provider: LlmProvider::OpenRouter,
+                provider: LlmProvider::LiteLLM,
                 model_name: "meta-llama/llama-3.3-70b-instruct:free".to_string(),
             },
         );
@@ -113,6 +114,7 @@ impl ApiKeyStore {
 pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
     let mut models = HashMap::new();
 
+    // Models routed via OpenRouter (direct HTTP)
     models.insert(
         LlmProvider::OpenRouter,
         vec![
@@ -126,6 +128,20 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
             "google/gemini-2.0-flash-exp:free".to_string(),
             "anthropic/claude-3.5-sonnet".to_string(),
             "openai/gpt-4o".to_string(),
+        ],
+    );
+
+    // Models routed via local LiteLLM proxy (sidecar). These should mirror what's configured in
+    // resources/litellm_config.yaml and can include OpenRouter, Ollama, vLLM backends.
+    models.insert(
+        LlmProvider::LiteLLM,
+        vec![
+            // Common defaults that work with the provided litellm_config.yaml
+            "minimax/minimax-m2:free".to_string(),
+            "qwen/qwen3-coder:free".to_string(),
+            "nvidia/nemotron-nano-12b-v2-vl:free".to_string(),
+            // Example local routes (if user runs Ollama / vLLM locally)
+            "ollama/llama3.1:8b".to_string(),
         ],
     );
 
@@ -152,5 +168,6 @@ pub fn all_providers() -> Vec<LlmProvider> {
     vec![
         LlmProvider::OpenRouter,
         LlmProvider::ZaiGlm,
+        LlmProvider::LiteLLM,
     ]
 }

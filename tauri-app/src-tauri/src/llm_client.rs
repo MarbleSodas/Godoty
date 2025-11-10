@@ -74,6 +74,95 @@ impl OpenRouterClient {
     }
 }
 
+/// LiteLLM local proxy client (sidecar)
+pub struct LiteLLMClient {
+    master_key: String,
+    model: String,
+    client: Client,
+}
+
+impl LiteLLMClient {
+    pub fn new(master_key: String, model: String) -> Self {
+        Self {
+            master_key,
+            model,
+            client: Client::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmClient for LiteLLMClient {
+    async fn generate_response(&self, system_prompt: &str, user_input: &str) -> Result<String> {
+        #[derive(Serialize)]
+        struct ChatRequest {
+            model: String,
+            messages: Vec<ChatMessage>,
+            temperature: f32,
+            max_tokens: i32,
+        }
+        #[derive(Serialize, Deserialize)]
+        struct ChatMessage {
+            role: String,
+            content: String,
+        }
+        #[derive(Deserialize)]
+        struct ChatResponse { choices: Vec<Choice> }
+        #[derive(Deserialize)]
+        struct Choice { message: ChatMessage }
+
+        // Debug log
+        let sys_prev = system_prompt.chars().take(200).collect::<String>();
+        let user_prev = user_input.chars().take(200).collect::<String>();
+        tracing::debug!(
+            provider = "LiteLLM",
+            model = %self.model,
+            endpoint = %self.endpoint(),
+            system_prompt_len = system_prompt.len(),
+            user_input_len = user_input.len(),
+            system_prompt_preview = %sys_prev,
+            user_input_preview = %user_prev,
+            "LLM call starting"
+        );
+
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                ChatMessage { role: "system".into(), content: system_prompt.to_string() },
+                ChatMessage { role: "user".into(), content: user_input.to_string() },
+            ],
+            temperature: 0.7,
+            max_tokens: 8192,
+        };
+
+        let response = self
+            .client
+            .post(self.endpoint())
+            .header("Authorization", format!("Bearer {}", self.master_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("LiteLLM proxy request failed: {}", response.status()));
+        }
+        let response_text = response.text().await?;
+        let chat_response: ChatResponse = serde_json::from_str(&response_text).map_err(|e| {
+            let preview = response_text.chars().take(200).collect::<String>();
+            anyhow!("Failed to parse LiteLLM response JSON: {}. Raw preview: {}", e, preview)
+        })?;
+        if let Some(choice) = chat_response.choices.first() {
+            Ok(choice.message.content.clone())
+        } else {
+            Err(anyhow!("LiteLLM returned no choices"))
+        }
+    }
+
+    fn model_identifier(&self) -> &str { &self.model }
+    fn endpoint(&self) -> &'static str { "http://127.0.0.1:4000/v1/chat/completions" }
+}
+
 /// Z.AI GLM official client
 pub struct ZaiGlmClient {
     api_key: String,
@@ -786,6 +875,10 @@ impl LlmFactory {
             ))),
             LlmProvider::ZaiGlm => Ok(Box::new(ZaiGlmClient::new(
                 api_key,
+                selection.model_name.clone(),
+            ))),
+            LlmProvider::LiteLLM => Ok(Box::new(LiteLLMClient::new(
+                api_key, // here, `api_key` is the LiteLLM master key
                 selection.model_name.clone(),
             ))),
         }

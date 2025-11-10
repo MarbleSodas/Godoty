@@ -6,6 +6,8 @@ signal client_connected(ws: WebSocketPeer)
 var server: TCPServer
 var peers: Array[StreamPeerTCP] = []
 var websocket_peers: Array[WebSocketPeer] = []
+# Track which WebSocket peers have fired the client_connected signal after OPEN
+var ws_open_emitted: Dictionary = {}
 var port: int = 9001
 
 func start_server():
@@ -72,8 +74,8 @@ func _process(_delta):
 				peers.remove_at(i)
 				print("Godoty: WebSocket connection established")
 
-				# Emit signal for new client connection
-				client_connected.emit(ws)
+				# Defer client_connected until the WebSocket is fully OPEN
+				# (will be emitted in the poll loop when state == STATE_OPEN)
 
 				continue
 
@@ -88,6 +90,12 @@ func _process(_delta):
 		var state = ws.get_ready_state()
 
 		if state == WebSocketPeer.STATE_OPEN:
+			# Emit client_connected once per peer when it transitions to OPEN
+			var id := ws.get_instance_id()
+			if not ws_open_emitted.has(id):
+				ws_open_emitted[id] = true
+				print("Godoty: WebSocket is OPEN, emitting client_connected")
+				client_connected.emit(ws)
 			# Receive messages
 			while ws.get_available_packet_count() > 0:
 				var packet = ws.get_packet()
@@ -96,6 +104,10 @@ func _process(_delta):
 
 		elif state == WebSocketPeer.STATE_CLOSED:
 
+			# Cleanup tracking and remove peer
+			var id := ws.get_instance_id()
+			if ws_open_emitted.has(id):
+				ws_open_emitted.erase(id)
 			print("Godoty: WebSocket connection closed")
 			websocket_peers.remove_at(i)
 			continue

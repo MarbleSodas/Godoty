@@ -14,6 +14,8 @@ mod knowledge_manager;
 mod llm_client;
 mod llm_config;
 mod metrics;
+mod litellm_sidecar;
+
 mod project_indexer;
 mod storage;
 mod strands_agent;
@@ -31,6 +33,8 @@ use context_engine::ContextEngine;
 use knowledge_manager::KnowledgeManager;
 use llm_config::{AgentLlmConfig, ApiKeyStore, LlmProvider};
 use metrics::MetricsStore;
+use crate::litellm_sidecar::LiteLLMState;
+
 use project_indexer::{IndexingStatus, ProjectIndex, ProjectIndexer};
 use storage::Storage;
 use websocket::WebSocketClient;
@@ -50,6 +54,8 @@ struct AppState {
     metrics_store: Arc<Mutex<Option<MetricsStore>>>,
     agent_llm_config: Arc<Mutex<AgentLlmConfig>>,
     api_key_store: Arc<Mutex<ApiKeyStore>>,
+    // LiteLLM proxy sidecar state
+    litellm_state: Arc<Mutex<crate::litellm_sidecar::LiteLLMState>>,
 }
 
 impl Default for AppState {
@@ -87,6 +93,7 @@ impl Default for AppState {
             metrics_store: Arc::new(Mutex::new(None)),
             agent_llm_config: Arc::new(Mutex::new(agent_llm_config)),
             api_key_store: Arc::new(Mutex::new(api_key_store)),
+            litellm_state: Arc::new(Mutex::new(LiteLLMState::default())),
         }
     }
 }
@@ -245,17 +252,15 @@ async fn connect_to_godot(
                 *ws_client = Some(client.clone());
             }
 
-            // Request project path from Godot
-            let get_path_command = json!({
-                "action": "get_project_path"
-            });
+            // Wait for the project_info message sent by Godot on connection
+            println!("Waiting for project_info message from Godot...");
+            match client.receive_message().await {
+                Ok(message) => {
+                    println!("Received message from Godot: {:?}", message);
 
-            println!("Requesting project path from Godot...");
-            match client.send_command(&get_path_command).await {
-                Ok(response) => {
-                    println!("Received response from Godot: {:?}", response);
-                    if response["status"] == "success" {
-                        if let Some(project_path) = response["data"]["project_path"].as_str() {
+                    // Check if this is a project_info message
+                    if message["type"] == "project_info" && message["status"] == "success" {
+                        if let Some(project_path) = message["data"]["project_path"].as_str() {
                             println!("Detected Godot project path: {}", project_path);
 
                             // Check if this is a different project than currently configured
@@ -346,17 +351,100 @@ async fn connect_to_godot(
                                 Ok("Connected to Godot (same project)".to_string())
                             }
                         } else {
-                            Ok("Connected to Godot (no project path in response)".to_string())
+                            Ok("Connected to Godot (no project path in message)".to_string())
                         }
                     } else {
-                        // Failed to get project path, but connection is still valid
-                        Ok("Connected to Godot (failed to get project path)".to_string())
+                        // Not a project_info message or failed status
+                        println!("Received unexpected message type: {:?}", message["type"]);
+                        Ok("Connected to Godot (unexpected message type)".to_string())
                     }
                 }
                 Err(e) => {
-                    // Failed to get project path, but connection is still valid
-                    println!("Warning: Failed to get project path: {}", e);
-                    Ok("Connected to Godot (failed to query project path)".to_string())
+                    // Failed to receive project_info message, try explicit request as a fallback
+                    println!("Warning: Failed to receive project_info message: {}", e);
+
+                    let get_path_command = json!({
+                        "action": "get_project_path"
+                    });
+                    println!("Falling back to explicit get_project_path request...");
+
+                    match client.send_command(&get_path_command).await {
+                        Ok(response) => {
+                            if response["status"] == "success" {
+                                if let Some(project_path) = response["data"]["project_path"].as_str() {
+                                    println!("Detected Godot project path (fallback): {}", project_path);
+
+                                    // Check if this is a different project than currently configured
+                                    let current_path = {
+                                        let path = state.godot_project_path.lock().unwrap();
+                                        path.clone()
+                                    };
+
+                                    let needs_update = match current_path {
+                                        Some(ref current) => {
+                                            let current_normalized = std::path::Path::new(current)
+                                                .canonicalize()
+                                                .ok()
+                                                .and_then(|p| p.to_str().map(|s| s.to_lowercase()));
+                                            let new_normalized = std::path::Path::new(project_path)
+                                                .canonicalize()
+                                                .ok()
+                                                .and_then(|p| p.to_str().map(|s| s.to_lowercase()));
+                                            current_normalized != new_normalized
+                                        }
+                                        None => true,
+                                    };
+
+                                    if needs_update {
+                                        // Update the stored project path
+                                        {
+                                            let mut path = state.godot_project_path.lock().unwrap();
+                                            *path = Some(project_path.to_string());
+                                        }
+                                        // Save to storage
+                                        {
+                                            let mut storage = state.storage.lock().unwrap();
+                                            let _ = storage.save_project_path(project_path);
+                                        }
+                                        // Set status to Indexing and emit event
+                                        {
+                                            let mut status = state.indexing_status.lock().unwrap();
+                                            *status = IndexingStatus::Indexing;
+                                            let _ = window.emit(
+                                                "indexing-status-changed",
+                                                json!({
+                                                    "projectPath": Some(project_path),
+                                                    "status": IndexingStatus::Indexing
+                                                }),
+                                            );
+                                        }
+                                        // Trigger background indexing
+                                        let state_clone = state.inner().clone();
+                                        let path_clone = project_path.to_string();
+                                        let window_clone = window.clone();
+                                        tokio::spawn(async move {
+                                            perform_background_indexing(window_clone, path_clone, state_clone).await;
+                                        });
+
+                                        Ok(format!(
+                                            "Connected to Godot and updated project path to: {}",
+                                            project_path
+                                        ))
+                                    } else {
+                                        Ok("Connected to Godot (same project)".to_string())
+                                    }
+                                } else {
+                                    Ok("Connected to Godot (no project path in response)".to_string())
+                                }
+                            } else {
+                                Ok("Connected to Godot (failed to get project path)".to_string())
+                            }
+                        }
+                        Err(e2) => {
+                            println!("Warning: Fallback get_project_path failed: {}", e2);
+                            Ok("Connected to Godot (failed to query project path)".to_string())
+                        }
+                    }
                 }
             }
         }
@@ -2699,6 +2787,127 @@ fn get_available_models() -> Result<HashMap<llm_config::LlmProvider, Vec<String>
 
 /// Trigger automatic indexing on application startup
 /// This function checks if a project path is configured and if indexing hasn't started yet
+// LiteLLM sidecar controls
+#[tauri::command]
+async fn start_litellm_proxy(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    port: Option<u16>,
+) -> Result<String, String> {
+    // Prefer .env OPENROUTER_API_KEY; fall back to secure store/legacy storage; allow missing
+    let openrouter_key_opt = std::env::var("OPENROUTER_API_KEY").ok()
+        .or_else(|| {
+            let store = state.api_key_store.lock().unwrap();
+            store.get_key(&LlmProvider::OpenRouter).cloned()
+        })
+        .or_else(|| {
+            let storage = state.storage.lock().unwrap();
+            storage.get_api_key()
+        });
+
+    // Get or generate a LiteLLM master key
+    let master_key = {
+        let store = state.api_key_store.lock().unwrap();
+        store.get_key(&LlmProvider::LiteLLM).cloned()
+    }
+    .unwrap_or_else(|| format!("sk-litellm-{}", uuid::Uuid::new_v4()));
+
+    // Persist master key into secure store (OS keychain) if newly generated
+    {
+        let mut store = state.api_key_store.lock().unwrap();
+        store.set_key(LlmProvider::LiteLLM, master_key.clone());
+        let storage = state.storage.lock().unwrap();
+        storage
+            .save_api_keys(&store.clone())
+            .map_err(|e| format!("Failed to save master key: {}", e))?;
+    }
+
+    // Start sidecar
+    {
+        let mut sidecar_state = state.litellm_state.lock().unwrap();
+        let openrouter_key_ref = openrouter_key_opt.as_deref();
+        crate::litellm_sidecar::start_litellm(
+            &app,
+            &mut sidecar_state,
+            openrouter_key_ref,
+            &master_key,
+            port.unwrap_or(4000),
+        )
+        .map_err(|e| format!("Failed to start LiteLLM: {}", e))?;
+    }
+
+    Ok("ok".to_string())
+}
+
+#[tauri::command]
+fn stop_litellm_proxy(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let mut sidecar_state = state.litellm_state.lock().unwrap();
+    let port = if sidecar_state.is_running() { Some(sidecar_state.port) } else { None };
+    crate::litellm_sidecar::stop_litellm(&mut sidecar_state)
+        .map_err(|e| format!("Failed to stop LiteLLM: {}", e))?;
+
+    // Emit stopped event
+    let _ = app.emit("litellm-status", LiteLLMStatus { running: false, port });
+
+    Ok("ok".to_string())
+}
+
+#[derive(serde::Serialize, Clone)]
+struct LiteLLMStatus {
+    running: bool,
+    port: Option<u16>,
+}
+
+#[tauri::command]
+fn get_litellm_status(state: State<'_, AppState>) -> Result<LiteLLMStatus, String> {
+    let sc = state.litellm_state.lock().unwrap();
+    let running = sc.is_running();
+    let port = if running { Some(sc.port) } else { None };
+    Ok(LiteLLMStatus { running, port })
+}
+
+
+fn auto_start_litellm_on_startup(app: &tauri::App) {
+    // Always start the sidecar; prefer .env OPENROUTER_API_KEY but don't require it
+    let state = app.state::<AppState>();
+    let openrouter_key_opt = std::env::var("OPENROUTER_API_KEY").ok()
+        .or_else(|| {
+            let store = state.api_key_store.lock().unwrap();
+            store.get_key(&LlmProvider::OpenRouter).cloned()
+        })
+        .or_else(|| {
+            let storage = state.storage.lock().unwrap();
+            storage.get_api_key()
+        });
+
+    // Ensure a LiteLLM master key exists (generate if missing)
+    let master_key = {
+        let store = state.api_key_store.lock().unwrap();
+        store.get_key(&LlmProvider::LiteLLM).cloned()
+    }.unwrap_or_else(|| format!("sk-litellm-{}", uuid::Uuid::new_v4()));
+
+    {
+        let mut store = state.api_key_store.lock().unwrap();
+        if store.get_key(&LlmProvider::LiteLLM).is_none() {
+            store.set_key(LlmProvider::LiteLLM, master_key.clone());
+            let storage = state.storage.lock().unwrap();
+            if let Err(e) = storage.save_api_keys(&store.clone()) {
+                println!("Warning: failed to persist LiteLLM master key: {}", e);
+            }
+        }
+    }
+
+    // Start the sidecar (idempotent if already running)
+    let mut sc = state.litellm_state.lock().unwrap();
+    let openrouter_key_ref = openrouter_key_opt.as_deref();
+    if let Err(e) = crate::litellm_sidecar::start_litellm(&app.handle(), &mut sc, openrouter_key_ref, &master_key, 4000) {
+        println!("LiteLLM auto-start failed: {}", e);
+    } else {
+        println!("LiteLLM sidecar auto-started on port 4000");
+    }
+}
+
+
 fn trigger_automatic_indexing_on_startup(app: &tauri::App) {
     // Get the app state
     let state = app.state::<AppState>();
@@ -2745,6 +2954,8 @@ fn trigger_automatic_indexing_on_startup(app: &tauri::App) {
                     }),
                 );
 
+
+
                 // Trigger background indexing using tauri's async runtime
                 let state_clone = state.inner().clone();
                 let path_clone = project_path.clone();
@@ -2763,10 +2974,14 @@ fn trigger_automatic_indexing_on_startup(app: &tauri::App) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init())
+
         .manage(AppState::default())
         .setup(|app| {
             // Trigger automatic indexing on startup
             trigger_automatic_indexing_on_startup(app);
+            // Auto-start LiteLLM sidecar when configured
+            auto_start_litellm_on_startup(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2802,6 +3017,12 @@ pub fn run() {
             get_api_keys,
             save_api_keys,
             get_available_models,
+
+
+            start_litellm_proxy,
+            stop_litellm_proxy,
+            get_litellm_status,
+
             get_web_search_settings,
             save_web_search_settings,
             tool_web_search

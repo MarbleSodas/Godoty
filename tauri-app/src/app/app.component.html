@@ -6,6 +6,7 @@
     <div class="flex items-center gap-4">
       <a routerLink="/agent-config" class="debug-link" title="Agent LLM Configuration">⚙️ Config</a>
       <a routerLink="/debug" class="debug-link" title="Developer Debug Dashboard">🛠️ Debug</a>
+      <app-sidecar-status></app-sidecar-status>
       <app-status-panel [status]="connectionStatus"></app-status-panel>
     </div>
   </header>

@@ -115,19 +115,46 @@ func _on_debug_message(entry: Dictionary):
 	_update_dock_status(msg)
 
 func _on_client_connected(ws: WebSocketPeer):
-	print("Godoty: Client connected, sending project path...")
-	# Send project path information to the newly connected client
-	var project_path = ProjectSettings.globalize_path("res://")
-	var welcome_message = {
+	print("Godoty: Client connected; will send project path when socket is open...")
+	# Prepare project path payload
+	var project_path := ProjectSettings.globalize_path("res://")
+	var welcome_message := {
 		"type": "project_info",
 		"status": "success",
-		"data": {
-			"project_path": project_path
-		}
+		"data": {"project_path": project_path}
 	}
-	var json_string = JSON.stringify(welcome_message)
-	ws.send_text(json_string)
-	print("Godoty: Sent project path to client: ", project_path)
+	var json_string := JSON.stringify(welcome_message)
+	# Try immediate send if the socket is already open
+	if ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		var err := ws.send_text(json_string)
+		if err != OK:
+			push_error("Godoty: Failed to send project path: %s" % error_string(err))
+		else:
+			print("Godoty: Sent project path to client: ", project_path)
+		return
+	# Otherwise, retry until the socket opens (or times out)
+	var timer := Timer.new()
+	timer.wait_time = 0.1
+	timer.one_shot = false
+	add_child(timer)
+	var attempts := 0
+	timer.timeout.connect(func():
+		attempts += 1
+		var state := ws.get_ready_state()
+		if state == WebSocketPeer.STATE_OPEN:
+			var err2 := ws.send_text(json_string)
+			if err2 != OK:
+				push_error("Godoty: Failed to send project path on retry: %s" % error_string(err2))
+			else:
+				print("Godoty: Sent project path to client: ", project_path)
+			timer.stop()
+			timer.queue_free()
+		elif state == WebSocketPeer.STATE_CLOSED or attempts >= 50:
+			print("Godoty: WebSocket closed or timed out before sending project path")
+			timer.stop()
+			timer.queue_free()
+	)
+	timer.start()
 
 func _update_dock_status(message: String):
 	if dock and dock.has_method("update_status"):

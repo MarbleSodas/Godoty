@@ -5,6 +5,24 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default"
+    "opener:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "litellm", "cmd": "litellm" },
+        { "name": "litellm_homebrew", "cmd": "/opt/homebrew/bin/litellm" },
+        { "name": "litellm_usr_local", "cmd": "/usr/local/bin/litellm" },
+        { "name": "litellm_usr_bin", "cmd": "/usr/bin/litellm" }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        { "name": "litellm", "cmd": "litellm" },
+        { "name": "litellm_homebrew", "cmd": "/opt/homebrew/bin/litellm" },
+        { "name": "litellm_usr_local", "cmd": "/usr/local/bin/litellm" },
+        { "name": "litellm_usr_bin", "cmd": "/usr/bin/litellm" }
+      ]
+    }
   ]
 }

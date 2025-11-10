@@ -9,6 +9,7 @@ import { ProcessLogService } from './services/process-log.service';
 import { ProcessLogEntry } from './models/process-log.model';
 
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
+import { SidecarStatusComponent } from './components/sidecar-status/sidecar-status.component';
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
 import { SessionManagerComponent } from './components/session-manager/session-manager.component';
 import { ProcessLogsComponent } from './components/process-logs/process-logs.component';
@@ -22,6 +23,7 @@ import { MetricsPanelComponent } from './components/metrics-panel/metrics-panel.
     RouterOutlet,
     RouterLink,
     StatusPanelComponent,
+    SidecarStatusComponent,
     ChatViewComponent,
     SessionManagerComponent,
     ProcessLogsComponent,

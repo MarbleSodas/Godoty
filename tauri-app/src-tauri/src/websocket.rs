@@ -28,6 +28,37 @@ impl WebSocketClient {
         })
     }
 
+    /// Receive a message from the WebSocket without sending a command first.
+    /// This is useful for handling unsolicited messages from the server.
+    #[tracing::instrument(skip(self))]
+    pub async fn receive_message(&self) -> Result<Value> {
+        let mut stream = self.stream.lock().await;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(3), stream.next()).await {
+            Ok(Some(msg)) => {
+                let msg = msg.map_err(|e| {
+                    tracing::error!(error = %e, "Failed to receive message");
+                    anyhow!("Failed to receive message: {}", e)
+                })?;
+
+                if let Message::Text(text) = msg {
+                    let resp_preview: String = text.chars().take(200).collect();
+                    tracing::debug!(message_preview = %resp_preview, "Received message from WebSocket");
+                    let response: Value = serde_json::from_str(&text)?;
+                    return Ok(response);
+                }
+            }
+            Ok(None) => {
+                tracing::warn!("WebSocket stream ended while waiting for message");
+            }
+            Err(_elapsed) => {
+                tracing::warn!("Timed out waiting for message from WebSocket");
+            }
+        }
+
+        Err(anyhow!("No message received"))
+    }
+
     #[tracing::instrument(skip(self, command))]
     pub async fn send_command(&self, command: &Value) -> Result<Value> {
         let mut stream = self.stream.lock().await;
