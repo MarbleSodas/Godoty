@@ -78,11 +78,6 @@ impl ProjectIndexer {
         }
     }
 
-    /// Set the Godot executable path for this indexer
-    #[allow(dead_code)]
-    pub fn set_godot_executable_path(&mut self, path: Option<String>) {
-        self.godot_executable_path = path;
-    }
 
     /// Check if a project needs indexing by checking if valid cached data exists
     /// Returns true if the project should be indexed (no cache or invalid cache)

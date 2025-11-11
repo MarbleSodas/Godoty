@@ -3,5 +3,8 @@
     class="w-2.5 h-2.5 rounded-full transition-all duration-300"
     [ngClass]="status.running ? 'bg-green-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]' : 'bg-red-400/80'"
   ></span>
+  <span *ngIf="!status.running && status.last_error" class="ml-2 max-w-[420px] text-xs text-red-500 truncate" [title]="status.last_error!">
+    {{ status.last_error }}
+  </span>
 </span>
 

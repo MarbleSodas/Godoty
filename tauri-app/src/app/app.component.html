@@ -6,7 +6,6 @@
     <div class="flex items-center gap-4">
       <a routerLink="/agent-config" class="debug-link" title="Agent LLM Configuration">⚙️ Config</a>
       <a routerLink="/debug" class="debug-link" title="Developer Debug Dashboard">🛠️ Debug</a>
-      <app-sidecar-status></app-sidecar-status>
       <app-status-panel [status]="connectionStatus"></app-status-panel>
     </div>
   </header>
@@ -32,6 +31,21 @@
         (deleteSession)="handleDeleteSession($event)"
         (clearAllSessions)="handleClearAllSessions()"
       ></app-session-manager>
+
+      <div class="glass-card p-3 flex items-center justify-between">
+        <div class="flex items-center gap-2 text-sm">
+          <span class="text-white/70">Project Index</span>
+          <span class="text-lg">{{ getIndexStatusIcon() }}</span>
+          <span class="text-white/80">{{ getIndexStatusText() }}</span>
+        </div>
+        <button (click)="handleReindexProject()" [disabled]="isReindexingProject || indexingStatus?.type === 'Indexing'"
+                class="px-2 py-1 rounded bg-white/10 text-white border border-white/20 hover:bg-white/15 disabled:opacity-50 text-xs">
+          Rebuild
+        </button>
+      </div>
+
+      <!-- Knowledge Base Status -->
+      <app-knowledge-base-status></app-knowledge-base-status>
 
       <div class="glass-card p-4">
         <h2 class="text-base font-medium mb-3 text-white/90">Connection</h2>

@@ -85,7 +85,6 @@ export interface ContextSnapshot {
   previous_messages_count: number;
   total_context_size: number;
   visual_analysis_used?: boolean;
-  tutorial_research_used?: boolean;
 }
 
 export interface ChatSession {

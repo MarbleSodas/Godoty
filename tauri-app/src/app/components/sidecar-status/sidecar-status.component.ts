@@ -6,6 +6,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 interface LiteLLMStatus {
   running: boolean;
   port?: number | null;
+  last_error?: string | null;
 }
 
 @Component({
@@ -16,13 +17,13 @@ interface LiteLLMStatus {
   styleUrls: ['./sidecar-status.component.css']
 })
 export class SidecarStatusComponent implements OnInit, OnDestroy {
-  status: LiteLLMStatus = { running: false, port: null };
+  status: LiteLLMStatus = { running: false, port: null, last_error: null };
   private unlisten?: UnlistenFn;
 
   async fetchStatus(): Promise<void> {
     try {
       const s = await invoke<LiteLLMStatus>('get_litellm_status');
-      this.status = s || { running: false, port: null };
+      this.status = s || { running: false, port: null, last_error: null };
     } catch (_) {
       this.status = { running: false, port: null };
     }
@@ -32,7 +33,7 @@ export class SidecarStatusComponent implements OnInit, OnDestroy {
     await this.fetchStatus();
     this.unlisten = await listen<LiteLLMStatus>('litellm-status', (event) => {
       const p = event.payload as LiteLLMStatus;
-      this.status = p || { running: false, port: null };
+      this.status = p || { running: false, port: null, last_error: null };
     });
   }
 

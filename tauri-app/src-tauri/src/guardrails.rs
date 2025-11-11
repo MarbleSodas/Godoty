@@ -61,6 +61,9 @@ impl Default for GuardrailConfig {
                 "rename_node".to_string(),
                 "add_to_group".to_string(),
                 "remove_from_group".to_string(),
+                // MCP Desktop Commander: filesystem/code editing via MCP server
+                "desktop_commander".to_string(),
+
             ],
             max_retry_attempts: 3,
         }
@@ -294,6 +297,35 @@ impl Guardrails {
                     return Err(anyhow!("Missing required field 'group'"));
                 }
             }
+            // Desktop Commander MCP
+            "desktop_commander" => {
+                let tool = cmd
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("Missing required field 'tool'"))?;
+                // Whitelist tools for phase 1 integration
+                let allowed_tools = [
+                    "read_file",
+                    "write_file",
+                    "edit_block",
+                    "create_directory",
+                    "list_directory",
+                    "move_file",
+                    "start_search",
+                    "get_more_search_results",
+                    "stop_search",
+                    "get_file_info",
+                ];
+                if !allowed_tools.contains(&tool) {
+                    return Err(anyhow!(format!(
+                        "Unsupported desktop_commander tool '{}'",
+                        tool
+                    )));
+                }
+                if !cmd.get("args").map(|v| v.is_object()).unwrap_or(false) {
+                    return Err(anyhow!("Missing required object field 'args'"));
+                }
+            }
             // Others either have no additional required fields beyond 'action' or are lenient
             _ => {}
         }
@@ -349,5 +381,43 @@ mod tests {
         })];
         let res = guard.validate_commands(&cmds).unwrap();
         assert!(res.valid, "expected valid, got errors: {:?}", res.errors);
+    }
+
+    // Desktop Commander tests
+    #[test]
+    fn validate_desktop_commander_write_file_ok() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "desktop_commander",
+            "tool": "write_file",
+            "args": {"path": "godot-plugin/addons/godoty/new_script.gd", "content": "extends Node"}
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(res.valid, "expected valid, got errors: {:?}", res.errors);
+    }
+
+    #[test]
+    fn validate_desktop_commander_unknown_tool_fails() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "desktop_commander",
+            "tool": "delete_everything",
+            "args": {}
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(!res.valid);
+        assert!(res.errors.iter().any(|e| e.contains("Unsupported desktop_commander tool")));
+    }
+
+    #[test]
+    fn validate_desktop_commander_missing_args_fails() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "desktop_commander",
+            "tool": "write_file"
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(!res.valid);
+        assert!(res.errors.iter().any(|e| e.contains("Missing required object field 'args'")));
     }
 }

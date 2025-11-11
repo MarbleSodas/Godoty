@@ -9,11 +9,11 @@ import { ProcessLogService } from './services/process-log.service';
 import { ProcessLogEntry } from './models/process-log.model';
 
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
-import { SidecarStatusComponent } from './components/sidecar-status/sidecar-status.component';
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
 import { SessionManagerComponent } from './components/session-manager/session-manager.component';
 import { ProcessLogsComponent } from './components/process-logs/process-logs.component';
 import { MetricsPanelComponent } from './components/metrics-panel/metrics-panel.component';
+import { KnowledgeBaseStatusComponent } from './components/knowledge-base-status/knowledge-base-status.component';
 
 @Component({
   selector: 'app-root',
@@ -23,11 +23,11 @@ import { MetricsPanelComponent } from './components/metrics-panel/metrics-panel.
     RouterOutlet,
     RouterLink,
     StatusPanelComponent,
-    SidecarStatusComponent,
     ChatViewComponent,
     SessionManagerComponent,
     ProcessLogsComponent,
-    MetricsPanelComponent
+    MetricsPanelComponent,
+    KnowledgeBaseStatusComponent
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css']
@@ -37,8 +37,58 @@ export class AppComponent implements OnInit {
   commands: Command[] = [];
   connectionStatus: ConnectionStatus = 'disconnected';
   apiKey: string = '';
+  isReindexingProject: boolean = false;
+  isRebuildingRag: boolean = false;
+
+  async handleReindexProject(): Promise<void> {
+    this.isReindexingProject = true;
+    try {
+      await invoke<string>('refresh_project_index');
+    } catch (error) {
+      console.error('Failed to refresh project index:', error);
+    } finally {
+      this.isReindexingProject = false;
+    }
+  }
+
+  async handleRebuildRagIndex(): Promise<void> {
+    this.isRebuildingRag = true;
+    try {
+      await invoke<string>('rag_index_current_project', { forceRebuild: true });
+    } catch (error) {
+      console.error('Failed to rebuild RAG index:', error);
+    } finally {
+      this.isRebuildingRag = false;
+    }
+  }
+
   projectPath: string = '';
   indexingStatus: IndexingStatus | null = null;
+
+  getIndexStatusIcon(): string {
+    const t = this.indexingStatus?.type as any;
+    if (!t) return '⚪';
+    switch (t) {
+      case 'NotStarted': return '⚪';
+      case 'Indexing': return '🔄';
+      case 'Complete': return '✅';
+      case 'Failed': return '❌';
+      default: return '⚪';
+    }
+  }
+
+  getIndexStatusText(): string {
+    const t = this.indexingStatus?.type as any;
+    if (!t) return 'Unknown';
+    switch (t) {
+      case 'NotStarted': return 'Not Started';
+      case 'Indexing': return 'Indexing...';
+      case 'Complete': return 'Complete';
+      case 'Failed': return `Failed: ${(this.indexingStatus as any)?.message || 'Unknown error'}`;
+      default: return 'Unknown';
+    }
+  }
+
 
   // Chat session management
   chatSessions: ChatSession[] = [];

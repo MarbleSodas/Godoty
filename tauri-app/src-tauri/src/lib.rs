@@ -14,16 +14,16 @@ mod knowledge_manager;
 mod llm_client;
 mod llm_config;
 mod metrics;
-mod litellm_sidecar;
+
+mod rag_sidecar;
 
 mod project_indexer;
 mod storage;
 mod strands_agent;
 mod tscn_utils;
-mod tutorial_processor;
-mod vision_processor;
-mod web_search;
 mod websocket;
+
+mod mcp_client;
 
 use crate::llm_client::set_tool_event_context;
 use agent::AgenticWorkflow;
@@ -32,11 +32,15 @@ use chat_session::{ChatMessage, ChatSessionManager, ContextSnapshot, MessageRole
 use context_engine::ContextEngine;
 use knowledge_manager::KnowledgeManager;
 use llm_config::{AgentLlmConfig, ApiKeyStore, LlmProvider};
+use crate::rag_sidecar::RagSidecarState;
+
 use metrics::MetricsStore;
-use crate::litellm_sidecar::LiteLLMState;
 
 use project_indexer::{IndexingStatus, ProjectIndex, ProjectIndexer};
 use storage::Storage;
+use crate::mcp_client::McpClient;
+use std::path::Path;
+
 use websocket::WebSocketClient;
 
 #[derive(Clone)]
@@ -54,8 +58,10 @@ struct AppState {
     metrics_store: Arc<Mutex<Option<MetricsStore>>>,
     agent_llm_config: Arc<Mutex<AgentLlmConfig>>,
     api_key_store: Arc<Mutex<ApiKeyStore>>,
-    // LiteLLM proxy sidecar state
-    litellm_state: Arc<Mutex<crate::litellm_sidecar::LiteLLMState>>,
+    // RAG sidecar state
+    rag_state: Arc<Mutex<RagSidecarState>>,
+    // DesktopCommander MCP client (stdio JSON-RPC)
+    mcp_client: Arc<Mutex<Option<McpClient>>>,
 }
 
 impl Default for AppState {
@@ -93,7 +99,8 @@ impl Default for AppState {
             metrics_store: Arc::new(Mutex::new(None)),
             agent_llm_config: Arc::new(Mutex::new(agent_llm_config)),
             api_key_store: Arc::new(Mutex::new(api_key_store)),
-            litellm_state: Arc::new(Mutex::new(LiteLLMState::default())),
+            rag_state: Arc::new(Mutex::new(RagSidecarState::default())),
+            mcp_client: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -133,111 +140,6 @@ fn emit_log(
     let _ = window.emit("process-log", payload);
 }
 
-#[tauri::command]
-async fn save_web_search_settings(
-    state: State<'_, AppState>,
-    provider: Option<String>,
-    api_key: Option<String>,
-) -> Result<String, String> {
-    let mut storage = state.storage.lock().unwrap();
-    storage
-        .save_web_search_settings(provider.as_deref(), api_key.as_deref())
-        .map_err(|e| e.to_string())?;
-    Ok("ok".into())
-}
-
-#[tauri::command]
-async fn get_web_search_settings(state: State<'_, AppState>) -> Result<Value, String> {
-    let storage = state.storage.lock().unwrap();
-    let (provider, key) = storage.get_web_search_settings();
-    Ok(
-        json!({"provider": provider, "api_key_set": key.as_ref().map(|k| !k.is_empty()).unwrap_or(false)}),
-    )
-}
-
-#[tauri::command]
-async fn tool_web_search(
-    window: tauri::Window,
-    state: State<'_, AppState>,
-    query: String,
-    max_results: Option<usize>,
-    session_id: Option<String>,
-) -> Result<Value, String> {
-    emit_log(
-        &window,
-        "info",
-        "tool_call",
-        "Web search started",
-        Some("WebSearch"),
-        Some("web_search"),
-        Some("started"),
-        session_id.clone(),
-        Some(json!({"query": query})),
-    );
-
-    let (_provider, key_opt) = {
-        let storage = state.storage.lock().unwrap();
-        storage.get_web_search_settings()
-    };
-
-    // Resolve API key
-    let api_key = if let Some(k) = key_opt {
-        k
-    } else {
-        std::env::var("TAVILY_API_KEY").unwrap_or_default()
-    };
-    if api_key.is_empty() {
-        emit_log(
-            &window,
-            "error",
-            "tool_call",
-            "Web search failed: missing API key",
-            Some("WebSearch"),
-            Some("web_search"),
-            Some("error"),
-            session_id,
-            None,
-        );
-        return Err("Missing Tavily API key. Set in settings or TAVILY_API_KEY env.".into());
-    }
-
-    // Only Tavily for now
-    let client = web_search::TavilyClient::new(api_key);
-    let start = std::time::Instant::now();
-    let res = client.search(&query, max_results.unwrap_or(5)).await;
-
-    match res {
-        Ok(results) => {
-            let took_ms = start.elapsed().as_millis();
-            emit_log(
-                &window,
-                "info",
-                "tool_call",
-                "Web search completed",
-                Some("WebSearch"),
-                Some("web_search"),
-                Some("completed"),
-                session_id.clone(),
-                Some(json!({"results_count": results.results.len(), "took_ms": took_ms })),
-            );
-            Ok(serde_json::to_value(results).unwrap_or(json!({})))
-        }
-        Err(e) => {
-            emit_log(
-                &window,
-                "error",
-                "tool_call",
-                &format!("Web search error: {}", e),
-                Some("WebSearch"),
-                Some("web_search"),
-                Some("error"),
-                session_id,
-                None,
-            );
-            Err(e.to_string())
-        }
-    }
-}
 
 #[tauri::command]
 async fn connect_to_godot(
@@ -529,7 +431,28 @@ async fn perform_background_indexing<R: tauri::Runtime, W: Emitter<R> + Clone + 
                     }
                 }
             }
+            // Auto-trigger RAG indexing if sidecar is running
+            {
+                let sc_running = { let sc = state.rag_state.lock().unwrap(); sc.is_running() };
+                if sc_running {
+                    let port = { let sc = state.rag_state.lock().unwrap(); sc.port };
+                    let client = reqwest::Client::new();
+                    let body = json!({
+                        "project_path": path,
+                        "force_rebuild": false,
+                        "chunk_size": 1200,
+                        "chunk_overlap": 200
+                    });
+                    let _ = client
+                        .post(format!("http://127.0.0.1:{}/index-project", port))
+                        .json(&body)
+                        .send()
+                        .await;
+                }
+            }
+
         }
+
         Err(e) => {
             // Set status to Failed and emit event
             let error_msg = format!("Failed to index project: {}", e);
@@ -819,8 +742,59 @@ async fn process_command(
         .await
         .map_err(|e| format!("Failed to build context: {}", e))?;
     let mut context = context_engine.format_context_for_ai(&comprehensive);
-    let mut visual_analysis_used = false;
-    let mut tutorial_research_used = false;
+    // Append Project RAG Context
+    {
+        let project_path_opt = {
+            let g = state.godot_project_path.lock().unwrap();
+            g.clone()
+        };
+        if let Some(project_path) = project_path_opt {
+            // Ensure sidecar running (idempotent)
+            let app_handle = window.app_handle();
+            {
+                let mut sc = state.rag_state.lock().unwrap();
+                if !sc.is_running() {
+                    let _ = crate::rag_sidecar::start_rag(app_handle, &mut sc, 5001);
+                }
+            }
+            // Query
+            let (is_running, port) = {
+                let sc = state.rag_state.lock().unwrap();
+                (sc.is_running(), sc.port)
+            };
+            if is_running {
+                let client = reqwest::Client::new();
+                let body = json!({
+                    "project_path": project_path,
+                    "query": comprehensive.context_query,
+                    "k": 5
+                });
+                if let Ok(resp) = client
+                    .post(format!("http://127.0.0.1:{}/search-project", port))
+                    .json(&body)
+                    .send()
+                    .await
+                {
+                    if resp.status().is_success() {
+                        if let Ok(v) = resp.json::<serde_json::Value>().await {
+                            if let Some(arr) = v.get("results").and_then(|r| r.as_array()) {
+                                if !arr.is_empty() {
+                                    context.push_str("# Project RAG Context\n");
+                                    for (i, item) in arr.iter().enumerate() {
+                                        let source = item.get("source").and_then(|s| s.as_str()).unwrap_or("N/A");
+                                        let content = item.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                                        context.push_str(&format!("## RAG Result {}\nSource: {}\n{}\n\n", i+1, source, content));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let visual_analysis_used = false;
     let mut snapshot_b64_to_attach: Option<String> = None;
     let mut snapshot_meta_to_attach: Option<serde_json::Value> = None;
 
@@ -849,20 +823,6 @@ async fn process_command(
                             // Attach snapshot to the message later
                             snapshot_b64_to_attach = Some(image_b64.to_string());
                             snapshot_meta_to_attach = Some(meta.clone());
-
-                            let vp = crate::vision_processor::VisionProcessor::new(&api_key);
-                            match vp.analyze_visual_context(image_b64, &meta).await {
-                                Ok(analysis) => {
-                                    context.push_str("# Visual Analysis (Viewport/Inspector)\n");
-                                    context.push_str(&analysis);
-                                    context.push_str("\n\n");
-                                    visual_analysis_used = true;
-                                }
-                                Err(e) => {
-                                    context
-                                        .push_str(&format!("[Visual Analysis] Error: {}\n\n", e));
-                                }
-                            }
                         }
                     }
                 }
@@ -870,42 +830,7 @@ async fn process_command(
         }
     }
 
-    // Integrate Tutorial Research (lower precedence than official docs)
-    {
-        let version_key = project_index.godot_version.as_deref();
-        let should_research = comprehensive.context_query.trim().len() >= 3;
-        if should_research {
-            // 3-day cache
-            let cached_ok = {
-                let storage = state.storage.lock().unwrap();
-                storage.is_tutorials_valid(version_key, 3 * 24 * 60 * 60)
-            };
 
-            let tutorials_text = if cached_ok {
-                let storage = state.storage.lock().unwrap();
-                storage.load_tutorials(version_key).unwrap_or_default()
-            } else {
-                let tp = crate::tutorial_processor::TutorialProcessor::new(&api_key);
-                let fetched = tp
-                    .fetch_godot_tutorials(&comprehensive.context_query, version_key)
-                    .await
-                    .unwrap_or_default();
-                if !fetched.is_empty() {
-                    let storage = state.storage.lock().unwrap();
-                    let _ = storage.save_tutorials(&fetched, version_key);
-                }
-                fetched
-            };
-
-            if !tutorials_text.trim().is_empty() {
-                context.push_str("# Tutorial Context (Lower Precedence)\n");
-                context.push_str("Note: Official Godot documentation takes precedence over tutorials. Conflicts will be resolved in favor of docs.\n\n");
-                context.push_str(&tutorials_text);
-                context.push_str("\n\n");
-                tutorial_research_used = true;
-            }
-        }
-    }
     println!(
         "[ContextEngine] built: total_chars={}, docs_len={}, proj_len={}, chat_len={}, recent_msgs={}, query='{}'",
         context.len(),
@@ -1162,7 +1087,6 @@ async fn process_command(
                 previous_messages_count: session.get_messages().len(),
                 total_context_size: context.len(),
                 visual_analysis_used,
-                tutorial_research_used,
             };
 
             let mut msg = ChatMessage::assistant(
@@ -1879,8 +1803,8 @@ fn append_system_message(
 /// Initialize knowledge bases
 #[tauri::command]
 async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String, String> {
-    // Pick embeddings key: prefer provider-specific OpenRouter key, else fall back to legacy key
-    let embed_api_key = {
+    // Get API key for LLM calls (AgenticWorkflow still needs this for LLM, not embeddings)
+    let api_key = {
         let store = state.api_key_store.lock().unwrap();
         store.get_key(&LlmProvider::OpenRouter).cloned()
     }
@@ -1894,8 +1818,9 @@ async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String
     let storage_dir = storage::Storage::get_config_dir()
         .map_err(|e| format!("Failed to get config dir: {}", e))?;
 
-    // Initialize knowledge manager
-    let km = KnowledgeManager::new(&embed_api_key, storage_dir.clone());
+    // Initialize knowledge manager (now uses local embeddings, no API key needed)
+    let km = KnowledgeManager::new(storage_dir.clone())
+        .map_err(|e| format!("Failed to create knowledge manager: {}", e))?;
     km.initialize()
         .await
         .map_err(|e| format!("Failed to initialize knowledge bases: {}", e))?;
@@ -1921,13 +1846,66 @@ async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String
 
         let mut agentic_workflow = state.agentic_workflow.lock().unwrap();
         *agentic_workflow = Some(
-            AgenticWorkflow::new(&embed_api_key)
+            AgenticWorkflow::new(&api_key)
                 .with_metrics_store(metrics_store)
                 .with_llm_factory(llm_factory),
         );
     }
 
     Ok("Knowledge bases initialized successfully".to_string())
+}
+
+/// Get knowledge base status
+#[tauri::command]
+async fn get_knowledge_base_status(state: State<'_, AppState>) -> Result<Value, String> {
+    let km = state.knowledge_manager.lock().unwrap();
+
+    if let Some(km) = km.as_ref() {
+        let plugin_count = km.get_plugin_kb().count().await;
+        let docs_count = km.get_docs_kb().count().await;
+
+        Ok(json!({
+            "initialized": true,
+            "plugin_kb_count": plugin_count,
+            "docs_kb_count": docs_count
+        }))
+    } else {
+        Ok(json!({
+            "initialized": false,
+            "plugin_kb_count": 0,
+            "docs_kb_count": 0
+        }))
+    }
+}
+
+/// Get all documents from documentation knowledge base
+#[tauri::command]
+async fn get_docs_kb_documents(state: State<'_, AppState>) -> Result<Value, String> {
+    let km = state.knowledge_manager.lock().unwrap();
+
+    if let Some(km) = km.as_ref() {
+        let docs = km.get_docs_kb().get_all_documents().await;
+        Ok(serde_json::to_value(docs).map_err(|e| e.to_string())?)
+    } else {
+        Err("Knowledge bases not initialized".to_string())
+    }
+}
+
+/// Rebuild documentation knowledge base
+#[tauri::command]
+async fn rebuild_docs_kb(state: State<'_, AppState>) -> Result<String, String> {
+    let km = state.knowledge_manager.lock().unwrap();
+
+    if let Some(km) = km.as_ref() {
+        km.rebuild_docs_kb()
+            .await
+            .map_err(|e| format!("Failed to rebuild docs KB: {}", e))?;
+
+        let count = km.get_docs_kb().count().await;
+        Ok(format!("Documentation knowledge base rebuilt successfully. {} documents indexed.", count))
+    } else {
+        Err("Knowledge bases not initialized".to_string())
+    }
 }
 
 /// Process command using agentic workflow
@@ -1939,7 +1917,6 @@ async fn process_command_agentic(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let processing_start = std::time::Instant::now();
-    let mut web_search_time_ms: Option<u64> = None;
     // Get API key for LLM calls: prefer provider-specific OpenRouter key, else fall back to legacy key
     let api_key = {
         let store = state.api_key_store.lock().unwrap();
@@ -1978,15 +1955,11 @@ async fn process_command_agentic(
             None,
         );
 
-        // Initialize knowledge bases
+        // Initialize knowledge bases (now uses local embeddings, no API key needed)
         let storage_dir = storage::Storage::get_config_dir()
             .map_err(|e| format!("Failed to get config dir: {}", e))?;
-        let embed_api_key = {
-            let store = state.api_key_store.lock().unwrap();
-            store.get_key(&LlmProvider::OpenRouter).cloned()
-        }
-        .unwrap_or_else(|| api_key.clone());
-        let km = KnowledgeManager::new(&embed_api_key, storage_dir);
+        let km = KnowledgeManager::new(storage_dir)
+            .map_err(|e| format!("Failed to create knowledge manager: {}", e))?;
         km.initialize()
             .await
             .map_err(|e| format!("Failed to initialize knowledge bases: {}", e))?;
@@ -2204,97 +2177,6 @@ async fn process_command_agentic(
         (km_ref.get_plugin_kb(), km_ref.get_docs_kb())
     };
 
-    // Optional: perform a lightweight web search to provide fresh context
-    let _web_results_md = {
-        let (_prov, key_opt) = {
-            let storage = state.storage.lock().unwrap();
-            storage.get_web_search_settings()
-        };
-        let api_key = key_opt.or_else(|| std::env::var("TAVILY_API_KEY").ok());
-        if let Some(api_key) = api_key {
-            if !api_key.is_empty() {
-                emit_log(
-                    &window,
-                    "info",
-                    "tool_call",
-                    "Web search started",
-                    Some("WebSearch"),
-                    Some("web_search"),
-                    Some("started"),
-                    session_id_for_logs.clone(),
-                    Some(json!({"query": input})),
-                );
-                let client = web_search::TavilyClient::new(api_key);
-                match client.search(&input, 3).await {
-                    Ok(results) => {
-                        web_search_time_ms = Some(results.took_ms as u64);
-                        emit_log(
-                            &window,
-                            "info",
-                            "tool_call",
-                            "Web search completed",
-                            Some("WebSearch"),
-                            Some("web_search"),
-                            Some("completed"),
-                            session_id_for_logs.clone(),
-                            Some(
-                                json!({"results_count": results.results.len(), "took_ms": results.took_ms}),
-                            ),
-                        );
-
-                        // Add a system message with results
-                        let mut md = String::from("# Web Search Results\n");
-                        for (i, item) in results.results.iter().enumerate() {
-                            md.push_str(&format!(
-                                "{}. {}\n{}\n{}\n\n",
-                                i + 1,
-                                item.title,
-                                item.url,
-                                item.snippet
-                            ));
-                        }
-                        {
-                            let mut manager = state.chat_session_manager.lock().unwrap();
-                            if let Some(session) = manager.get_active_session_mut() {
-                                session.add_message(ChatMessage {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    role: chat_session::MessageRole::System,
-                                    content: md.clone(),
-                                    timestamp: now_millis() as u64 / 1000,
-                                    thought_process: None,
-                                    context_used: None,
-                                    visual_snapshot_b64: None,
-                                    visual_snapshot_meta: None,
-                                    metrics: None,
-                                });
-                                let storage = state.storage.lock().unwrap();
-                                let _ = storage.save_chat_session(session);
-                            }
-                        }
-                        Some(())
-                    }
-                    Err(e) => {
-                        emit_log(
-                            &window,
-                            "error",
-                            "tool_call",
-                            &format!("Web search error: {}", e),
-                            Some("WebSearch"),
-                            Some("web_search"),
-                            Some("error"),
-                            session_id_for_logs.clone(),
-                            None,
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
 
     // Gather visual context if this is a UI-related task
     let visual_context = {
@@ -2342,42 +2224,8 @@ async fn process_command_agentic(
                                     .map(|s| s.to_string());
                                 let meta: Option<Value> = data.get("meta").cloned();
 
-                                // Analyze the visual context if we have an image
-                                let analysis: Option<String> = if let Some(ref img) = image_b64 {
-                                    if !img.is_empty() {
-                                        let vp =
-                                            crate::vision_processor::VisionProcessor::new(&api_key);
-                                        match vp
-                                            .analyze_visual_context(
-                                                img,
-                                                &meta
-                                                    .clone()
-                                                    .unwrap_or_else(|| serde_json::json!({})),
-                                            )
-                                            .await
-                                        {
-                                            Ok(analysis_text) => Some(analysis_text),
-                                            Err(e) => {
-                                                emit_log(
-                                                    &window,
-                                                    "warn",
-                                                    "agent_activity",
-                                                    &format!("Visual analysis failed: {}", e),
-                                                    Some("Assistant"),
-                                                    Some("VisualContext"),
-                                                    Some("warning"),
-                                                    session_id_for_logs.clone(),
-                                                    None,
-                                                );
-                                                None
-                                            }
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                };
+                                // Visual analysis removed
+                                let analysis: Option<String> = None;
 
                                 (image_b64, meta, analysis)
                             } else {
@@ -2454,16 +2302,7 @@ async fn process_command_agentic(
                         output_tokens: 0,
                         total_tokens: 0,
                         latency_ms: processing_start.elapsed().as_millis() as u64,
-                        tool_call_times: {
-                            let mut v = Vec::new();
-                            if let Some(ms) = web_search_time_ms {
-                                v.push(chat_session::ToolCallMetric {
-                                    name: "web_search".into(),
-                                    duration_ms: ms,
-                                });
-                            }
-                            v
-                        },
+                        tool_call_times: Vec::new(),
                         cost_estimate_usd: None,
                     });
                     session.add_message(msg);
@@ -2529,11 +2368,6 @@ async fn process_command_agentic(
     );
 
     // Execute commands
-    let client = {
-        let ws_client = state.ws_client.lock().unwrap();
-        ws_client.as_ref().ok_or("Not connected to Godot")?.clone()
-    };
-
     let mut results = Vec::new();
     for (idx, cmd) in agent_response.commands.iter().enumerate() {
         // Log agentic command execution
@@ -2546,7 +2380,7 @@ async fn process_command_agentic(
             "info",
             "action",
             &format!("Executing command {}: {}", idx + 1, action_name),
-            Some("GodotBridge"),
+            Some(if action_name == "desktop_commander" { "DesktopCommander" } else { "GodotBridge" }),
             Some("Execute"),
             Some("processing"),
             session_id_for_logs.clone(),
@@ -2559,14 +2393,80 @@ async fn process_command_agentic(
             serde_json::to_string(cmd).unwrap_or_default()
         );
 
-        let result = client
-            .send_command(cmd)
-            .await
-            .map_err(|e| format!("Failed to send command: {}", e))?;
+        let result = if action_name == "desktop_commander" {
+            // Ensure MCP client exists
+            let need_init = {
+                let c = state.mcp_client.lock().unwrap();
+                c.is_none()
+            };
+            if need_init {
+                let project_path = {
+                    let p = state.godot_project_path.lock().unwrap();
+                    p.clone().ok_or("Godot project path not set. Please set it in settings.")?
+                };
+                // Create client outside lock
+                match McpClient::new(Path::new(&project_path)).await {
+                    Ok(client) => {
+                        let mut c = state.mcp_client.lock().unwrap();
+                        *c = Some(client);
+                    }
+                    Err(e) => {
+                        let err = json!({
+                            "status": "error",
+                            "error": format!("Failed to start DesktopCommander MCP: {}", e)
+                        });
+                        emit_log(
+                            &window,
+                            "error",
+                            "action",
+                            &format!("Command {} response", idx + 1),
+                            Some("DesktopCommander"),
+                            Some("Execute"),
+                            Some("failed"),
+                            session_id_for_logs.clone(),
+                            Some(json!({ "index": idx + 1, "response_preview": err.to_string() })),
+                        );
+                        results.push(err.clone());
+                        continue;
+                    }
+                }
+            }
+            // Take client out to avoid holding lock across await
+            let mut client = {
+                let mut c = state.mcp_client.lock().unwrap();
+                c.take().ok_or("DesktopCommander MCP client missing")?
+            };
+            let tool = cmd
+                .get("tool")
+                .and_then(|t| t.as_str())
+                .ok_or("Missing field 'tool' for desktop_commander")?;
+            let args = cmd.get("args").cloned().unwrap_or(json!({}));
+            let call_res = client
+                .call_tool(tool, args)
+                .await
+                .map(|v| json!({"status":"success","data": v}))
+                .unwrap_or_else(|e| json!({"status":"error","error": e.to_string()}));
+            // Put client back
+            {
+                let mut c = state.mcp_client.lock().unwrap();
+                *c = Some(client);
+            }
+            call_res
+        } else {
+            // Route to Godot WebSocket
+            let client = {
+                let ws_client = state.ws_client.lock().unwrap();
+                ws_client.as_ref().ok_or("Not connected to Godot")?.clone()
+            };
+            client
+                .send_command(cmd)
+                .await
+                .map_err(|e| format!("Failed to send command: {}", e))?
+        };
 
         // Log command result
         let resp_preview = result.to_string().chars().take(300).collect::<String>();
-        let level = if result.get("error").is_some() {
+        let level = if result.get("error").is_some() || result.get("status").and_then(|s| s.as_str()) == Some("error") {
             "error"
         } else {
             "debug"
@@ -2576,13 +2476,9 @@ async fn process_command_agentic(
             level,
             "action",
             &format!("Command {} response", idx + 1),
-            Some("GodotBridge"),
+            Some(if action_name == "desktop_commander" { "DesktopCommander" } else { "GodotBridge" }),
             Some("Execute"),
-            Some(if level == "error" {
-                "failed"
-            } else {
-                "completed"
-            }),
+            Some(if level == "error" { "failed" } else { "completed" }),
             session_id_for_logs.clone(),
             Some(json!({ "index": idx + 1, "response_preview": resp_preview })),
         );
@@ -2658,16 +2554,7 @@ async fn process_command_agentic(
                     .map(|m| m.total_tokens)
                     .unwrap_or(0),
                 latency_ms: processing_start.elapsed().as_millis() as u64,
-                tool_call_times: {
-                    let mut v = Vec::new();
-                    if let Some(ms) = web_search_time_ms {
-                        v.push(chat_session::ToolCallMetric {
-                            name: "web_search".into(),
-                            duration_ms: ms,
-                        });
-                    }
-                    v
-                },
+                tool_call_times: Vec::new(),
                 cost_estimate_usd: None,
             });
             session.add_message(msg);
@@ -2787,124 +2674,103 @@ fn get_available_models() -> Result<HashMap<llm_config::LlmProvider, Vec<String>
 
 /// Trigger automatic indexing on application startup
 /// This function checks if a project path is configured and if indexing hasn't started yet
-// LiteLLM sidecar controls
-#[tauri::command]
-async fn start_litellm_proxy(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    port: Option<u16>,
-) -> Result<String, String> {
-    // Prefer .env OPENROUTER_API_KEY; fall back to secure store/legacy storage; allow missing
-    let openrouter_key_opt = std::env::var("OPENROUTER_API_KEY").ok()
-        .or_else(|| {
-            let store = state.api_key_store.lock().unwrap();
-            store.get_key(&LlmProvider::OpenRouter).cloned()
-        })
-        .or_else(|| {
-            let storage = state.storage.lock().unwrap();
-            storage.get_api_key()
-        });
 
-    // Get or generate a LiteLLM master key
-    let master_key = {
-        let store = state.api_key_store.lock().unwrap();
-        store.get_key(&LlmProvider::LiteLLM).cloned()
-    }
-    .unwrap_or_else(|| format!("sk-litellm-{}", uuid::Uuid::new_v4()));
 
-    // Persist master key into secure store (OS keychain) if newly generated
-    {
-        let mut store = state.api_key_store.lock().unwrap();
-        store.set_key(LlmProvider::LiteLLM, master_key.clone());
-        let storage = state.storage.lock().unwrap();
-        storage
-            .save_api_keys(&store.clone())
-            .map_err(|e| format!("Failed to save master key: {}", e))?;
-    }
-
-    // Start sidecar
-    {
-        let mut sidecar_state = state.litellm_state.lock().unwrap();
-        let openrouter_key_ref = openrouter_key_opt.as_deref();
-        crate::litellm_sidecar::start_litellm(
-            &app,
-            &mut sidecar_state,
-            openrouter_key_ref,
-            &master_key,
-            port.unwrap_or(4000),
-        )
-        .map_err(|e| format!("Failed to start LiteLLM: {}", e))?;
-    }
-
-    Ok("ok".to_string())
-}
-
-#[tauri::command]
-fn stop_litellm_proxy(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
-    let mut sidecar_state = state.litellm_state.lock().unwrap();
-    let port = if sidecar_state.is_running() { Some(sidecar_state.port) } else { None };
-    crate::litellm_sidecar::stop_litellm(&mut sidecar_state)
-        .map_err(|e| format!("Failed to stop LiteLLM: {}", e))?;
-
-    // Emit stopped event
-    let _ = app.emit("litellm-status", LiteLLMStatus { running: false, port });
-
-    Ok("ok".to_string())
-}
-
+// --- RAG sidecar management ---
 #[derive(serde::Serialize, Clone)]
-struct LiteLLMStatus {
-    running: bool,
-    port: Option<u16>,
+struct RagStatus { running: bool, port: Option<u16>, last_error: Option<String> }
+
+#[tauri::command]
+fn start_rag_sidecar(app: tauri::AppHandle, state: State<'_, AppState>, port: Option<u16>) -> Result<String, String> {
+    let mut sc = state.rag_state.lock().unwrap();
+    let p = port.unwrap_or(5001);
+    crate::rag_sidecar::start_rag(&app, &mut sc, p).map_err(|e| format!("Failed to start RAG sidecar: {}", e))?;
+    Ok("ok".into())
 }
 
 #[tauri::command]
-fn get_litellm_status(state: State<'_, AppState>) -> Result<LiteLLMStatus, String> {
-    let sc = state.litellm_state.lock().unwrap();
+fn stop_rag_sidecar(state: State<'_, AppState>) -> Result<String, String> {
+    let mut sc = state.rag_state.lock().unwrap();
+    crate::rag_sidecar::stop_rag(&mut sc).map_err(|e| format!("Failed to stop RAG sidecar: {}", e))?;
+    Ok("ok".into())
+}
+
+#[tauri::command]
+fn get_rag_status(state: State<'_, AppState>) -> Result<RagStatus, String> {
+    let sc = state.rag_state.lock().unwrap();
     let running = sc.is_running();
     let port = if running { Some(sc.port) } else { None };
-    Ok(LiteLLMStatus { running, port })
+    Ok(RagStatus { running, port, last_error: crate::rag_sidecar::get_last_error() })
 }
 
-
-fn auto_start_litellm_on_startup(app: &tauri::App) {
-    // Always start the sidecar; prefer .env OPENROUTER_API_KEY but don't require it
+fn auto_start_rag_on_startup(app: &tauri::App) {
+    // Always try to start on default port; idempotent
     let state = app.state::<AppState>();
-    let openrouter_key_opt = std::env::var("OPENROUTER_API_KEY").ok()
-        .or_else(|| {
-            let store = state.api_key_store.lock().unwrap();
-            store.get_key(&LlmProvider::OpenRouter).cloned()
-        })
-        .or_else(|| {
-            let storage = state.storage.lock().unwrap();
-            storage.get_api_key()
-        });
+    let mut sc = state.rag_state.lock().unwrap();
+    if let Err(e) = crate::rag_sidecar::start_rag(app.handle(), &mut sc, 5001) {
+        println!("RAG auto-start failed: {}", e);
+    } else {
+        println!("RAG sidecar auto-started on port 5001");
+    }
+}
 
-    // Ensure a LiteLLM master key exists (generate if missing)
-    let master_key = {
-        let store = state.api_key_store.lock().unwrap();
-        store.get_key(&LlmProvider::LiteLLM).cloned()
-    }.unwrap_or_else(|| format!("sk-litellm-{}", uuid::Uuid::new_v4()));
-
+#[tauri::command]
+async fn rag_index_current_project(app: tauri::AppHandle, state: State<'_, AppState>, force_rebuild: Option<bool>) -> Result<String, String> {
+    // Get project path
+    let project_path = {
+        let g = state.godot_project_path.lock().unwrap();
+        g.clone().ok_or("Godot project path not set".to_string())?
+    };
+    // Ensure sidecar running
     {
-        let mut store = state.api_key_store.lock().unwrap();
-        if store.get_key(&LlmProvider::LiteLLM).is_none() {
-            store.set_key(LlmProvider::LiteLLM, master_key.clone());
-            let storage = state.storage.lock().unwrap();
-            if let Err(e) = storage.save_api_keys(&store.clone()) {
-                println!("Warning: failed to persist LiteLLM master key: {}", e);
-            }
+        let mut sc = state.rag_state.lock().unwrap();
+        if !sc.is_running() {
+            crate::rag_sidecar::start_rag(&app, &mut sc, 5001)
+                .map_err(|e| format!("Failed to start RAG sidecar: {}", e))?;
         }
     }
-
-    // Start the sidecar (idempotent if already running)
-    let mut sc = state.litellm_state.lock().unwrap();
-    let openrouter_key_ref = openrouter_key_opt.as_deref();
-    if let Err(e) = crate::litellm_sidecar::start_litellm(&app.handle(), &mut sc, openrouter_key_ref, &master_key, 4000) {
-        println!("LiteLLM auto-start failed: {}", e);
-    } else {
-        println!("LiteLLM sidecar auto-started on port 4000");
+    // Get port
+    let port = { let sc = state.rag_state.lock().unwrap(); sc.port };
+    let client = reqwest::Client::new();
+    let body = json!({
+        "project_path": project_path,
+        "chunk_size": 1200,
+        "chunk_overlap": 200,
+        "force_rebuild": force_rebuild.unwrap_or(false)
+    });
+    let url = format!("http://127.0.0.1:{}/index-project", port);
+    let resp = client.post(url).json(&body).send().await.map_err(|e| format!("RAG index request failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("RAG index request returned status {}", resp.status()));
     }
+    Ok("ok".into())
+}
+
+#[tauri::command]
+async fn rag_search_current_project(state: State<'_, AppState>, query: String, k: Option<usize>) -> Result<Value, String> {
+    let project_path = {
+        let g = state.godot_project_path.lock().unwrap();
+        g.clone().ok_or("Godot project path not set".to_string())?
+    };
+    let (is_running, port) = {
+        let sc = state.rag_state.lock().unwrap();
+        (sc.is_running(), sc.port)
+    };
+    if !is_running { return Err("RAG sidecar not running".to_string()); }
+
+    let client = reqwest::Client::new();
+    let body = json!({
+        "project_path": project_path,
+        "query": query,
+        "k": k.unwrap_or(5)
+    });
+    let url = format!("http://127.0.0.1:{}/search-project", port);
+    let resp = client.post(url).json(&body).send().await.map_err(|e| format!("RAG search request failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("RAG search request returned status {}", resp.status()));
+    }
+    let v: Value = resp.json().await.map_err(|e| format!("Failed to parse RAG search response: {}", e))?;
+    Ok(v)
 }
 
 
@@ -2980,8 +2846,8 @@ pub fn run() {
         .setup(|app| {
             // Trigger automatic indexing on startup
             trigger_automatic_indexing_on_startup(app);
-            // Auto-start LiteLLM sidecar when configured
-            auto_start_litellm_on_startup(app);
+            // Auto-start RAG sidecar
+            auto_start_rag_on_startup(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2989,6 +2855,9 @@ pub fn run() {
             process_command,
             process_command_agentic,
             initialize_knowledge_bases,
+            get_knowledge_base_status,
+            get_docs_kb_documents,
+            rebuild_docs_kb,
             get_api_key,
             save_api_key,
             set_godot_project_path,
@@ -3018,14 +2887,12 @@ pub fn run() {
             save_api_keys,
             get_available_models,
 
-
-            start_litellm_proxy,
-            stop_litellm_proxy,
-            get_litellm_status,
-
-            get_web_search_settings,
-            save_web_search_settings,
-            tool_web_search
+            // RAG sidecar controls
+            start_rag_sidecar,
+            stop_rag_sidecar,
+            get_rag_status,
+            rag_index_current_project,
+            rag_search_current_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -12,12 +12,12 @@ pub struct KnowledgeManager {
 
 impl KnowledgeManager {
     /// Create a new knowledge manager
-    pub fn new(api_key: &str, storage_dir: PathBuf) -> Self {
-        Self {
-            plugin_kb: KnowledgeBase::new("plugin_tools", api_key),
-            docs_kb: KnowledgeBase::new("godot_docs", api_key),
+    pub fn new(storage_dir: PathBuf) -> Result<Self> {
+        Ok(Self {
+            plugin_kb: KnowledgeBase::new("plugin_tools")?,
+            docs_kb: KnowledgeBase::new("godot_docs")?,
             storage_dir,
-        }
+        })
     }
 
     /// Initialize knowledge bases (load from disk or populate if empty)
@@ -49,6 +49,34 @@ impl KnowledgeManager {
     /// Get the documentation knowledge base
     pub fn get_docs_kb(&self) -> KnowledgeBase {
         self.docs_kb.clone()
+    }
+
+    /// Rebuild the documentation knowledge base
+    pub async fn rebuild_docs_kb(&self) -> Result<()> {
+        // Clear existing documents
+        self.docs_kb.clear().await?;
+
+        // Repopulate
+        self.populate_docs_kb().await?;
+
+        // Save to disk
+        self.docs_kb.save_to_disk(&self.storage_dir).await?;
+
+        Ok(())
+    }
+
+    /// Rebuild the plugin knowledge base
+    pub async fn rebuild_plugin_kb(&self) -> Result<()> {
+        // Clear existing documents
+        self.plugin_kb.clear().await?;
+
+        // Repopulate
+        self.populate_plugin_kb().await?;
+
+        // Save to disk
+        self.plugin_kb.save_to_disk(&self.storage_dir).await?;
+
+        Ok(())
     }
 
     /// Populate the plugin tools & API knowledge base
@@ -213,11 +241,4 @@ Functions: func function_name(param: Type) -> ReturnType:"#,
         Ok(())
     }
 
-    /// Save both knowledge bases to disk
-    #[allow(dead_code)]
-    pub async fn save_all(&self) -> Result<()> {
-        self.plugin_kb.save_to_disk(&self.storage_dir).await?;
-        self.docs_kb.save_to_disk(&self.storage_dir).await?;
-        Ok(())
-    }
 }

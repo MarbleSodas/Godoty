@@ -46,8 +46,6 @@ pub struct ContextSnapshot {
     pub total_context_size: usize,
     #[serde(default)]
     pub visual_analysis_used: bool,
-    #[serde(default)]
-    pub tutorial_research_used: bool,
 }
 
 /// Represents a complete chat session

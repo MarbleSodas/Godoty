@@ -1,9 +1,11 @@
 use anyhow::Result;
-use reqwest::Client;
+use fastembed::{TextEmbedding, InitOptions, EmbeddingModel};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Represents a document in the knowledge base
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,20 +22,23 @@ pub struct KnowledgeDocument {
 #[derive(Clone)]
 pub struct KnowledgeBase {
     name: String,
-    documents: std::sync::Arc<tokio::sync::RwLock<Vec<KnowledgeDocument>>>,
-    api_key: String,
-    client: Client,
+    documents: Arc<tokio::sync::RwLock<Vec<KnowledgeDocument>>>,
+    embedding_model: Arc<Mutex<TextEmbedding>>,
 }
 
 impl KnowledgeBase {
     /// Create a new knowledge base
-    pub fn new(name: &str, api_key: &str) -> Self {
-        Self {
+    pub fn new(name: &str) -> Result<Self> {
+        // Initialize the embedding model (using all-MiniLM-L6-v2 to match Python RAG server)
+        let model = TextEmbedding::try_new(
+            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+        )?;
+
+        Ok(Self {
             name: name.to_string(),
-            documents: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            api_key: api_key.to_string(),
-            client: Client::new(),
-        }
+            documents: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            embedding_model: Arc::new(Mutex::new(model)),
+        })
     }
 
     /// Add a document to the knowledge base
@@ -97,60 +102,20 @@ impl KnowledgeBase {
             .collect())
     }
 
-    /// Generate embedding for text using OpenRouter API
+    /// Generate embedding for text using local fastembed model
     async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        #[derive(Serialize)]
-        struct EmbeddingRequest {
-            model: String,
-            input: String,
-        }
+        let text_owned = text.to_string();
+        let model = self.embedding_model.clone();
 
-        #[derive(Deserialize)]
-        struct EmbeddingResponse {
-            data: Vec<EmbeddingData>,
-        }
+        // Run embedding in a blocking task since fastembed is synchronous
+        let embedding = tokio::task::spawn_blocking(move || {
+            let mut model = model.blocking_lock();
+            let embeddings = model.embed(vec![text_owned], None)?;
+            embeddings.into_iter().next()
+                .ok_or_else(|| anyhow::anyhow!("No embedding returned"))
+        }).await??;
 
-        #[derive(Deserialize)]
-        struct EmbeddingData {
-            embedding: Vec<f32>,
-        }
-
-        let request = EmbeddingRequest {
-            model: "openai/text-embedding-3-small".to_string(),
-            input: text.to_string(),
-        };
-
-        let response = self
-            .client
-            .post("https://openrouter.ai/api/v1/embeddings")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .header("HTTP-Referer", "https://github.com/godoty/godoty")
-            .header("X-Title", "Godoty AI Assistant")
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<no body>".to_string());
-            return Err(anyhow::anyhow!(
-                "Embedding API request failed: {} - {}",
-                status,
-                body
-            ));
-        }
-
-        let embedding_response: EmbeddingResponse = response.json().await?;
-
-        if let Some(data) = embedding_response.data.first() {
-            Ok(data.embedding.clone())
-        } else {
-            Err(anyhow::anyhow!("No embedding returned"))
-        }
+        Ok(embedding)
     }
 
     /// Save knowledge base to disk
@@ -183,24 +148,24 @@ impl KnowledgeBase {
         Ok(())
     }
 
-    /// Get all documents
+
+    /// Get document count
+    pub async fn count(&self) -> usize {
+        let docs = self.documents.read().await;
+        docs.len()
+    }
+
+    /// Get all documents (for viewing)
     pub async fn get_all_documents(&self) -> Vec<KnowledgeDocument> {
         let docs = self.documents.read().await;
         docs.clone()
     }
 
     /// Clear all documents
-    #[allow(dead_code)]
     pub async fn clear(&self) -> Result<()> {
         let mut docs = self.documents.write().await;
         docs.clear();
         Ok(())
-    }
-
-    /// Get document count
-    pub async fn count(&self) -> usize {
-        let docs = self.documents.read().await;
-        docs.len()
     }
 }
 

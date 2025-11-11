@@ -138,8 +138,12 @@ impl ContextEngine {
         // 2. Fetch Godot documentation
         let godot_docs = self.fetch_godot_docs(&context_query).await?;
 
-        // 3. Search project index
-        let project_context = self.search_project_index(&context_query, project_index);
+        // 3. Search project index + enrich with Vector DB (RAG) if available
+        let mut project_context = self.search_project_index(&context_query, project_index);
+        if let Some(rag) = self.fetch_rag_for_project(&project_index.project_path, &context_query).await {
+            project_context.push_str("\n\n# Project Vector Index (RAG) Results\n");
+            project_context.push_str(&rag);
+        }
 
         // 4. Build chat history context
         let chat_history = if let Some(session) = chat_session {
@@ -162,7 +166,6 @@ impl ContextEngine {
             recent_messages,
             context_query,
             visual_analysis: None,
-            tutorial_context: None,
         })
     }
 
@@ -184,14 +187,6 @@ impl ContextEngine {
         if let Some(visual) = &context.visual_analysis {
             formatted.push_str("# Visual Analysis (Viewport/Inspector)\n");
             formatted.push_str(visual);
-            formatted.push_str("\n\n");
-        }
-
-        // Add tutorial context if available, with precedence note
-        if let Some(tuts) = &context.tutorial_context {
-            formatted.push_str("# Tutorial Context (Lower Precedence)\n");
-            formatted.push_str("Note: Official Godot documentation takes precedence over tutorials. Conflicts will be resolved in favor of docs.\n\n");
-            formatted.push_str(tuts);
             formatted.push_str("\n\n");
         }
 
@@ -465,59 +460,168 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
         Ok(basic_docs)
     }
 
-    /// Search project index for relevant information
+    /// Search project index for relevant information with concrete references (paths, node paths)
     fn search_project_index(&self, query: &str, index: &ProjectIndex) -> String {
-        let query_lower = query.to_lowercase();
-        let mut context = String::new();
+        let q = query.to_lowercase();
+        let mut out = String::new();
 
-        context.push_str("## Existing Scenes\n");
+        // Scenes with matching name/root type or nodes
+        out.push_str("## Relevant Scenes\n");
         for scene in &index.scenes {
-            if scene.name.to_lowercase().contains(&query_lower)
-                || scene
-                    .root_type
-                    .as_ref()
-                    .map(|t| t.to_lowercase().contains(&query_lower))
-                    .unwrap_or(false)
-            {
-                context.push_str(&format!(
-                    "- {} ({}): {} nodes\n",
+            let scene_name_match = scene.name.to_lowercase().contains(&q);
+            let root_type_match = scene
+                .root_type
+                .as_ref()
+                .map(|t| t.to_lowercase().contains(&q))
+                .unwrap_or(false);
+
+            // Collect nodes that match by name/type/path
+            let mut matching_nodes = Vec::new();
+            for n in &scene.nodes {
+                if n.name.to_lowercase().contains(&q)
+                    || n.node_type.to_lowercase().contains(&q)
+                    || n.path.to_lowercase().contains(&q)
+                {
+                    matching_nodes.push(n);
+                }
+            }
+
+            if scene_name_match || root_type_match || !matching_nodes.is_empty() {
+                out.push_str(&format!(
+                    "- {} (root: {}) • path: {}\n",
                     scene.name,
-                    scene.root_type.as_ref().unwrap_or(&"Unknown".to_string()),
-                    scene.nodes.len()
+                    scene
+                        .root_type
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("Unknown"),
+                    scene.path
                 ));
+
+                if !matching_nodes.is_empty() {
+                    out.push_str("  Nodes matching:\n");
+                    for n in matching_nodes.iter().take(5) {
+                        out.push_str(&format!("  - {} ({}) at {}\n", n.name, n.node_type, n.path));
+                    }
+                    if matching_nodes.len() > 5 {
+                        out.push_str(&format!("  ... and {} more\n", matching_nodes.len() - 5));
+                    }
+                }
             }
         }
 
-        context.push_str("\n## Existing Scripts\n");
-        for script in &index.scripts {
-            if script.name.to_lowercase().contains(&query_lower)
-                || script
-                    .classes
-                    .iter()
-                    .any(|c| c.to_lowercase().contains(&query_lower))
-                || script
-                    .functions
-                    .iter()
-                    .any(|f| f.to_lowercase().contains(&query_lower))
+        // Scripts with matching name/classes/functions/content
+        out.push_str("\n## Relevant Scripts\n");
+        for s in &index.scripts {
+            let name_match = s.name.to_lowercase().contains(&q) || s.path.to_lowercase().contains(&q);
+            let matched_classes: Vec<&String> = s
+                .classes
+                .iter()
+                .filter(|c| c.to_lowercase().contains(&q))
+                .collect();
+            let matched_funcs: Vec<&String> = s
+                .functions
+                .iter()
+                .filter(|f| f.to_lowercase().contains(&q))
+                .collect();
+
+            let content_match = s.content_preview.to_lowercase().contains(&q);
+
+            if name_match || !matched_classes.is_empty() || !matched_funcs.is_empty() || content_match {
+                out.push_str(&format!("- {} • path: {}\n", s.name, s.path));
+                if !matched_classes.is_empty() {
+                    let list = matched_classes
+                        .iter()
+                        .take(5)
+                        .map(|c| c.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("  Classes: {}\n", list));
+                    if matched_classes.len() > 5 {
+                        out.push_str(&format!("  ... and {} more\n", matched_classes.len() - 5));
+                    }
+                }
+                if !matched_funcs.is_empty() {
+                    let list = matched_funcs
+                        .iter()
+                        .take(8)
+                        .map(|f| f.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("  Functions: {}\n", list));
+                    if matched_funcs.len() > 8 {
+                        out.push_str(&format!("  ... and {} more\n", matched_funcs.len() - 8));
+                    }
+                }
+                if content_match {
+                    let snippet: String = s.content_preview.chars().take(140).collect();
+                    out.push_str(&format!("  Preview: {}\n", snippet.replace('\n', " ")));
+                }
+            }
+        }
+
+        // Resources with matching name/type/path
+        out.push_str("\n## Relevant Resources\n");
+        for r in &index.resources {
+            if r.name.to_lowercase().contains(&q)
+                || r.resource_type.to_lowercase().contains(&q)
+                || r.path.to_lowercase().contains(&q)
             {
-                context.push_str(&format!(
-                    "- {}: {} functions, {} classes\n",
-                    script.name,
-                    script.functions.len(),
-                    script.classes.len()
+                out.push_str(&format!(
+                    "- {} ({}) • path: {}\n",
+                    r.name, r.resource_type, r.path
                 ));
             }
         }
 
-        context.push_str(&format!(
+        out.push_str(&format!(
             "\n## Project Summary\n- Total Scenes: {}\n- Total Scripts: {}\n- Total Resources: {}\n",
             index.scenes.len(),
             index.scripts.len(),
             index.resources.len()
         ));
 
-        context
+        out
     }
+    /// Try to fetch vector search results from the local RAG sidecar for the current project
+    async fn fetch_rag_for_project(&self, project_path: &str, query: &str) -> Option<String> {
+        // Respect offline mode
+        if std::env::var("GODOTY_OFFLINE").ok().as_deref() == Some("1") {
+            return None;
+        }
+        let port: u16 = std::env::var("RAG_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(5001);
+        let url = format!("http://127.0.0.1:{}/search-project", port);
+        let body = serde_json::json!({
+            "project_path": project_path,
+            "query": query,
+            "k": 5
+        });
+        match self.client.post(url).json(&body).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(v) => {
+                        if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
+                            let mut out = String::new();
+                            for r in results.iter().take(5) {
+                                let score = r.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                                let source = r.get("source").and_then(|x| x.as_str()).unwrap_or("unknown");
+                                let content = r.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                                let snippet: String = content.chars().take(200).collect();
+                                out.push_str(&format!("- {:.3} {}: {}\n", score, source, snippet));
+                            }
+                            if out.is_empty() { None } else { Some(out) }
+                        } else { None }
+                    }
+                    Err(_) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
 }
 
 /// Comprehensive context structure
@@ -528,7 +632,6 @@ pub struct ComprehensiveContext {
     pub recent_messages: Vec<(String, String)>,
     pub context_query: String,
     pub visual_analysis: Option<String>,
-    pub tutorial_context: Option<String>,
 }
 
 #[cfg(test)]
@@ -572,4 +675,36 @@ mod tests {
         assert!(formatted.contains("# Godot Documentation"));
         assert!(formatted.contains("# Current Project Context"));
     }
+    #[test]
+    fn search_project_index_includes_paths_and_nodes() {
+        std::env::set_var("GODOTY_OFFLINE", "1");
+        let engine = ContextEngine::new("test-key");
+        let idx = ProjectIndex {
+            scenes: vec![crate::project_indexer::SceneInfo {
+                name: "Level1".into(),
+                path: "res://scenes/Level1.tscn".into(),
+                root_type: Some("Node2D".into()),
+                nodes: vec![
+                    crate::project_indexer::NodeInfo { name: "Player".into(), node_type: "CharacterBody2D".into(), path: "Player".into() },
+                    crate::project_indexer::NodeInfo { name: "Camera".into(), node_type: "Camera2D".into(), path: "Player/Camera".into() },
+                ],
+            }],
+            scripts: vec![crate::project_indexer::ScriptInfo {
+                name: "player".into(),
+                path: "res://scripts/player.gd".into(),
+                classes: vec!["Player".into()],
+                functions: vec!["_ready".into(), "move".into()],
+                content_preview: "class_name Player\nfunc _ready():\n pass".into(),
+            }],
+            resources: vec![],
+            project_path: ".".into(),
+            godot_version: None,
+            godot_executable_path: None,
+        };
+        let out = engine.search_project_index("Player", &idx);
+        assert!(out.contains("res://scenes/Level1.tscn"));
+        assert!(out.contains("Player (CharacterBody2D"));
+        assert!(out.contains("res://scripts/player.gd"));
+    }
+
 }

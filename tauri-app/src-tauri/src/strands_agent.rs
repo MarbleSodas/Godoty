@@ -11,10 +11,6 @@ use serde_json::Value;
 #[async_trait::async_trait]
 pub trait StrandsAgent: Send + Sync {
     async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput>;
-    #[allow(dead_code)]
-    fn get_name(&self) -> &str;
-    #[allow(dead_code)]
-    fn get_model(&self) -> &str;
 }
 
 /// Context passed to agents during execution
@@ -25,8 +21,10 @@ pub struct AgentExecutionContext {
     pub project_context: String,
     pub plugin_kb: KnowledgeBase,
     pub docs_kb: KnowledgeBase,
+    #[allow(dead_code)]
     pub execution_plan: Option<ExecutionPlan>,
     pub previous_output: Option<String>,
+    #[allow(dead_code)]
     pub visual_context: Option<String>,
 }
 
@@ -39,474 +37,13 @@ pub struct AgentOutput {
     pub metadata: serde_json::Map<String, Value>,
 }
 
-/// Planning Agent - Breaks down user requests into actionable tasks
-pub struct PlanningAgent {
-    api_key: String,
-    client: Client,
-    model: String,
-    llm_factory: Option<LlmFactory>,
-}
 
-impl PlanningAgent {
-    pub fn new(api_key: &str) -> Self {
-        Self {
-            api_key: api_key.to_string(),
-            client: Client::new(),
-            model: "minimax/minimax-m2:free".to_string(),
-            llm_factory: None,
-        }
-    }
 
-    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
-        self.llm_factory = llm_factory;
-        self
-    }
-}
 
-#[async_trait::async_trait]
-impl StrandsAgent for PlanningAgent {
-    async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
-        let start_time = std::time::Instant::now();
 
-        // Query knowledge bases for context
-        let plugin_docs = context.plugin_kb.search(&context.user_input, 5).await?;
-        let godot_docs = context.docs_kb.search(&context.user_input, 5).await?;
-
-        let plugin_context = plugin_docs
-            .iter()
-            .map(|d| format!("- {}: {}", d.id, d.content))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let docs_context = godot_docs
-            .iter()
-            .map(|d| format!("- {}", d.content.chars().take(200).collect::<String>()))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Include visual context if available
-        let visual_section = if let Some(ref visual) = context.visual_context {
-            format!("\n\nVisual Context (UI/Scene Analysis):\n{}\n", visual)
-        } else {
-            String::new()
-        };
-
-        let system_prompt = format!(
-            r#"You are an AI planning agent for Godot game development.
-Your task is to analyze the user's request and create a detailed execution plan.
-
-Available Plugin Commands:
-{}
-
-Relevant Godot Documentation:
-{}
-
-Project Context:
-{}{}
-
-Create a step-by-step plan to accomplish the user's goal.
-Respond with a JSON object containing:
-{{
-  "reasoning": "Your analysis of the task",
-  "steps": [
-    {{"step_number": 1, "description": "What to do", "commands_needed": ["command_type1", "command_type2"]}},
-    ...
-  ],
-  "estimated_complexity": "low|medium|high"
-}}
-
-STRICT OUTPUT RULES:
-- Respond ONLY with a valid JSON object (no prose before/after).
-- If you use a code fence, use ```json and include only valid JSON inside.
-- No comments, no trailing commas, no ellipses inside JSON.
-- Ensure all braces/brackets are closed; keep to <= 8 steps.
-
-"#,
-            plugin_context, docs_context, context.project_context, visual_section
-        );
-
-        let response = if let Some(factory) = &self.llm_factory {
-            let client = factory.create_client_for_agent(AgentType::Planner)?;
-            let sys_prev = system_prompt.chars().take(200).collect::<String>();
-            let user_prev = context.user_input.chars().take(200).collect::<String>();
-            tracing::debug!(
-                agent = "PlanningAgent",
-                model = %client.model_identifier(),
-                endpoint = %client.endpoint(),
-                system_prompt_preview = %sys_prev,
-                user_input_preview = %user_prev,
-                "Agent LLM invocation"
-            );
-            client
-                .generate_response_streaming_with_tools(&system_prompt, &context.user_input)
-                .await?
-        } else {
-            call_llm(
-                &self.client,
-                &self.api_key,
-                &self.model,
-                &system_prompt,
-                &context.user_input,
-            )
-            .await?
-        };
-
-        let execution_time_ms = start_time.elapsed().as_millis() as u64;
-
-        // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
-        let tokens_used =
-            ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
-
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            "plugin_docs_retrieved".to_string(),
-            Value::Number(plugin_docs.len().into()),
-        );
-        metadata.insert(
-            "godot_docs_retrieved".to_string(),
-            Value::Number(godot_docs.len().into()),
-        );
-
-        Ok(AgentOutput {
-            content: response,
-            tokens_used,
-            execution_time_ms,
-            metadata,
-        })
-    }
-
-    fn get_name(&self) -> &str {
-        "PlanningAgent"
-    }
-
-    fn get_model(&self) -> &str {
-        &self.model
-    }
-}
-
-/// Code Generation Agent - Generates GDScript code and Godot commands
-pub struct CodeGenerationAgent {
-    api_key: String,
-    client: Client,
-    model: String,
-    llm_factory: Option<LlmFactory>,
-}
-
-impl CodeGenerationAgent {
-    pub fn new(api_key: &str) -> Self {
-        Self {
-            api_key: api_key.to_string(),
-            client: Client::new(),
-            model: "qwen/qwen3-coder:free".to_string(),
-            llm_factory: None,
-        }
-    }
-
-    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
-        self.llm_factory = llm_factory;
-        self
-    }
-}
-
-#[async_trait::async_trait]
-impl StrandsAgent for CodeGenerationAgent {
-    async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
-        let start_time = std::time::Instant::now();
-
-        let plan = context
-            .execution_plan
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Execution plan required for code generation"))?;
-
-        // Get plugin examples
-        let plugin_docs = context.plugin_kb.search(&context.user_input, 5).await?;
-        let plugin_examples = plugin_docs
-            .iter()
-            .map(|d| d.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let system_prompt = format!(
-            r#"You are a command generation agent for Godot.
-
-Execution Plan:
-{}
-
-Plugin Command Examples:
-{}
-
-Generate a JSON array of commands to execute the plan.
-Each command must be a valid JSON object matching the plugin's command schema.
-Respond ONLY with the JSON array, no explanations.
-"#,
-            serde_json::to_string_pretty(plan)?,
-            plugin_examples
-        );
-
-        let response = if let Some(factory) = &self.llm_factory {
-            let client = factory.create_client_for_agent(AgentType::CodeGenerator)?;
-            let sys_prev = system_prompt.chars().take(200).collect::<String>();
-            let user_prev = context.user_input.chars().take(200).collect::<String>();
-            tracing::debug!(
-                agent = "CodeGenerationAgent",
-                model = %client.model_identifier(),
-                endpoint = %client.endpoint(),
-                system_prompt_preview = %sys_prev,
-                user_input_preview = %user_prev,
-                "Agent LLM invocation"
-            );
-            client
-                .generate_response_streaming_with_tools(&system_prompt, &context.user_input)
-                .await?
-        } else {
-            call_llm(
-                &self.client,
-                &self.api_key,
-                &self.model,
-                &system_prompt,
-                &context.user_input,
-            )
-            .await?
-        };
-
-        let execution_time_ms = start_time.elapsed().as_millis() as u64;
-        let tokens_used =
-            ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
-
-        Ok(AgentOutput {
-            content: response,
-            tokens_used,
-            execution_time_ms,
-            metadata: serde_json::Map::new(),
-        })
-    }
-
-    fn get_name(&self) -> &str {
-        "CodeGenerationAgent"
-    }
-
-    fn get_model(&self) -> &str {
-        &self.model
-    }
-}
-
-/// Validation Agent - Validates generated commands against Plugin Tools & API
-pub struct ValidationAgent {
-    api_key: String,
-    client: Client,
-    model: String,
-    llm_factory: Option<LlmFactory>,
-}
-
-impl ValidationAgent {
-    pub fn new(api_key: &str) -> Self {
-        Self {
-            api_key: api_key.to_string(),
-            client: Client::new(),
-            model: "minimax/minimax-m2:free".to_string(),
-            llm_factory: None,
-        }
-    }
-
-    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
-        self.llm_factory = llm_factory;
-        self
-    }
-}
-
-#[async_trait::async_trait]
-impl StrandsAgent for ValidationAgent {
-    async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
-        let start_time = std::time::Instant::now();
-
-        // Get all plugin documentation for validation
-        let all_plugin_docs = context.plugin_kb.get_all_documents().await;
-        let plugin_schema = all_plugin_docs
-            .iter()
-            .map(|d| d.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let commands_to_validate = context
-            .previous_output
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No commands to validate"))?;
-
-        let system_prompt = format!(
-            r#"You are a validation agent for Godot commands.
-
-Plugin Command Schema and Examples:
-{}
-
-Your task is to validate the following commands against the schema.
-Check for:
-1. Valid command types
-2. Required fields present
-3. Correct data types
-4. No hallucinated API calls
-
-Respond with a JSON object:
-{{
-  "valid": true/false,
-  "errors": ["error1", "error2", ...],
-  "warnings": ["warning1", "warning2", ...],
-  "validated_commands": [/* corrected commands if needed */]
-}}
-"#,
-            plugin_schema
-        );
-
-        let response = if let Some(factory) = &self.llm_factory {
-            let client = factory.create_client_for_agent(AgentType::Validator)?;
-            let sys_prev = system_prompt.chars().take(200).collect::<String>();
-            let user_prev = commands_to_validate.chars().take(200).collect::<String>();
-            tracing::debug!(
-                agent = "ValidationAgent",
-                model = %client.model_identifier(),
-                endpoint = %client.endpoint(),
-                system_prompt_preview = %sys_prev,
-                user_input_preview = %user_prev,
-                "Agent LLM invocation"
-            );
-            client
-                .generate_response_streaming_with_tools(&system_prompt, commands_to_validate)
-                .await?
-        } else {
-            call_llm(
-                &self.client,
-                &self.api_key,
-                &self.model,
-                &system_prompt,
-                commands_to_validate,
-            )
-            .await?
-        };
-
-        let execution_time_ms = start_time.elapsed().as_millis() as u64;
-        let tokens_used =
-            ((system_prompt.len() + commands_to_validate.len() + response.len()) / 4) as u32;
-
-        Ok(AgentOutput {
-            content: response,
-            tokens_used,
-            execution_time_ms,
-            metadata: serde_json::Map::new(),
-        })
-    }
-
-    fn get_name(&self) -> &str {
-        "ValidationAgent"
-    }
-
-    fn get_model(&self) -> &str {
-        &self.model
-    }
-}
-
-/// Documentation Agent - Queries Official Godot Documentation
-pub struct DocumentationAgent {
-    api_key: String,
-    client: Client,
-    model: String,
-    llm_factory: Option<LlmFactory>,
-}
-
-impl DocumentationAgent {
-    pub fn new(api_key: &str) -> Self {
-        Self {
-            api_key: api_key.to_string(),
-            client: Client::new(),
-            model: "minimax/minimax-m2:free".to_string(),
-            llm_factory: None,
-        }
-    }
-
-    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
-        self.llm_factory = llm_factory;
-        self
-    }
-}
-
-#[async_trait::async_trait]
-impl StrandsAgent for DocumentationAgent {
-    async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
-        let start_time = std::time::Instant::now();
-
-        // Search documentation knowledge base
-        let docs = context.docs_kb.search(&context.user_input, 10).await?;
-
-        let docs_content = docs
-            .iter()
-            .map(|d| format!("## {}\n{}", d.id, d.content))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let system_prompt = format!(
-            r#"You are a documentation agent for Godot.
-
-Retrieved Documentation:
-{}
-
-Summarize the most relevant information for the user's request.
-Focus on API usage, best practices, and examples.
-"#,
-            docs_content
-        );
-
-        let response = if let Some(factory) = &self.llm_factory {
-            let client = factory.create_client_for_agent(AgentType::Documentation)?;
-            let sys_prev = system_prompt.chars().take(200).collect::<String>();
-            let user_prev = context.user_input.chars().take(200).collect::<String>();
-            tracing::debug!(
-                agent = "DocumentationAgent",
-                model = %client.model_identifier(),
-                endpoint = %client.endpoint(),
-                system_prompt_preview = %sys_prev,
-                user_input_preview = %user_prev,
-                "Agent LLM invocation"
-            );
-            client
-                .generate_response_streaming_with_tools(&system_prompt, &context.user_input)
-                .await?
-        } else {
-            call_llm(
-                &self.client,
-                &self.api_key,
-                &self.model,
-                &system_prompt,
-                &context.user_input,
-            )
-            .await?
-        };
-
-        let execution_time_ms = start_time.elapsed().as_millis() as u64;
-        let tokens_used =
-            ((system_prompt.len() + context.user_input.len() + response.len()) / 4) as u32;
-
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            "docs_retrieved".to_string(),
-            Value::Number(docs.len().into()),
-        );
-
-        Ok(AgentOutput {
-            content: response,
-            tokens_used,
-            execution_time_ms,
-            metadata,
-        })
-    }
-
-    fn get_name(&self) -> &str {
-        "DocumentationAgent"
-    }
-
-    fn get_model(&self) -> &str {
-        &self.model
-    }
-}
 
 /// Helper function to call LLM API
+#[allow(dead_code)]
 async fn call_llm(
     client: &Client,
     api_key: &str,
@@ -629,3 +166,346 @@ async fn call_llm(
         Err(anyhow::anyhow!("No response from LLM"))
     }
 }
+
+/// Orchestrator Agent - routes the workflow and decides if research is needed
+
+pub struct OrchestratorAgent {
+    api_key: String,
+    client: Client,
+    model: String,
+    llm_factory: Option<LlmFactory>,
+}
+
+impl OrchestratorAgent {
+    pub fn new(api_key: &str) -> Self {
+        Self {
+            api_key: api_key.to_string(),
+            client: Client::new(),
+            model: "minimax/minimax-m2:free".to_string(),
+            llm_factory: None,
+        }
+    }
+
+    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
+        self.llm_factory = llm_factory;
+        self
+    }
+    /// Generate executable commands for a given execution plan using the Orchestrator model
+    pub async fn generate_actions_for_plan(
+        &self,
+        plan: &ExecutionPlan,
+        user_input: &str,
+        plugin_examples: &str,
+        allowed_actions_list: &str,
+    ) -> Result<String> {
+        let system_prompt = format!(
+            r#"You are a command generation agent for Godot.
+
+Execution Plan:
+{}
+
+Plugin Command Examples:
+{}
+
+STRICT SCHEMA RULES:
+- Every command MUST include an 'action' field; it must be one of: [{}].
+- Map Godot UI/node types to the 'type' field ONLY when action = 'create_node' (or when searching by type). Do NOT use node types as command actions.
+- Required fields by action:
+  - create_node: type, name
+  - create_scene: name, root_type
+  - modify_node: path, properties
+  - delete_node: path
+  - attach_script: path, script_content
+  - open_scene: path
+  - select_nodes: paths
+  - focus_node: path
+  - rename_node: path, new_name
+  - reparent_node: path, new_parent
+- Use only fields defined in the schema. Do not invent new fields.
+
+Generate a JSON array of commands to execute the plan.
+Each command must be a valid JSON object matching the plugin's command schema OR the Desktop Commander MCP command schema.
+- Desktop Commander MCP command shape: {{"action":"desktop_commander","tool": one of ["read_file","write_file","edit_block","create_directory","list_directory","move_file","start_search","get_more_search_results","stop_search","get_file_info"], "args": object}}
+- Prefer "edit_block" for surgical edits to existing files; "write_file" for new files; use search/directory tools as needed.
+- Keep ALL file/directory paths within the project root.
+Respond ONLY with the JSON array, no explanations.
+"#,
+            serde_json::to_string_pretty(plan)?,
+            plugin_examples,
+            allowed_actions_list
+        );
+
+        if let Some(factory) = &self.llm_factory {
+            let client = factory.create_client_for_agent(AgentType::Orchestrator)?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = user_input.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent = "OrchestratorAgent",
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation (generate_actions_for_plan)"
+            );
+            client.generate_response(&system_prompt, user_input).await
+        } else {
+            // Fallback to OpenRouter call
+            call_llm(&self.client, &self.api_key, &self.model, &system_prompt, user_input).await
+        }
+    }
+
+}
+
+#[async_trait::async_trait]
+impl StrandsAgent for OrchestratorAgent {
+    async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
+        let start_time = std::time::Instant::now();
+        // Take a quick pulse on KB coverage
+        let plugin_hits = context.plugin_kb.search(&context.user_input, 3).await?.len();
+        let docs_hits = context.docs_kb.search(&context.user_input, 3).await?.len();
+
+        let heuristics_flag = {
+            let u = context.user_input.to_lowercase();
+            let indicators = ["how", "which", "search", "latest", "docs", "explain", "compare", "best"];
+            indicators.iter().any(|w| u.contains(w)) || (plugin_hits + docs_hits) < 2
+        };
+
+        let system_prompt = r#"You are the Orchestrator Agent for a Godot assistant.
+Decide whether additional RESEARCH is needed and whether the task is SIMPLE ENOUGH to implement directly.
+Return STRICT JSON with fields:
+{
+  "research_needed": boolean,
+  "research_queries": string[],
+  "simple_enough": boolean,
+  "initial_plan": {
+    "reasoning": string,
+    "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
+    "estimated_complexity": "low" | "medium" | "high"
+  } | null,
+  "direct_commands": [object],
+  "reasoning": string
+}
+Rules:
+- Only output JSON, no prose.
+- If simple_enough is true: ALWAYS return a concrete non-empty "direct_commands" array of executable Godoty command objects and you may set "initial_plan" to null.
+- If simple_enough is false: provide an "initial_plan" and set "direct_commands" to [].
+- Commands must adhere to the Godoty command schema provided in context (e.g., create_node, open_scene, modify_node, attach_script, select_nodes, focus_node, play).
+- For filesystem/code edits, emit Desktop Commander MCP commands with shape {"action":"desktop_commander","tool": one of ["read_file","write_file","edit_block","create_directory","list_directory","move_file","start_search","get_more_search_results","stop_search","get_file_info"], "args": object}. Prefer "edit_block" for surgical changes; "write_file" for new files; use directory and search tools as needed. Keep ALL paths within the project root.
+"#;
+        let user_msg = format!(
+            "User Input: {}\nKB hits -> plugin: {}, docs: {}\nProject Context (truncated): {}",
+            context.user_input,
+            plugin_hits,
+            docs_hits,
+            context.project_context.chars().take(600).collect::<String>()
+        );
+
+        let content = if let Some(factory) = &self.llm_factory {
+            let client = factory.create_client_for_agent(AgentType::Orchestrator)?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = user_msg.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent = "OrchestratorAgent",
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation"
+            );
+            client.generate_response(system_prompt, &user_msg).await?
+        } else {
+            // Fallback: heuristic JSON with optional initial plan for simple intents
+            let queries = vec![context.user_input.clone()];
+            let u = context.user_input.to_lowercase();
+            let simple_enough = [
+                "create", "open", "rename", "focus", "select", "play", "duplicate", "reparent", "attach script"
+            ].iter().any(|k| u.contains(k));
+
+            let (commands_needed, estimated_complexity) = if simple_enough {
+                let mut cmds: Vec<&str> = Vec::new();
+                if u.contains("attach") && u.contains("script") { cmds.push("attach_script"); }
+                if u.contains("open") && u.contains("scene") { cmds.push("open_scene"); }
+                if u.contains("create") && u.contains("scene") { cmds.push("create_scene"); }
+                if u.contains("create") && !u.contains("scene") { cmds.push("create_node"); }
+                if u.contains("rename") { cmds.push("rename_node"); }
+                if u.contains("reparent") { cmds.push("reparent_node"); }
+                if u.contains("duplicate") { cmds.push("duplicate_node"); }
+                if u.contains("select") { cmds.push("select_nodes"); }
+                if u.contains("focus") { cmds.push("focus_node"); }
+                if u.contains("play") { cmds.push("play"); }
+                (cmds.into_iter().map(|s| s.to_string()).collect::<Vec<String>>(), "low")
+            } else { (Vec::new(), "medium") };
+
+            // Minimal direct commands we can safely infer without deep parsing
+            let mut direct_commands: Vec<serde_json::Value> = Vec::new();
+            if u.contains("play") {
+                direct_commands.push(serde_json::json!({"action": "play", "mode": "current"}));
+            }
+
+            let initial_plan = if simple_enough {
+                Some(serde_json::json!({
+                    "reasoning": "Heuristic minimal plan for simple UI/file operation",
+                    "steps": [{
+                        "step_number": 1,
+                        "description": "Perform the simple action using Godoty plugin commands",
+                        "commands_needed": commands_needed
+                    }],
+                    "estimated_complexity": estimated_complexity
+                }))
+            } else { None };
+
+            serde_json::json!({
+                "research_needed": heuristics_flag,
+                "research_queries": queries,
+                "simple_enough": simple_enough,
+                "initial_plan": initial_plan,
+                "direct_commands": direct_commands,
+                "reasoning": "Heuristic: based on user phrasing, action keywords, and KB hits"
+            }).to_string()
+        };
+
+        let exec_ms = start_time.elapsed().as_millis() as u64;
+        Ok(AgentOutput {
+            content,
+            tokens_used: 0,
+            execution_time_ms: exec_ms,
+            metadata: serde_json::Map::new(),
+        })
+    }
+
+}
+
+/// Research Agent - aggregates KB findings and optional web search
+pub struct ResearchAgent {
+    api_key: String,
+    client: Client,
+    model: String,
+    llm_factory: Option<LlmFactory>,
+}
+
+impl ResearchAgent {
+    pub fn new(api_key: &str) -> Self {
+        Self {
+            api_key: api_key.to_string(),
+            client: Client::new(),
+            model: "qwen/qwen3-235b-a22b:free".to_string(),
+            llm_factory: None,
+        }
+    }
+
+    pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
+        self.llm_factory = llm_factory;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl StrandsAgent for ResearchAgent {
+    async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
+        let start_time = std::time::Instant::now();
+
+        // Derive queries
+        let mut queries: Vec<String> = Vec::new();
+        if let Some(prev) = &context.previous_output {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(prev) {
+                if let Some(arr) = v.get("research_queries").and_then(|x| x.as_array()) {
+                    for q in arr {
+                        if let Some(s) = q.as_str() { queries.push(s.to_string()); }
+                    }
+                }
+            }
+        }
+        if queries.is_empty() { queries.push(context.user_input.clone()); }
+
+        // KB searches
+        let mut kb_notes = String::new();
+        let mut kb_hits_total = 0usize;
+        for q in queries.iter() {
+            let p = context.plugin_kb.search(q, 5).await?;
+            let d = context.docs_kb.search(q, 5).await?;
+            kb_hits_total += p.len() + d.len();
+            if !p.is_empty() {
+                kb_notes.push_str(&format!("\nPlugin KB [{}]:\n", q));
+                for doc in p.iter() { kb_notes.push_str(&format!("- {}: {}\n", doc.id, doc.content.chars().take(180).collect::<String>())); }
+            }
+            if !d.is_empty() {
+                kb_notes.push_str(&format!("\nGodot Docs [{}]:\n", q));
+                for doc in d.iter() { kb_notes.push_str(&format!("- {}\n", doc.content.chars().take(180).collect::<String>())); }
+            }
+        }
+
+        // Web search removed
+        let web_section = String::new();
+        let web_count = 0usize;
+
+        // Build a planning prompt that turns research into an ExecutionPlan JSON
+        let system_prompt = r#"You are the Research Planning Agent for a Godot assistant.
+Using the evidence below (Project Index context, Plugin KB, Official Godot Docs, and optional Web results), produce an EXECUTION PLAN as STRICT JSON ONLY with this exact shape:
+{
+  "reasoning": string,
+  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
+  "estimated_complexity": "low" | "medium" | "high"
+}
+Guidelines:
+- Cross-check findings against Official Godot Docs and the Project Index. Prefer official docs when conflicts arise.
+- Steps should reference actions achievable via the Godoty plugin command set (e.g., create_node, open_scene, modify_node, attach_script, rename_node, reparent_node, select_nodes, focus_node, play, duplicate_node).
+- Keep the plan minimal but complete. If the request appears trivial and requires no change, return an empty steps array and estimated_complexity = "low" with an explanatory reasoning.
+- Output ONLY the JSON object, no prose.
+"#;
+        let user_msg = format!(
+            "User Input: {}\nProject Context: {}\n\nKB Evidence:\n{}\n\nWeb Evidence:\n{}",
+            context.user_input,
+            context.project_context.chars().take(1600).collect::<String>(),
+            kb_notes,
+            web_section
+        );
+
+        let content = if let Some(factory) = &self.llm_factory {
+            let client = factory.create_client_for_agent(AgentType::Researcher)?;
+            let sys_prev = system_prompt.chars().take(200).collect::<String>();
+            let user_prev = user_msg.chars().take(200).collect::<String>();
+            tracing::debug!(
+                agent = "ResearchAgent",
+                model = %client.model_identifier(),
+                endpoint = %client.endpoint(),
+                system_prompt_preview = %sys_prev,
+                user_input_preview = %user_prev,
+                "Agent LLM invocation"
+            );
+            client.generate_response(system_prompt, &user_msg).await?
+        } else {
+            // Fallback: build a minimal heuristic plan from evidence
+            let reasoning = if kb_hits_total > 0 {
+                "Heuristic plan derived from KB evidence"
+            } else if web_count > 0 {
+                "Heuristic plan derived from web evidence"
+            } else {
+                "Heuristic plan with limited evidence"
+            };
+            let step_desc = if kb_notes.is_empty() {
+                "Review relevant project files and apply the requested change, consulting official docs if needed"
+            } else {
+                "Apply the requested change using patterns found in the knowledge base and verify against official docs"
+            };
+            serde_json::json!({
+                "reasoning": reasoning,
+                "steps": [{
+                    "step_number": 1,
+                    "description": step_desc,
+                    "commands_needed": []
+                }],
+                "estimated_complexity": if kb_hits_total > 0 || web_count > 0 { "low" } else { "medium" }
+            }).to_string()
+        };
+
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("queries".into(), serde_json::json!(queries));
+        metadata.insert("web_results_count".into(), serde_json::json!(web_count));
+        metadata.insert("kb_hits".into(), serde_json::json!(kb_hits_total));
+
+        let exec_ms = start_time.elapsed().as_millis() as u64;
+        Ok(AgentOutput { content, tokens_used: 0, execution_time_ms: exec_ms, metadata })
+    }
+
+}
+

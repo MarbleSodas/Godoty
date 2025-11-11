@@ -5,19 +5,13 @@ use std::collections::HashMap;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LlmProvider {
     OpenRouter, // For services like OpenRouter that aggregate multiple providers
-    ZaiGlm,     // Z.AI GLM official API
-    LiteLLM,    // Local LiteLLM proxy (sidecar)
 }
 
 /// Types of agents in the agentic workflow
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AgentType {
-    Planner,
-    CodeGenerator,
-    Vision,
+    Orchestrator,
     Researcher,
-    Validator,
-    Documentation,
 }
 
 /// Model selection for a specific agent
@@ -39,47 +33,21 @@ impl Default for AgentLlmConfig {
 
         // Default configuration using OpenRouter with free models
         agents.insert(
-            AgentType::Planner,
+            AgentType::Orchestrator,
             ModelSelection {
-                provider: LlmProvider::LiteLLM,
+                provider: LlmProvider::OpenRouter,
                 model_name: "minimax/minimax-m2:free".to_string(),
             },
         );
-        agents.insert(
-            AgentType::CodeGenerator,
-            ModelSelection {
-                provider: LlmProvider::LiteLLM,
-                model_name: "qwen/qwen3-coder:free".to_string(),
-            },
-        );
-        agents.insert(
-            AgentType::Vision,
-            ModelSelection {
-                provider: LlmProvider::LiteLLM,
-                model_name: "nvidia/nemotron-nano-12b-v2-vl:free".to_string(),
-            },
-        );
+
         agents.insert(
             AgentType::Researcher,
             ModelSelection {
-                provider: LlmProvider::LiteLLM,
+                provider: LlmProvider::OpenRouter,
                 model_name: "qwen/qwen3-235b-a22b:free".to_string(),
             },
         );
-        agents.insert(
-            AgentType::Validator,
-            ModelSelection {
-                provider: LlmProvider::LiteLLM,
-                model_name: "z-ai/glm-4.5-air:free".to_string(),
-            },
-        );
-        agents.insert(
-            AgentType::Documentation,
-            ModelSelection {
-                provider: LlmProvider::LiteLLM,
-                model_name: "meta-llama/llama-3.3-70b-instruct:free".to_string(),
-            },
-        );
+
 
         Self { agents }
     }
@@ -126,37 +94,12 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
             "nvidia/nemotron-nano-12b-v2-vl:free".to_string(),
             "google/gemini-2.0-flash-thinking-exp:free".to_string(),
             "google/gemini-2.0-flash-exp:free".to_string(),
+            // Requested additions
+            "x-ai/grok-4-fast".to_string(),
+            "deepseek/deepseek-v3.2-exp".to_string(),
+            // Paid/standard options
             "anthropic/claude-3.5-sonnet".to_string(),
             "openai/gpt-4o".to_string(),
-        ],
-    );
-
-    // Models routed via local LiteLLM proxy (sidecar). These should mirror what's configured in
-    // resources/litellm_config.yaml and can include OpenRouter, Ollama, vLLM backends.
-    models.insert(
-        LlmProvider::LiteLLM,
-        vec![
-            // Common defaults that work with the provided litellm_config.yaml
-            "minimax/minimax-m2:free".to_string(),
-            "qwen/qwen3-coder:free".to_string(),
-            "nvidia/nemotron-nano-12b-v2-vl:free".to_string(),
-            // Example local routes (if user runs Ollama / vLLM locally)
-            "ollama/llama3.1:8b".to_string(),
-        ],
-    );
-
-    // Z.AI GLM official API models
-    models.insert(
-        LlmProvider::ZaiGlm,
-        vec![
-            "glm-4.5".to_string(),
-            "glm-4".to_string(),
-            "glm-4-air".to_string(),
-            "glm-4-plus".to_string(),
-            "glm-4-long".to_string(),
-            "glm-4v".to_string(),
-            "glm-4.5-flash".to_string(),
-            "glm-4.6".to_string(),
         ],
     );
 
@@ -167,7 +110,5 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
 pub fn all_providers() -> Vec<LlmProvider> {
     vec![
         LlmProvider::OpenRouter,
-        LlmProvider::ZaiGlm,
-        LlmProvider::LiteLLM,
     ]
 }

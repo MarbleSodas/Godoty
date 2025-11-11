@@ -1,12 +1,13 @@
-use crate::guardrails::{GuardrailConfig, Guardrails, ValidationResult};
+use crate::guardrails::{Guardrails, ValidationResult};
 use crate::knowledge_base::KnowledgeBase;
 use crate::llm_client::LlmFactory;
 use crate::llm_config::AgentType;
 use crate::metrics::{MetricsStore, WorkflowMetrics};
 use crate::project_indexer::ProjectIndex;
+use crate::context_engine::ContextEngine;
 use crate::strands_agent::{
-    AgentExecutionContext, CodeGenerationAgent, DocumentationAgent, PlanningAgent, StrandsAgent,
-    ValidationAgent,
+    AgentExecutionContext, AgentOutput, StrandsAgent,
+    OrchestratorAgent, ResearchAgent,
 };
 use anyhow::Result;
 use reqwest::Client;
@@ -63,16 +64,6 @@ impl AgenticWorkflow {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn with_guardrails(api_key: &str, config: GuardrailConfig) -> Self {
-        Self {
-            api_key: api_key.to_string(),
-            client: Client::new(),
-            guardrails: Guardrails::new(config),
-            metrics_store: None,
-            llm_factory: None,
-        }
-    }
 
     pub fn with_metrics_store(mut self, metrics_store: MetricsStore) -> Self {
         self.metrics_store = Some(metrics_store);
@@ -173,9 +164,15 @@ impl AgenticWorkflow {
             context.project_index.scripts.len()
         );
 
+        // Visual context removed
+        let mut local_visual = context.visual_context.clone();
+        if Self::is_ui_task(&context.user_input) {
+            local_visual.is_ui_task = true;
+        }
+
         // Prepare visual context string for agents
-        let visual_context_str = if context.visual_context.is_ui_task {
-            if let Some(ref analysis) = context.visual_context.visual_analysis {
+        let visual_context_str = if local_visual.is_ui_task {
+            if let Some(ref analysis) = local_visual.visual_analysis {
                 Some(format!("Visual Analysis:\n{}", analysis))
             } else {
                 Some("Visual context requested but analysis not available".to_string())
@@ -184,172 +181,169 @@ impl AgenticWorkflow {
             None
         };
 
-        // Step 1: Documentation Agent - Retrieve relevant Godot documentation
-        let doc_agent =
-            DocumentationAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
-        let doc_context = AgentExecutionContext {
+        // Build comprehensive context before any planning
+        let ctx_engine = ContextEngine::new(&self.api_key);
+        // Prefetch commonly used docs (ignore errors)
+        let _ = ctx_engine.prefetch_common_godot_docs().await;
+        let mut comp_ctx = ctx_engine
+            .build_comprehensive_context(
+                &context.user_input,
+                &context.project_index,
+                None,
+                8,
+            )
+            .await
+            .unwrap_or_else(|_| crate::context_engine::ComprehensiveContext {
+                godot_docs: String::new(),
+                project_context: project_context.clone(),
+                chat_history: String::new(),
+                recent_messages: vec![],
+                context_query: context.user_input.clone(),
+                visual_analysis: None,
+            });
+        // Attach visual analysis into comprehensive context
+        comp_ctx.visual_analysis = local_visual.visual_analysis.clone();
+        let formatted_context_for_ai = ctx_engine.format_context_for_ai(&comp_ctx);
+
+        // Orchestrator step: decide if research is needed
+        let orchestrator = OrchestratorAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
+        let orch_context = AgentExecutionContext {
             user_input: context.user_input.clone(),
             _chat_history: context.chat_history.clone(),
-            project_context: project_context.clone(),
+            project_context: formatted_context_for_ai.clone(),
             plugin_kb: context.plugin_kb.clone(),
             docs_kb: context.docs_kb.clone(),
             execution_plan: None,
             previous_output: None,
             visual_context: visual_context_str.clone(),
         };
+        let orch_output = orchestrator.execute(&orch_context).await.unwrap_or(AgentOutput{ content: "{\"research_needed\":false,\"research_queries\":[\"\"],\"reasoning\":\"fallback\"}".to_string(), tokens_used:0, execution_time_ms:0, metadata: serde_json::Map::new() });
+        // Orchestrator output parsed and research handled below where planning is resolved.
 
-        let doc_start = std::time::Instant::now();
-        let doc_output = doc_agent.execute(&doc_context).await?;
-        metrics.kb_search_time_ms += doc_start.elapsed().as_millis() as u64;
-        metrics.documentation_tokens += doc_output.tokens_used;
-        metrics.docs_kb_queries += 1;
-
-        tracing::debug!(
-            docs_kb_queries = metrics.docs_kb_queries,
-            documentation_tokens = metrics.documentation_tokens,
-            kb_search_time_ms = metrics.kb_search_time_ms,
-            "Documentation agent completed"
-        );
-
-        thoughts.push(AgentThought {
-            step: 1,
-            thought: "Retrieved relevant Godot documentation".to_string(),
-            action: Some("documentation_retrieval".to_string()),
-            observation: Some(format!(
-                "Retrieved {} docs",
-                doc_output
-                    .metadata
-                    .get("docs_retrieved")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0)
-            )),
-        });
-        metrics.reasoning_steps += 1;
-
-        // Step 2: Planning Agent - Create execution plan
-        iteration += 1;
-        self.guardrails.check_iteration_limit(iteration)?;
-
-        let planning_agent =
-            PlanningAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
-        let planning_context = AgentExecutionContext {
-            user_input: context.user_input.clone(),
-            _chat_history: context.chat_history.clone(),
-            project_context: project_context.clone(),
-            plugin_kb: context.plugin_kb.clone(),
-            docs_kb: context.docs_kb.clone(),
-            execution_plan: None,
-            previous_output: Some(doc_output.content.clone()),
-            visual_context: visual_context_str.clone(),
-        };
-
-        let plan_start = std::time::Instant::now();
-        let plan_output = planning_agent.execute(&planning_context).await?;
-        metrics.planning_time_ms = plan_start.elapsed().as_millis() as u64;
-        metrics.planning_tokens = plan_output.tokens_used;
-        metrics.plugin_kb_queries += plan_output
-            .metadata
-            .get("plugin_docs_retrieved")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        metrics.docs_kb_queries += plan_output
-            .metadata
-            .get("godot_docs_retrieved")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-
-        tracing::debug!(
-            planning_tokens = metrics.planning_tokens,
-            planning_time_ms = metrics.planning_time_ms,
-            plugin_kb_queries = metrics.plugin_kb_queries,
-            docs_kb_queries = metrics.docs_kb_queries,
-            "Planning agent completed"
-        );
-
-        // Log planning response preview for debugging truncated/malformed JSON
-        let plan_resp_len = plan_output.content.len();
-        let plan_preview: String = plan_output.content.chars().take(200).collect();
-        tracing::debug!(plan_response_len = plan_resp_len, plan_response_preview = %plan_preview, "Planning agent raw response preview");
-
-        // Parse execution plan with salvage/repair
-        let plan_raw = Self::extract_json(&plan_output.content)?;
-
-        // Validate JSON completeness before parsing
-        let trimmed_raw = plan_raw.trim();
-        if !trimmed_raw.ends_with('}') && !trimmed_raw.ends_with(']') {
-            tracing::warn!(
-                raw_json_len = plan_raw.len(),
-                last_50_chars = %plan_raw.chars().rev().take(50).collect::<Vec<_>>().iter().rev().collect::<String>(),
-                "Plan JSON appears incomplete (doesn't end with }} or ])"
-            );
+        // Step 2: Planning or accept plan from Research/Orchestrator
+        // Parse Orchestrator signal for research/simple, optional initial plan, and optional direct commands
+        let mut plan_opt: Option<ExecutionPlan> = None;
+        let mut research_needed = false;
+        let mut orch_direct_commands: Vec<Value> = Vec::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&orch_output.content) {
+            research_needed = v.get("research_needed").and_then(|b| b.as_bool()).unwrap_or(false);
+            if let Some(ip) = v.get("initial_plan") {
+                if ip.is_object() {
+                    if let Ok(p) = serde_json::from_value::<ExecutionPlan>(ip.clone()) { plan_opt = Some(p); }
+                }
+            }
+            if let Some(dc) = v.get("direct_commands") {
+                match dc {
+                    serde_json::Value::Array(arr) => {
+                        orch_direct_commands = arr.clone();
+                    }
+                    serde_json::Value::Object(obj) => {
+                        orch_direct_commands = vec![serde_json::Value::Object(obj.clone())];
+                    }
+                    _ => {}
+                }
+            }
         }
 
-        let plan: ExecutionPlan = match serde_json::from_str::<ExecutionPlan>(&plan_raw) {
-            Ok(p) => p,
-            Err(e1) => {
-                // Log the FULL raw JSON for debugging
-                tracing::error!(
-                    parse_error = %e1,
-                    raw_json_len = plan_raw.len(),
-                    full_raw_json = %plan_raw,
-                    "Failed to parse execution plan JSON"
-                );
-
-                if let Some(trimmed) = Self::trim_to_balanced_json_block(&plan_raw) {
-                    match serde_json::from_str::<ExecutionPlan>(&trimmed) {
-                        Ok(p2) => p2,
-                        Err(_e2) => {
-                            // Last resort: ask LLM to repair malformed JSON into valid object
-                            let repair_prompt = r#"You will receive a malformed execution plan as text.
-Return ONLY a valid JSON object with this exact shape (no extra text):
-{
-  "reasoning": string,
-  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
-  "estimated_complexity": "low" | "medium" | "high"
-}
-Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                            let repaired = self
-                                .call_llm_with_agent_type(
-                                    repair_prompt,
-                                    &plan_raw,
-                                    Some(AgentType::Planner),
-                                )
-                                .await?;
-                            let repaired_json = Self::extract_json(&repaired)?;
-                            serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                                tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired JSON");
-                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
-                            })?
-                        }
-                    }
-                } else {
-                    // Could not find a balanced block; attempt repair once
-                    let repair_prompt = r#"You will receive a malformed execution plan as text.
-Return ONLY a valid JSON object with this exact shape (no extra text):
-{
-  "reasoning": string,
-  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
-  "estimated_complexity": "low" | "medium" | "high"
-}
-Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                    let repaired = self
-                        .call_llm_with_agent_type(
-                            repair_prompt,
-                            &plan_raw,
-                            Some(AgentType::Planner),
-                        )
-                        .await?;
-                    let repaired_json = Self::extract_json(&repaired)?;
-                    serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                        tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired JSON (no balanced block)");
-                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
-                    })?
+        // Conditional Research step -> produces a full plan for larger changes
+        let mut research_summary = String::new();
+        if research_needed {
+            let research_agent = ResearchAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
+            let research_ctx = AgentExecutionContext { previous_output: Some(orch_output.content.clone()), ..orch_context.clone() };
+            if let Ok(res) = research_agent.execute(&research_ctx).await {
+                // Try to parse a plan from research content
+                match serde_json::from_str::<ExecutionPlan>(&Self::extract_json(&res.content)?) {
+                    Ok(p) => plan_opt = Some(p),
+                    Err(_) => research_summary = res.content,
                 }
+            }
+        }
+
+        // Aggregate prior context and outputs to guide planning (if needed)
+        let _combined_previous = {
+            let mut s = String::new();
+            s.push_str("# Comprehensive Context\n");
+            s.push_str(&formatted_context_for_ai);
+            s.push_str("\n\n# Orchestrator Decision\n");
+            s.push_str(&orch_output.content);
+            if !research_summary.is_empty() {
+                s.push_str("\n\n# Research Summary\n");
+                s.push_str(&research_summary);
+            }
+
+            s
+        };
+
+        let plan: ExecutionPlan = if let Some(p) = plan_opt {
+            p
+        } else {
+            // Minimal fallback plan when no explicit plan was provided by Orchestrator/Research
+            ExecutionPlan {
+                reasoning: "Derived minimal plan from context (no explicit plan provided)".to_string(),
+                steps: vec![PlanStep {
+                    step_number: 1,
+                    description: "Apply the requested change using available tools".to_string(),
+                    commands_needed: vec![],
+                }],
+                estimated_complexity: "low".to_string(),
             }
         };
 
+        // Fast path: if orchestrator supplied concrete direct commands, validate and return
+        if !orch_direct_commands.is_empty() {
+            tracing::debug!(direct_count = orch_direct_commands.len(), "Using orchestrator direct commands fast path");
+
+            // Guardrail validation first
+            let guardrail_validation = self.guardrails.validate_commands(&orch_direct_commands)?;
+            if !guardrail_validation.valid {
+                tracing::warn!(errors = ?guardrail_validation.errors, "Direct commands failed guardrail validation; falling back to code generation");
+                thoughts.push(AgentThought {
+                    step: thoughts.len() + 1,
+                    thought: "Direct commands failed guardrails; falling back to code generation".to_string(),
+                    action: Some("guardrails".to_string()),
+                    observation: Some(guardrail_validation.errors.join("; ")),
+                });
+            } else {
+                // Guardrails passed; accept orchestrator-provided commands and return
+                let commands = orch_direct_commands;
+                metrics.commands_generated = commands.len() as u32;
+                metrics.commands_validated = commands.len() as u32;
+
+                // Check token budget and record
+                metrics.total_tokens = metrics.planning_tokens
+                    + metrics.generation_tokens
+                    + metrics.validation_tokens
+                    + metrics.documentation_tokens;
+                self.guardrails.check_token_budget(metrics.total_tokens)?;
+                self.guardrails.record_request(metrics.total_tokens).await;
+                metrics.finalize(true, None);
+
+                // Save metrics if store is available
+                if let Some(store) = &self.metrics_store {
+                    let _ = store.add_metrics(metrics.clone()).await;
+                    let _ = store.save_to_disk().await;
+                }
+
+                // Get knowledge used
+                let plugin_knowledge = context.plugin_kb.search(&context.user_input, 5).await?;
+                let docs_knowledge = context.docs_kb.search(&context.user_input, 5).await?;
+
+                return Ok(AgentResponse {
+                    commands,
+                    thoughts,
+                    plan,
+                    knowledge_used: KnowledgeUsed {
+                        plugin_docs: plugin_knowledge.iter().map(|d| d.id.clone()).collect(),
+                        godot_docs: docs_knowledge.iter().map(|d| d.id.clone()).collect(),
+                    },
+                    metrics: Some(metrics),
+                });
+            }
+        }
+
+
         thoughts.push(AgentThought {
-            step: 2,
+            step: thoughts.len() + 1,
             thought: format!("Created execution plan with {} steps", plan.steps.len()),
             action: Some("planning".to_string()),
             observation: Some(plan.reasoning.clone()),
@@ -366,31 +360,72 @@ Ensure all braces/brackets are closed. No comments or trailing commas."#;
             self.guardrails.check_iteration_limit(iteration)?;
             tracing::debug!(attempt = retry + 1, "Code generation attempt starting");
 
-            let code_gen_agent =
-                CodeGenerationAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
-            let code_gen_context = AgentExecutionContext {
-                user_input: context.user_input.clone(),
-                _chat_history: context.chat_history.clone(),
-                project_context: project_context.clone(),
-                plugin_kb: context.plugin_kb.clone(),
-                docs_kb: context.docs_kb.clone(),
-                execution_plan: Some(plan.clone()),
-                previous_output: validation_result.as_ref().map(|v| {
-                    format!(
-                        "Previous validation errors: {:?}\nPlease fix these issues.",
-                        v.errors
-                    )
-                }),
-                visual_context: visual_context_str.clone(),
-            };
+            // Generate commands directly with the Orchestrator model (no separate CodeGenerationAgent)
+            let plugin_docs_for_gen = context.plugin_kb.search(&context.user_input, 5).await?;
+            let plugin_examples = plugin_docs_for_gen
+                .iter()
+                .map(|d| d.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let allowed_actions_list = self.guardrails.config.allowed_command_types.join(", ");
+
+            let _system_prompt = format!(
+                r#"You are a command generation agent for Godot.
+
+Execution Plan:
+{}
+
+Plugin Command Examples:
+{}
+
+STRICT SCHEMA RULES:
+- Every command MUST include an 'action' field; it must be one of: [{}].
+- Map Godot UI/node types to the 'type' field ONLY when action = 'create_node' (or when searching by type). Do NOT use node types as command actions.
+- Required fields by action:
+  - create_node: type, name
+  - create_scene: name, root_type
+  - modify_node: path, properties
+  - delete_node: path
+  - attach_script: path, script_content
+  - open_scene: path
+  - select_nodes: paths
+  - focus_node: path
+  - rename_node: path, new_name
+  - reparent_node: path, new_parent
+- Use only fields defined in the schema. Do not invent new fields.
+
+Generate a JSON array of commands to execute the plan.
+Each command must be a valid JSON object matching the plugin's command schema OR the Desktop Commander MCP command schema.
+- Desktop Commander MCP command shape: {{"action":"desktop_commander","tool": one of ["read_file","write_file","edit_block","create_directory","list_directory","move_file","start_search","get_more_search_results","stop_search","get_file_info"], "args": object}}
+- Prefer "edit_block" for surgical edits to existing files; "write_file" for new files; use search/directory tools as needed.
+- Keep ALL file/directory paths within the project root shown in context.
+Respond ONLY with the JSON array, no explanations.
+"#,
+                serde_json::to_string_pretty(&plan)?,
+                plugin_examples,
+                allowed_actions_list
+            );
+
+            let mut combined_input = context.user_input.clone();
+            if let Some(v) = &validation_result {
+                combined_input.push_str(&format!("\n\nFix these guardrail errors: {:?}", v.errors));
+            }
 
             let gen_start = std::time::Instant::now();
-            let gen_output = code_gen_agent.execute(&code_gen_context).await?;
+            let response = orchestrator
+                .generate_actions_for_plan(
+                    &plan,
+                    &combined_input,
+                    &plugin_examples,
+                    &allowed_actions_list,
+                )
+                .await?;
             metrics.generation_time_ms += gen_start.elapsed().as_millis() as u64;
-            metrics.generation_tokens += gen_output.tokens_used;
+            let approx_tokens_used = ((combined_input.len() + response.len()) / 4) as u32;
+            metrics.generation_tokens += approx_tokens_used;
 
             // Parse generated commands (accept array or single object) with robust salvage
-            let gen_raw = Self::extract_json(&gen_output.content)?;
+            let gen_raw = Self::extract_json(&response)?;
 
             // Validate JSON completeness before parsing
             let trimmed_gen = gen_raw.trim();
@@ -432,7 +467,7 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
                                         .call_llm_with_agent_type(
                                             repair_prompt,
                                             &gen_raw,
-                                            Some(AgentType::CodeGenerator),
+                                            Some(AgentType::Orchestrator),
                                         )
                                         .await?;
                                     let repaired_json = Self::extract_json(&repaired)?;
@@ -529,95 +564,10 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
                 }
             }
 
-            // Then use AI validation agent for deeper validation
-            let validation_agent =
-                ValidationAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
-            let validation_context = AgentExecutionContext {
-                user_input: context.user_input.clone(),
-                _chat_history: context.chat_history.clone(),
-                project_context: project_context.clone(),
-                plugin_kb: context.plugin_kb.clone(),
-                docs_kb: context.docs_kb.clone(),
-                execution_plan: Some(plan.clone()),
-                previous_output: Some(serde_json::to_string(&generated_commands)?),
-                visual_context: visual_context_str.clone(),
-            };
-
-            let val_start = std::time::Instant::now();
-            let val_output = validation_agent.execute(&validation_context).await?;
-            metrics.validation_time_ms += val_start.elapsed().as_millis() as u64;
-            metrics.validation_tokens += val_output.tokens_used;
-
-            // Parse validation result
-            #[derive(Deserialize)]
-            struct AIValidationResult {
-                valid: bool,
-                errors: Vec<String>,
-                warnings: Vec<String>,
-                #[serde(default, deserialize_with = "opt_one_or_many")]
-                validated_commands: Option<Vec<Value>>,
-            }
-
-            let val_raw = Self::extract_json(&val_output.content)?;
-            let ai_validation: AIValidationResult =
-                serde_json::from_str(&val_raw).map_err(|e| {
-                    tracing::error!(
-                        parse_error = %e,
-                        raw_json_len = val_raw.len(),
-                        full_raw_json = %val_raw,
-                        "Failed to parse validation JSON"
-                    );
-                    anyhow::anyhow!(
-                        "Failed to parse validation JSON: {}. See logs for full JSON.",
-                        e
-                    )
-                })?;
-
-            metrics.validation_errors += ai_validation.errors.len() as u32;
-            metrics.validation_warnings += ai_validation.warnings.len() as u32;
-            tracing::debug!(
-                ai_valid = ai_validation.valid,
-                ai_errors = ai_validation.errors.len(),
-                ai_warnings = ai_validation.warnings.len(),
-                "AI validation completed"
-            );
-
-            thoughts.push(AgentThought {
-                step: thoughts.len() + 1,
-                thought: format!(
-                    "AI validation: {} errors, {} warnings",
-                    ai_validation.errors.len(),
-                    ai_validation.warnings.len()
-                ),
-                action: Some("ai_validation".to_string()),
-                observation: Some(if ai_validation.valid {
-                    "Commands validated successfully".to_string()
-                } else {
-                    ai_validation.errors.join("; ")
-                }),
-            });
-            metrics.reasoning_steps += 1;
-
-            if ai_validation.valid {
-                commands = ai_validation
-                    .validated_commands
-                    .unwrap_or(generated_commands);
-                metrics.commands_validated = commands.len() as u32;
-                break;
-            } else if retry < max_retries {
-                validation_result = Some(ValidationResult {
-                    valid: false,
-                    errors: ai_validation.errors,
-                    warnings: ai_validation.warnings,
-                });
-                metrics.retry_attempts += 1;
-            } else {
-                return Err(anyhow::anyhow!(
-                    "AI validation failed after {} retries: {:?}",
-                    max_retries,
-                    ai_validation.errors
-                ));
-            }
+            // Guardrails passed; accept generated commands directly
+            commands = generated_commands;
+            metrics.commands_validated = commands.len() as u32;
+            break;
         }
 
         // Check token budget
@@ -662,248 +612,7 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
         })
     }
 
-    /// Plan the task by breaking it down into steps
-    #[allow(dead_code)]
-    async fn plan_task(
-        &self,
-        context: &AgentContext,
-        plugin_knowledge: &[crate::knowledge_base::KnowledgeDocument],
-        docs_knowledge: &[crate::knowledge_base::KnowledgeDocument],
-    ) -> Result<ExecutionPlan> {
-        let plugin_context = plugin_knowledge
-            .iter()
-            .map(|d| format!("- {}: {}", d.id, d.content))
-            .collect::<Vec<_>>()
-            .join("\n");
 
-        let docs_context = docs_knowledge
-            .iter()
-            .map(|d| format!("- {}", d.content.chars().take(200).collect::<String>()))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let system_prompt = format!(
-            r#"You are an AI planning agent for Godot game development.
-Your task is to analyze the user's request and create a detailed execution plan.
-
-Available Plugin Commands Context:
-{}
-
-Relevant Godot Documentation:
-{}
-
-Project Context:
-- Total Scenes: {}
-- Total Scripts: {}
-
-Create a step-by-step plan to accomplish the user's goal.
-Respond with a JSON object containing:
-{{
-  "reasoning": "Your analysis of the task",
-  "steps": [
-    {{"step_number": 1, "description": "What to do", "commands_needed": ["command_type1", "command_type2"]}},
-    ...
-  ],
-  "estimated_complexity": "low|medium|high"
-}}
-
-STRICT OUTPUT RULES:
-- Respond ONLY with a valid JSON object (no prose before/after).
-- If you use a code fence, use ```json and include only valid JSON inside.
-- No comments, no trailing commas, no ellipses inside JSON.
-- Ensure all braces/brackets are closed; keep to <= 8 steps.
-
-"#,
-            plugin_context,
-            docs_context,
-            context.project_index.scenes.len(),
-            context.project_index.scripts.len()
-        );
-
-        let response = self
-            .call_llm_with_agent_type(
-                &system_prompt,
-                &context.user_input,
-                Some(AgentType::Planner),
-            )
-            .await?;
-        // Extract potential JSON from the response (handles code fences and extra text)
-        let plan_json = Self::extract_json(&response)?;
-
-        // Validate JSON completeness before parsing
-        let trimmed_plan = plan_json.trim();
-        if !trimmed_plan.ends_with('}') && !trimmed_plan.ends_with(']') {
-            tracing::warn!(
-                raw_json_len = plan_json.len(),
-                last_50_chars = %plan_json.chars().rev().take(50).collect::<Vec<_>>().iter().rev().collect::<String>(),
-                "Plan JSON appears incomplete (doesn't end with }} or ])"
-            );
-        }
-
-        // Parse the plan with salvage/repair
-        let plan: ExecutionPlan = match serde_json::from_str::<ExecutionPlan>(&plan_json) {
-            Ok(p) => p,
-            Err(e1) => {
-                // Log the FULL raw JSON for debugging
-                tracing::error!(
-                    parse_error = %e1,
-                    raw_json_len = plan_json.len(),
-                    full_raw_json = %plan_json,
-                    "Failed to parse execution plan JSON in plan_task"
-                );
-
-                if let Some(trimmed) = Self::trim_to_balanced_json_block(&plan_json) {
-                    match serde_json::from_str::<ExecutionPlan>(&trimmed) {
-                        Ok(p2) => p2,
-                        Err(_e2) => {
-                            let repair_prompt = r#"You will receive a malformed execution plan as text.
-Return ONLY a valid JSON object with this exact shape (no extra text):
-{
-  "reasoning": string,
-  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
-  "estimated_complexity": "low" | "medium" | "high"
-}
-Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                            let repaired = self
-                                .call_llm_with_agent_type(
-                                    repair_prompt,
-                                    &plan_json,
-                                    Some(AgentType::Planner),
-                                )
-                                .await?;
-                            let repaired_json = Self::extract_json(&repaired)?;
-                            serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                                tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired plan JSON in plan_task");
-                                anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
-                            })?
-                        }
-                    }
-                } else {
-                    let repair_prompt = r#"You will receive a malformed execution plan as text.
-Return ONLY a valid JSON object with this exact shape (no extra text):
-{
-  "reasoning": string,
-  "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
-  "estimated_complexity": "low" | "medium" | "high"
-}
-Ensure all braces/brackets are closed. No comments or trailing commas."#;
-                    let repaired = self
-                        .call_llm_with_agent_type(
-                            repair_prompt,
-                            &plan_json,
-                            Some(AgentType::Planner),
-                        )
-                        .await?;
-                    let repaired_json = Self::extract_json(&repaired)?;
-                    serde_json::from_str::<ExecutionPlan>(&repaired_json).map_err(|e3| {
-                        tracing::error!(full_repaired_json = %repaired_json, "Failed to parse repaired plan JSON (no balanced block) in plan_task");
-                        anyhow::anyhow!("Failed to parse plan after repair. First error: {}. Repair error: {}. See logs for full JSON.", e1, e3)
-                    })?
-                }
-            }
-        };
-
-        Ok(plan)
-    }
-
-    /// Generate commands based on the execution plan
-    #[allow(dead_code)]
-    async fn generate_commands(
-        &self,
-        context: &AgentContext,
-        plan: &ExecutionPlan,
-        plugin_knowledge: &[crate::knowledge_base::KnowledgeDocument],
-        _docs_knowledge: &[crate::knowledge_base::KnowledgeDocument],
-    ) -> Result<Vec<Value>> {
-        // Build comprehensive context for command generation
-        let plugin_examples = plugin_knowledge
-            .iter()
-            .map(|d| d.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let allowed_actions_list = self.guardrails.config.allowed_command_types.join(", ");
-
-        let system_prompt = format!(
-            r#"You are a command generation agent for Godot.
-
-Execution Plan:
-{}
-
-Plugin Command Examples:
-{}
-
-STRICT SCHEMA RULES:
-- Every command MUST include an 'action' field; it must be one of: [{}].
-- Map Godot UI/node types to the 'type' field ONLY when action = 'create_node' (or when searching by type). Do NOT use node types as command actions.
-- Required fields by action:
-  - create_node: type, name
-  - create_scene: name, root_type
-  - modify_node: path, properties
-  - delete_node: path
-  - attach_script: path, script_content
-  - open_scene: path
-  - select_nodes: paths
-  - focus_node: path
-  - rename_node: path, new_name
-  - reparent_node: path, new_parent
-- Use only fields defined in the schema. Do not invent new fields.
-
-Generate a JSON array of commands to execute the plan.
-Each command must be a valid JSON object matching the plugin's command schema.
-Respond ONLY with the JSON array, no explanations.
-"#,
-            serde_json::to_string_pretty(plan)?,
-            plugin_examples,
-            allowed_actions_list
-        );
-
-        let response = self
-            .call_llm_with_agent_type(
-                &system_prompt,
-                &context.user_input,
-                Some(AgentType::CodeGenerator),
-            )
-            .await?;
-
-        // Extract and parse commands (accept array or single object)
-        let raw = Self::extract_json(&response)?;
-
-        // Validate JSON completeness before parsing
-        let trimmed_raw = raw.trim();
-        if !trimmed_raw.ends_with('}') && !trimmed_raw.ends_with(']') {
-            tracing::warn!(
-                raw_json_len = raw.len(),
-                last_50_chars = %raw.chars().rev().take(50).collect::<Vec<_>>().iter().rev().collect::<String>(),
-                "Commands JSON appears incomplete (doesn't end with }} or ])"
-            );
-        }
-
-        let val: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-            tracing::error!(
-                parse_error = %e,
-                raw_json_len = raw.len(),
-                full_raw_json = %raw,
-                "Failed to parse commands JSON in generate_commands"
-            );
-            anyhow::anyhow!(
-                "Failed to parse commands JSON: {}. See logs for full JSON.",
-                e
-            )
-        })?;
-        let commands: Vec<Value> = match val {
-            serde_json::Value::Array(arr) => arr,
-            serde_json::Value::Object(_) => vec![val],
-            other => {
-                return Err(anyhow::anyhow!(format!(
-                    "Expected JSON array or object for commands, got {}",
-                    other
-                )))
-            }
-        };
-
-        Ok(commands)
-    }
 
     /// Call the LLM API with optional agent type for factory-based routing
     async fn call_llm_with_agent_type(
@@ -934,12 +643,6 @@ Respond ONLY with the JSON array, no explanations.
         self.call_llm_default(system_prompt, user_input).await
     }
 
-    /// Call the LLM API (backward compatibility - uses default model)
-    #[allow(dead_code)]
-    async fn call_llm(&self, system_prompt: &str, user_input: &str) -> Result<String> {
-        self.call_llm_with_agent_type(system_prompt, user_input, None)
-            .await
-    }
 
     /// Default LLM implementation using OpenRouter
     async fn call_llm_default(&self, system_prompt: &str, user_input: &str) -> Result<String> {
@@ -1261,24 +964,6 @@ where
     }
 }
 
-// Helper deserializer for Option<Vec<Value>> to accept null/missing, array, or single object
-fn opt_one_or_many<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Option<Vec<serde_json::Value>>, D::Error>
-where
-    D: serde::de::Deserializer<'de>,
-{
-    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
-    match opt {
-        None => Ok(None),
-        Some(serde_json::Value::Array(arr)) => Ok(Some(arr)),
-        Some(v @ serde_json::Value::Object(_)) => Ok(Some(vec![v])),
-        Some(other) => Err(serde::de::Error::custom(format!(
-            "expected array or object for validated_commands, got {}",
-            other
-        ))),
-    }
-}
 
 // Helper: accept number or numeric string and return usize
 fn usize_or_string<'de, D>(deserializer: D) -> std::result::Result<usize, D::Error>
