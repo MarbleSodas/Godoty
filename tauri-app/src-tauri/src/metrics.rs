@@ -15,6 +15,16 @@ pub struct WorkflowMetrics {
     pub validation_tokens: u32,
     pub documentation_tokens: u32,
 
+    // Cost tracking (in USD)
+    #[serde(default)]
+    pub total_cost_usd: f64,
+    #[serde(default)]
+    pub planning_cost_usd: f64,
+    #[serde(default)]
+    pub generation_cost_usd: f64,
+    #[serde(default)]
+    pub validation_cost_usd: f64,
+
     // Execution time (milliseconds)
     pub total_time_ms: u64,
     pub planning_time_ms: u64,
@@ -58,6 +68,10 @@ impl WorkflowMetrics {
             total_tokens: 0,
             planning_tokens: 0,
             generation_tokens: 0,
+            total_cost_usd: 0.0,
+            planning_cost_usd: 0.0,
+            generation_cost_usd: 0.0,
+            validation_cost_usd: 0.0,
             validation_tokens: 0,
             documentation_tokens: 0,
             total_time_ms: 0,

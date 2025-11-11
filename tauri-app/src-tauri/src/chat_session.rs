@@ -68,6 +68,8 @@ pub struct SessionMetadata {
     pub successful_commands: usize,
     pub failed_commands: usize,
     pub total_tokens_used: usize,
+    #[serde(default)]
+    pub total_cost_usd: f64,
 }
 
 impl ChatSession {
@@ -91,6 +93,7 @@ impl ChatSession {
                 successful_commands: 0,
                 failed_commands: 0,
                 total_tokens_used: 0,
+                total_cost_usd: 0.0,
             },
         }
     }
@@ -139,6 +142,11 @@ impl ChatSession {
             self.metadata.failed_commands += 1;
         }
         self.metadata.total_tokens_used += tokens_used;
+    }
+
+    /// Update session cost by adding a message cost
+    pub fn add_message_cost(&mut self, cost: f64) {
+        self.metadata.total_cost_usd += cost;
     }
 
     /// Update the session title
@@ -221,6 +229,29 @@ impl ChatMessage {
             thought_process,
             context_used,
             visual_snapshot_b64,
+            visual_snapshot_meta,
+            metrics: None,
+        }
+    }
+
+    /// Create a new system message
+    pub fn system(
+        content: String,
+        thought_process: Option<Vec<ThoughtStep>>,
+        context_used: Option<ContextSnapshot>,
+        visual_snapshot_meta: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            role: MessageRole::System,
+            content,
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            thought_process,
+            context_used,
+            visual_snapshot_b64: None,
             visual_snapshot_meta,
             metrics: None,
         }

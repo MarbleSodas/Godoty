@@ -1,5 +1,4 @@
 use crate::agent::ExecutionPlan;
-use crate::knowledge_base::KnowledgeBase;
 use crate::llm_client::LlmFactory;
 use crate::llm_config::AgentType;
 use anyhow::Result;
@@ -19,8 +18,6 @@ pub struct AgentExecutionContext {
     pub user_input: String,
     pub _chat_history: String,
     pub project_context: String,
-    pub plugin_kb: KnowledgeBase,
-    pub docs_kb: KnowledgeBase,
     #[allow(dead_code)]
     pub execution_plan: Option<ExecutionPlan>,
     pub previous_output: Option<String>,
@@ -35,6 +32,8 @@ pub struct AgentOutput {
     pub tokens_used: u32,
     pub execution_time_ms: u64,
     pub metadata: serde_json::Map<String, Value>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 
@@ -260,14 +259,11 @@ Respond ONLY with the JSON array, no explanations.
 impl StrandsAgent for OrchestratorAgent {
     async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
         let start_time = std::time::Instant::now();
-        // Take a quick pulse on KB coverage
-        let plugin_hits = context.plugin_kb.search(&context.user_input, 3).await?.len();
-        let docs_hits = context.docs_kb.search(&context.user_input, 3).await?.len();
 
         let heuristics_flag = {
             let u = context.user_input.to_lowercase();
             let indicators = ["how", "which", "search", "latest", "docs", "explain", "compare", "best"];
-            indicators.iter().any(|w| u.contains(w)) || (plugin_hits + docs_hits) < 2
+            indicators.iter().any(|w| u.contains(w))
         };
 
         let system_prompt = r#"You are the Orchestrator Agent for a Godot assistant.
@@ -293,10 +289,8 @@ Rules:
 - For filesystem/code edits, emit Desktop Commander MCP commands with shape {"action":"desktop_commander","tool": one of ["read_file","write_file","edit_block","create_directory","list_directory","move_file","start_search","get_more_search_results","stop_search","get_file_info"], "args": object}. Prefer "edit_block" for surgical changes; "write_file" for new files; use directory and search tools as needed. Keep ALL paths within the project root.
 "#;
         let user_msg = format!(
-            "User Input: {}\nKB hits -> plugin: {}, docs: {}\nProject Context (truncated): {}",
+            "User Input: {}\nProject Context (truncated): {}",
             context.user_input,
-            plugin_hits,
-            docs_hits,
             context.project_context.chars().take(600).collect::<String>()
         );
 
@@ -370,6 +364,7 @@ Rules:
             tokens_used: 0,
             execution_time_ms: exec_ms,
             metadata: serde_json::Map::new(),
+            cost_usd: None,
         })
     }
 
@@ -417,22 +412,9 @@ impl StrandsAgent for ResearchAgent {
         }
         if queries.is_empty() { queries.push(context.user_input.clone()); }
 
-        // KB searches
-        let mut kb_notes = String::new();
-        let mut kb_hits_total = 0usize;
-        for q in queries.iter() {
-            let p = context.plugin_kb.search(q, 5).await?;
-            let d = context.docs_kb.search(q, 5).await?;
-            kb_hits_total += p.len() + d.len();
-            if !p.is_empty() {
-                kb_notes.push_str(&format!("\nPlugin KB [{}]:\n", q));
-                for doc in p.iter() { kb_notes.push_str(&format!("- {}: {}\n", doc.id, doc.content.chars().take(180).collect::<String>())); }
-            }
-            if !d.is_empty() {
-                kb_notes.push_str(&format!("\nGodot Docs [{}]:\n", q));
-                for doc in d.iter() { kb_notes.push_str(&format!("- {}\n", doc.content.chars().take(180).collect::<String>())); }
-            }
-        }
+        // Knowledge base searches removed - using Context7 via ContextEngine instead
+        let kb_notes = String::new();
+        let kb_hits_total = 0usize;
 
         // Web search removed
         let web_section = String::new();
@@ -504,7 +486,7 @@ Guidelines:
         metadata.insert("kb_hits".into(), serde_json::json!(kb_hits_total));
 
         let exec_ms = start_time.elapsed().as_millis() as u64;
-        Ok(AgentOutput { content, tokens_used: 0, execution_time_ms: exec_ms, metadata })
+        Ok(AgentOutput { content, tokens_used: 0, execution_time_ms: exec_ms, metadata, cost_usd: None })
     }
 
 }

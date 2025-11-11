@@ -9,8 +9,6 @@ mod ai;
 mod chat_session;
 mod context_engine;
 mod guardrails;
-mod knowledge_base;
-mod knowledge_manager;
 mod llm_client;
 mod llm_config;
 mod metrics;
@@ -30,7 +28,6 @@ use agent::AgenticWorkflow;
 use ai::AIProcessor;
 use chat_session::{ChatMessage, ChatSessionManager, ContextSnapshot, MessageRole};
 use context_engine::ContextEngine;
-use knowledge_manager::KnowledgeManager;
 use llm_config::{AgentLlmConfig, ApiKeyStore, LlmProvider};
 use crate::rag_sidecar::RagSidecarState;
 
@@ -53,7 +50,6 @@ struct AppState {
     project_index: Arc<Mutex<Option<ProjectIndex>>>,
     godot_project_path: Arc<Mutex<Option<String>>>,
     indexing_status: Arc<Mutex<IndexingStatus>>,
-    knowledge_manager: Arc<Mutex<Option<KnowledgeManager>>>,
     agentic_workflow: Arc<Mutex<Option<AgenticWorkflow>>>,
     metrics_store: Arc<Mutex<Option<MetricsStore>>>,
     agent_llm_config: Arc<Mutex<AgentLlmConfig>>,
@@ -92,7 +88,6 @@ impl Default for AppState {
             chat_session_manager: Arc::new(Mutex::new(session_manager)),
             storage: Arc::new(Mutex::new(storage)),
             project_index: Arc::new(Mutex::new(None)),
-            knowledge_manager: Arc::new(Mutex::new(None)),
             agentic_workflow: Arc::new(Mutex::new(None)),
             godot_project_path: Arc::new(Mutex::new(project_path)),
             indexing_status: Arc::new(Mutex::new(IndexingStatus::NotStarted)),
@@ -138,6 +133,44 @@ fn emit_log(
         "data": data,
     });
     let _ = window.emit("process-log", payload);
+}
+
+/// Emit an agent thought message and save it to the active session
+fn emit_agent_thought(
+    window: &tauri::Window,
+    state: &tauri::State<AppState>,
+    agent_name: &str,
+    thought: &str,
+    session_id: Option<String>,
+) {
+    // Emit as a log for real-time display
+    emit_log(
+        window,
+        "info",
+        "agent_thought",
+        thought,
+        Some(agent_name),
+        None,
+        Some("thinking"),
+        session_id.clone(),
+        None,
+    );
+
+    // Also save as a persistent system message in the chat session
+    if let Some(sid) = session_id {
+        let mut manager = state.chat_session_manager.lock().unwrap();
+        if let Some(session) = manager.get_active_session_mut() {
+            if session.id == sid {
+                let msg = chat_session::ChatMessage::system(
+                    format!("🤔 **{}**: {}", agent_name, thought),
+                    None,
+                    None,
+                    None,
+                );
+                session.add_message(msg);
+            }
+        }
+    }
 }
 
 
@@ -1818,19 +1851,6 @@ async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String
     let storage_dir = storage::Storage::get_config_dir()
         .map_err(|e| format!("Failed to get config dir: {}", e))?;
 
-    // Initialize knowledge manager (now uses local embeddings, no API key needed)
-    let km = KnowledgeManager::new(storage_dir.clone())
-        .map_err(|e| format!("Failed to create knowledge manager: {}", e))?;
-    km.initialize()
-        .await
-        .map_err(|e| format!("Failed to initialize knowledge bases: {}", e))?;
-
-    // Store in state
-    {
-        let mut knowledge_manager = state.knowledge_manager.lock().unwrap();
-        *knowledge_manager = Some(km);
-    }
-
     // Initialize metrics store
     let metrics_store = MetricsStore::new(storage_dir.clone());
     {
@@ -1853,59 +1873,6 @@ async fn initialize_knowledge_bases(state: State<'_, AppState>) -> Result<String
     }
 
     Ok("Knowledge bases initialized successfully".to_string())
-}
-
-/// Get knowledge base status
-#[tauri::command]
-async fn get_knowledge_base_status(state: State<'_, AppState>) -> Result<Value, String> {
-    let km = state.knowledge_manager.lock().unwrap();
-
-    if let Some(km) = km.as_ref() {
-        let plugin_count = km.get_plugin_kb().count().await;
-        let docs_count = km.get_docs_kb().count().await;
-
-        Ok(json!({
-            "initialized": true,
-            "plugin_kb_count": plugin_count,
-            "docs_kb_count": docs_count
-        }))
-    } else {
-        Ok(json!({
-            "initialized": false,
-            "plugin_kb_count": 0,
-            "docs_kb_count": 0
-        }))
-    }
-}
-
-/// Get all documents from documentation knowledge base
-#[tauri::command]
-async fn get_docs_kb_documents(state: State<'_, AppState>) -> Result<Value, String> {
-    let km = state.knowledge_manager.lock().unwrap();
-
-    if let Some(km) = km.as_ref() {
-        let docs = km.get_docs_kb().get_all_documents().await;
-        Ok(serde_json::to_value(docs).map_err(|e| e.to_string())?)
-    } else {
-        Err("Knowledge bases not initialized".to_string())
-    }
-}
-
-/// Rebuild documentation knowledge base
-#[tauri::command]
-async fn rebuild_docs_kb(state: State<'_, AppState>) -> Result<String, String> {
-    let km = state.knowledge_manager.lock().unwrap();
-
-    if let Some(km) = km.as_ref() {
-        km.rebuild_docs_kb()
-            .await
-            .map_err(|e| format!("Failed to rebuild docs KB: {}", e))?;
-
-        let count = km.get_docs_kb().count().await;
-        Ok(format!("Documentation knowledge base rebuilt successfully. {} documents indexed.", count))
-    } else {
-        Err("Knowledge bases not initialized".to_string())
-    }
 }
 
 /// Process command using agentic workflow
@@ -1934,51 +1901,6 @@ async fn process_command_agentic(
         path.clone()
             .ok_or("Godot project path not set. Please set it in settings.")?
     };
-
-    // Ensure knowledge bases are initialized
-    let km_exists = {
-        let km = state.knowledge_manager.lock().unwrap();
-        km.is_some()
-    };
-
-    if !km_exists {
-        // Log knowledge base initialization if not present
-        emit_log(
-            &window,
-            "debug",
-            "agent_activity",
-            "Initializing knowledge bases",
-            Some("System"),
-            Some("Bootstrap"),
-            Some("processing"),
-            None,
-            None,
-        );
-
-        // Initialize knowledge bases (now uses local embeddings, no API key needed)
-        let storage_dir = storage::Storage::get_config_dir()
-            .map_err(|e| format!("Failed to get config dir: {}", e))?;
-        let km = KnowledgeManager::new(storage_dir)
-            .map_err(|e| format!("Failed to create knowledge manager: {}", e))?;
-        km.initialize()
-            .await
-            .map_err(|e| format!("Failed to initialize knowledge bases: {}", e))?;
-
-        let mut knowledge_manager = state.knowledge_manager.lock().unwrap();
-        *knowledge_manager = Some(km);
-
-        emit_log(
-            &window,
-            "info",
-            "agent_activity",
-            "Knowledge bases initialized",
-            Some("System"),
-            Some("Bootstrap"),
-            Some("completed"),
-            None,
-            None,
-        );
-    }
 
     // Ensure metrics store is initialized
     let metrics_exists = {
@@ -2170,14 +2092,6 @@ async fn process_command_agentic(
         }
     };
 
-    // Get knowledge bases
-    let (plugin_kb, docs_kb) = {
-        let km = state.knowledge_manager.lock().unwrap();
-        let km_ref = km.as_ref().ok_or("Knowledge manager not initialized")?;
-        (km_ref.get_plugin_kb(), km_ref.get_docs_kb())
-    };
-
-
     // Gather visual context if this is a UI-related task
     let visual_context = {
         let is_ui_task = agent::AgenticWorkflow::is_ui_task(&input);
@@ -2255,8 +2169,6 @@ async fn process_command_agentic(
         user_input: input.clone(),
         project_index,
         chat_history,
-        plugin_kb,
-        docs_kb,
         visual_context,
     };
 
@@ -2268,6 +2180,15 @@ async fn process_command_agentic(
             None => return Err("Agentic workflow not initialized".to_string()),
         }
     };
+
+    // Emit initial agent thought
+    emit_agent_thought(
+        &window,
+        &state,
+        "Orchestrator",
+        "Analyzing your request and determining the best approach...",
+        session_id_for_logs.clone(),
+    );
 
     let agent_response = match workflow.execute(&agent_context).await {
         Ok(r) => r,
@@ -2314,6 +2235,27 @@ async fn process_command_agentic(
             return Err(format!("Agentic workflow failed: {}", e));
         }
     };
+
+    // Emit agent thoughts as persistent messages
+    for thought in &agent_response.thoughts {
+        let thought_text = if let Some(action) = &thought.action {
+            if let Some(obs) = &thought.observation {
+                format!("{} (Action: {}, Result: {})", thought.thought, action, obs)
+            } else {
+                format!("{} (Action: {})", thought.thought, action)
+            }
+        } else {
+            thought.thought.clone()
+        };
+
+        emit_agent_thought(
+            &window,
+            &state,
+            "Agent",
+            &thought_text,
+            session_id_for_logs.clone(),
+        );
+    }
 
     // Emit metrics snapshot and warnings if any
     if let Some(m) = agent_response.metrics.as_ref() {
@@ -2541,22 +2483,27 @@ async fn process_command_agentic(
                 None,
             );
             // Attach per-message metrics extracted from workflow + timings
+            // Use actual cost from OpenRouter if available, otherwise use total_tokens
+            let (total_tokens, actual_cost) = agent_response
+                .metrics
+                .as_ref()
+                .map(|m| (m.total_tokens, m.total_cost_usd))
+                .unwrap_or((0, 0.0));
+
             msg.metrics = Some(chat_session::MessageMetrics {
-                input_tokens: agent_response
-                    .metrics
-                    .as_ref()
-                    .map(|m| m.total_tokens)
-                    .unwrap_or(0),
-                output_tokens: 0,
-                total_tokens: agent_response
-                    .metrics
-                    .as_ref()
-                    .map(|m| m.total_tokens)
-                    .unwrap_or(0),
+                input_tokens: total_tokens / 2, // Approximate split (actual values tracked in workflow)
+                output_tokens: total_tokens - (total_tokens / 2),
+                total_tokens,
                 latency_ms: processing_start.elapsed().as_millis() as u64,
                 tool_call_times: Vec::new(),
-                cost_estimate_usd: None,
+                cost_estimate_usd: if actual_cost > 0.0 { Some(actual_cost) } else { None },
             });
+
+            // Update session cost with actual cost from OpenRouter
+            if actual_cost > 0.0 {
+                session.add_message_cost(actual_cost);
+            }
+
             session.add_message(msg);
         }
     }
@@ -2747,6 +2694,59 @@ async fn rag_index_current_project(app: tauri::AppHandle, state: State<'_, AppSt
 }
 
 #[tauri::command]
+fn get_project_metrics(state: State<'_, AppState>) -> Result<storage::ProjectMetrics, String> {
+    let project_path = {
+        let g = state.godot_project_path.lock().unwrap();
+        g.clone().ok_or("Godot project path not set".to_string())?
+    };
+
+    let storage = state.storage.lock().unwrap();
+    storage.load_project_metrics(&project_path)
+        .map_err(|e| format!("Failed to load project metrics: {}", e))
+}
+
+#[tauri::command]
+fn update_project_metrics(state: State<'_, AppState>) -> Result<(), String> {
+    let project_path = {
+        let g = state.godot_project_path.lock().unwrap();
+        g.clone().ok_or("Godot project path not set".to_string())?
+    };
+
+    let storage = state.storage.lock().unwrap();
+    let manager = state.chat_session_manager.lock().unwrap();
+
+    // Calculate total metrics from all sessions
+    let sessions = manager.get_all_sessions();
+    let mut total_messages = 0;
+    let mut total_tokens = 0;
+    let mut total_cost = 0.0;
+
+    for session in sessions {
+        total_messages += session.messages.len();
+        total_tokens += session.metadata.total_tokens_used;
+        total_cost += session.metadata.total_cost_usd;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let metrics = storage::ProjectMetrics {
+        project_path: project_path.clone(),
+        total_sessions: sessions.len(),
+        total_messages,
+        total_tokens,
+        total_cost_usd: total_cost,
+        created_at: now,
+        updated_at: now,
+    };
+
+    storage.save_project_metrics(&metrics)
+        .map_err(|e| format!("Failed to save project metrics: {}", e))
+}
+
+#[tauri::command]
 async fn rag_search_current_project(state: State<'_, AppState>, query: String, k: Option<usize>) -> Result<Value, String> {
     let project_path = {
         let g = state.godot_project_path.lock().unwrap();
@@ -2855,9 +2855,6 @@ pub fn run() {
             process_command,
             process_command_agentic,
             initialize_knowledge_bases,
-            get_knowledge_base_status,
-            get_docs_kb_documents,
-            rebuild_docs_kb,
             get_api_key,
             save_api_key,
             set_godot_project_path,
@@ -2886,6 +2883,8 @@ pub fn run() {
             get_api_keys,
             save_api_keys,
             get_available_models,
+            get_project_metrics,
+            update_project_metrics,
 
             // RAG sidecar controls
             start_rag_sidecar,

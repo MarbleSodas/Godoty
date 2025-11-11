@@ -45,6 +45,9 @@
         <div class="flex gap-3 text-xs text-white/50">
           <span>{{ formatDate(session.updated_at) }}</span>
           <span>{{ getFilteredCount(session) }} msgs</span>
+          <span *ngIf="session.metadata.total_cost_usd && session.metadata.total_cost_usd > 0" class="text-green-400 font-semibold">
+            ${{ session.metadata.total_cost_usd.toFixed(4) }}
+          </span>
         </div>
       </div>
       <button

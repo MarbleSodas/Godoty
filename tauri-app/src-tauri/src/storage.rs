@@ -27,6 +27,18 @@ struct CachedGodotDocs {
     timestamp: u64,
 }
 
+/// Project-level metrics tracking costs across all sessions
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectMetrics {
+    pub project_path: String,
+    pub total_sessions: usize,
+    pub total_messages: usize,
+    pub total_tokens: usize,
+    pub total_cost_usd: f64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
 pub struct Storage {
     api_key: Option<String>,
     project_path: Option<String>,
@@ -579,6 +591,76 @@ impl Storage {
             }
         }
         Ok(out)
+    }
+
+    // Project Metrics Methods
+
+    /// Save project metrics to disk
+    pub fn save_project_metrics(&self, metrics: &ProjectMetrics) -> Result<()> {
+        let mut path = Self::get_config_dir()?;
+        path.push("project_metrics.json");
+
+        // Load existing metrics or create new map
+        let mut all_metrics: HashMap<String, ProjectMetrics> = if path.exists() {
+            let content = fs::read_to_string(&path)?;
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        // Update metrics for this project
+        all_metrics.insert(metrics.project_path.clone(), metrics.clone());
+
+        // Save back to disk
+        let json = serde_json::to_string_pretty(&all_metrics)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load project metrics from disk
+    pub fn load_project_metrics(&self, project_path: &str) -> Result<ProjectMetrics> {
+        let mut path = Self::get_config_dir()?;
+        path.push("project_metrics.json");
+
+        if !path.exists() {
+            // Return default metrics if file doesn't exist
+            return Ok(ProjectMetrics {
+                project_path: project_path.to_string(),
+                total_sessions: 0,
+                total_messages: 0,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+                created_at: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)?
+                    .as_secs(),
+                updated_at: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)?
+                    .as_secs(),
+            });
+        }
+
+        let content = fs::read_to_string(path)?;
+        let all_metrics: HashMap<String, ProjectMetrics> = serde_json::from_str(&content)?;
+
+        // Get metrics for this project or return default
+        Ok(all_metrics
+            .get(project_path)
+            .cloned()
+            .unwrap_or_else(|| ProjectMetrics {
+                project_path: project_path.to_string(),
+                total_sessions: 0,
+                total_messages: 0,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+                created_at: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                updated_at: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            }))
     }
 }
 

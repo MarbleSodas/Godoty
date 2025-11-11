@@ -102,5 +102,16 @@ export interface SessionMetadata {
   successful_commands: number;
   failed_commands: number;
   total_tokens_used: number;
+  total_cost_usd?: number;
+}
+
+export interface ProjectMetrics {
+  project_path: string;
+  total_sessions: number;
+  total_messages: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  created_at: number;
+  updated_at: number;
 }
 

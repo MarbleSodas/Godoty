@@ -96,27 +96,29 @@ EDITOR / SELECTION / RUN
    {{"action": "play", "mode": "current"}}  or  {{"action": "play", "mode": "custom", "path": "res://Level1.tscn"}}
 13. add_command_palette_command: Register a custom command in the editor palette
    {{"action": "add_command_palette_command", "display_name": "Center on Player", "key": "center_on_player", "action_to_execute": "focus_node", "payload": {{"path": "Root/Player"}}}}
+14. capture_screenshot: Capture and save a screenshot of the current scene to .godoty/screenshots/
+   {{"action": "capture_screenshot", "filename": "optional_custom_name.png"}}
 
 SEARCH (auto-selection/focus optional)
-14. search_nodes_by_type: Find nodes by type
+15. search_nodes_by_type: Find nodes by type
    {{"action": "search_nodes_by_type", "type": "Sprite2D", "select_results": true, "focus_first": true}}
-15. search_nodes_by_name: Find nodes by name (supports exact/case)
+16. search_nodes_by_name: Find nodes by name (supports exact/case)
    {{"action": "search_nodes_by_name", "name": "Enemy", "exact": false, "case_sensitive": false}}
-16. search_nodes_by_group: Find nodes in a group
+17. search_nodes_by_group: Find nodes in a group
    {{"action": "search_nodes_by_group", "group": "enemies", "select_results": true}}
-17. search_nodes_by_script: Find nodes with a specific script (optional filter)
+18. search_nodes_by_script: Find nodes with a specific script (optional filter)
    {{"action": "search_nodes_by_script", "script_path": null, "select_results": false}}
 
 STRUCTURE / GROUPS
-18. duplicate_node: Duplicate a node (optionally rename/reparent)
+19. duplicate_node: Duplicate a node (optionally rename/reparent)
    {{"action": "duplicate_node", "path": "Root/Enemy", "parent": "Root/Enemies", "name": "EnemyCopy"}}
-19. reparent_node: Move a node to a new parent (keep transform by default)
+20. reparent_node: Move a node to a new parent (keep transform by default)
    {{"action": "reparent_node", "path": "Root/Enemy", "new_parent": "Root/Bosses", "index": -1, "keep_global_transform": true}}
-20. rename_node: Rename a node
+21. rename_node: Rename a node
    {{"action": "rename_node", "path": "Root/Enemy", "new_name": "Boss"}}
-21. add_to_group: Add a node to a group
+22. add_to_group: Add a node to a group
    {{"action": "add_to_group", "path": "Root/Enemy", "group": "enemies", "persistent": true}}
-22. remove_from_group: Remove a node from a group
+23. remove_from_group: Remove a node from a group
    {{"action": "remove_from_group", "path": "Root/Enemy", "group": "enemies"}}
 
 DEBUG

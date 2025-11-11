@@ -1,5 +1,4 @@
 use crate::guardrails::{Guardrails, ValidationResult};
-use crate::knowledge_base::KnowledgeBase;
 use crate::llm_client::LlmFactory;
 use crate::llm_config::AgentType;
 use crate::metrics::{MetricsStore, WorkflowMetrics};
@@ -38,8 +37,6 @@ pub struct AgentContext {
     pub user_input: String,
     pub project_index: ProjectIndex,
     pub chat_history: String,
-    pub plugin_kb: KnowledgeBase,
-    pub docs_kb: KnowledgeBase,
     pub visual_context: VisualContext,
 }
 
@@ -211,13 +208,11 @@ impl AgenticWorkflow {
             user_input: context.user_input.clone(),
             _chat_history: context.chat_history.clone(),
             project_context: formatted_context_for_ai.clone(),
-            plugin_kb: context.plugin_kb.clone(),
-            docs_kb: context.docs_kb.clone(),
             execution_plan: None,
             previous_output: None,
             visual_context: visual_context_str.clone(),
         };
-        let orch_output = orchestrator.execute(&orch_context).await.unwrap_or(AgentOutput{ content: "{\"research_needed\":false,\"research_queries\":[\"\"],\"reasoning\":\"fallback\"}".to_string(), tokens_used:0, execution_time_ms:0, metadata: serde_json::Map::new() });
+        let orch_output = orchestrator.execute(&orch_context).await.unwrap_or(AgentOutput{ content: "{\"research_needed\":false,\"research_queries\":[\"\"],\"reasoning\":\"fallback\"}".to_string(), tokens_used:0, execution_time_ms:0, metadata: serde_json::Map::new(), cost_usd: None });
         // Orchestrator output parsed and research handled below where planning is resolved.
 
         // Step 2: Planning or accept plan from Research/Orchestrator
@@ -324,18 +319,10 @@ impl AgenticWorkflow {
                     let _ = store.save_to_disk().await;
                 }
 
-                // Get knowledge used
-                let plugin_knowledge = context.plugin_kb.search(&context.user_input, 5).await?;
-                let docs_knowledge = context.docs_kb.search(&context.user_input, 5).await?;
-
                 return Ok(AgentResponse {
                     commands,
                     thoughts,
                     plan,
-                    knowledge_used: KnowledgeUsed {
-                        plugin_docs: plugin_knowledge.iter().map(|d| d.id.clone()).collect(),
-                        godot_docs: docs_knowledge.iter().map(|d| d.id.clone()).collect(),
-                    },
                     metrics: Some(metrics),
                 });
             }
@@ -361,12 +348,8 @@ impl AgenticWorkflow {
             tracing::debug!(attempt = retry + 1, "Code generation attempt starting");
 
             // Generate commands directly with the Orchestrator model (no separate CodeGenerationAgent)
-            let plugin_docs_for_gen = context.plugin_kb.search(&context.user_input, 5).await?;
-            let plugin_examples = plugin_docs_for_gen
-                .iter()
-                .map(|d| d.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n\n");
+            // Plugin examples now come from Context7/ContextEngine instead of local KB
+            let plugin_examples = String::new();
             let allowed_actions_list = self.guardrails.config.allowed_command_types.join(", ");
 
             let _system_prompt = format!(
@@ -596,18 +579,10 @@ Ensure all strings escape control characters correctly (e.g., use \\n, \\t)."#;
             let _ = store.save_to_disk().await;
         }
 
-        // Get knowledge used
-        let plugin_knowledge = context.plugin_kb.search(&context.user_input, 5).await?;
-        let docs_knowledge = context.docs_kb.search(&context.user_input, 5).await?;
-
         Ok(AgentResponse {
             commands,
             thoughts,
             plan,
-            knowledge_used: KnowledgeUsed {
-                plugin_docs: plugin_knowledge.iter().map(|d| d.id.clone()).collect(),
-                godot_docs: docs_knowledge.iter().map(|d| d.id.clone()).collect(),
-            },
             metrics: Some(metrics),
         })
     }
@@ -1053,12 +1028,5 @@ pub struct AgentResponse {
     pub commands: Vec<Value>,
     pub thoughts: Vec<AgentThought>,
     pub plan: ExecutionPlan,
-    pub knowledge_used: KnowledgeUsed,
     pub metrics: Option<WorkflowMetrics>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnowledgeUsed {
-    pub plugin_docs: Vec<String>,
-    pub godot_docs: Vec<String>,
 }

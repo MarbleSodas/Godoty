@@ -17,6 +17,9 @@ export class KnowledgeBaseStatusComponent implements OnInit, OnDestroy {
   showDocuments: boolean = false;
   private refreshInterval: any;
 
+  // Expose Object to template
+  Object = Object;
+
   async ngOnInit(): Promise<void> {
     await this.loadStatus();
     // Refresh status every 5 seconds

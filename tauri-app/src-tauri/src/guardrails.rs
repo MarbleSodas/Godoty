@@ -31,6 +31,7 @@ impl Default for GuardrailConfig {
                 "delete_node".to_string(),
                 "modify_node".to_string(),
                 "attach_script".to_string(),
+                "capture_screenshot".to_string(),
                 "create_scene".to_string(),
                 "open_scene".to_string(),
                 "get_scene_info".to_string(),

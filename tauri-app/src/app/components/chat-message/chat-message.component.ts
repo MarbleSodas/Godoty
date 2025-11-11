@@ -13,7 +13,7 @@ export class ChatMessageComponent {
   @Input() message!: ChatMessage;
   @Input() showThoughts: boolean = true;
 
-  thoughtsExpanded: boolean = false;
+  thoughtsExpanded: boolean = true; // Default to expanded to show agent thoughts
   contextExpanded: boolean = false;
 
   formatTimestamp(timestamp: number): string {
@@ -35,7 +35,7 @@ export class ChatMessageComponent {
       case 'assistant':
         return '🤖';
       case 'system':
-        return '⚙️';
+        return '🤔'; // Agent thought icon
       default:
         return '💬';
     }
@@ -138,7 +138,7 @@ export class ChatMessageComponent {
       case 'assistant':
         return 'Godoty AI';
       case 'system':
-        return 'System';
+        return 'Agent Thought'; // Label for agent thinking messages
       default:
         return 'Unknown';
     }

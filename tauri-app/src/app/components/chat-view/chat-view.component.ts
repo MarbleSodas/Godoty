@@ -102,7 +102,10 @@ export class ChatViewComponent implements OnChanges, AfterViewChecked, OnDestroy
   filteredMessages(session: ChatSession | null): ChatMessage[] {
     if (!session || !session.messages) return [];
     const sid = session.id;
-    return session.messages.filter(m => !m.sessionId || m.sessionId === sid);
+    // Show all messages including system messages (agent thoughts)
+    return session.messages.filter(m =>
+      (!m.sessionId || m.sessionId === sid)
+    );
   }
 
   trackByMessageId(index: number, msg: ChatMessage): string {

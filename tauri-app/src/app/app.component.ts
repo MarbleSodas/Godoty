@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { RouterOutlet, RouterLink } from '@angular/router';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus } from './models/command.model';
+import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus, ProjectMetrics } from './models/command.model';
 import { IndexingStatus, IndexingStatusResponse, IndexingStatusEvent } from './models/indexing-status.model';
 import { ProcessLogService } from './services/process-log.service';
 import { ProcessLogEntry } from './models/process-log.model';
@@ -39,6 +39,7 @@ export class AppComponent implements OnInit {
   apiKey: string = '';
   isReindexingProject: boolean = false;
   isRebuildingRag: boolean = false;
+  projectMetrics: ProjectMetrics | null = null;
 
   async handleReindexProject(): Promise<void> {
     this.isReindexingProject = true;
@@ -144,6 +145,25 @@ export class AppComponent implements OnInit {
     this.listenToIndexingStatusChanges();
     this.connectToGodot();
     this.loadChatSessions();
+    this.loadProjectMetrics();
+  }
+
+  async loadProjectMetrics(): Promise<void> {
+    try {
+      this.projectMetrics = await invoke<ProjectMetrics>('get_project_metrics');
+    } catch (error) {
+      console.log('No project metrics available yet:', error);
+      this.projectMetrics = null;
+    }
+  }
+
+  async updateProjectMetrics(): Promise<void> {
+    try {
+      await invoke('update_project_metrics');
+      await this.loadProjectMetrics();
+    } catch (error) {
+      console.error('Failed to update project metrics:', error);
+    }
   }
 
   async loadApiKey(): Promise<void> {
@@ -382,6 +402,9 @@ export class AppComponent implements OnInit {
 
       // Reconcile with backend session: fetch the authoritative active session
       await this.loadActiveSession();
+
+      // Update project metrics after successful message
+      await this.updateProjectMetrics();
 
       // Reflect the fetched active session in the sessions list
       if (this.activeSession) {

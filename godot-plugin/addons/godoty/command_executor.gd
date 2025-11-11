@@ -30,6 +30,8 @@ func execute_command(command: Dictionary):
 			return _capture_visual_context(command)
 		"get_visual_snapshot":
 			return _get_visual_snapshot(command)
+		"capture_screenshot":
+			return _capture_screenshot(command)
 		"enable_auto_visual_capture":
 			return _enable_auto_visual_capture(command)
 		"disable_auto_visual_capture":
@@ -939,6 +941,62 @@ func _get_visual_snapshot(command: Dictionary) -> Dictionary:
 		var data = inspector_plugin.call("get_last_snapshot")
 		return {"status": "success", "message": "Last visual snapshot", "data": data}
 	return {"status": "error", "message": "Inspector plugin not available"}
+
+func _capture_screenshot(command: Dictionary) -> Dictionary:
+	if not inspector_plugin or not inspector_plugin.has_method("capture_snapshot"):
+		return {"status": "error", "message": "Inspector plugin not available"}
+
+	# Capture the screenshot
+	var snapshot_data = inspector_plugin.call("capture_snapshot", "orchestrator_request", {})
+	var img_b64 = snapshot_data.get("image_b64", "")
+
+	if img_b64.is_empty():
+		return {"status": "error", "message": "Failed to capture screenshot"}
+
+	# Get project path
+	var project_path = ProjectSettings.globalize_path("res://")
+	var screenshots_dir = project_path.path_join(".godoty").path_join("screenshots")
+
+	# Create directory if it doesn't exist
+	var dir = DirAccess.open(project_path)
+	if not dir:
+		return {"status": "error", "message": "Failed to access project directory"}
+
+	if not DirAccess.dir_exists_absolute(screenshots_dir):
+		var err = DirAccess.make_dir_recursive_absolute(screenshots_dir)
+		if err != OK:
+			return {"status": "error", "message": "Failed to create screenshots directory: " + str(err)}
+
+	# Generate filename with timestamp
+	var timestamp = Time.get_datetime_string_from_system().replace(":", "-")
+	var filename = command.get("filename", "screenshot_%s.png" % timestamp)
+	if not filename.ends_with(".png"):
+		filename += ".png"
+
+	var filepath = screenshots_dir.path_join(filename)
+
+	# Decode base64 and save to file
+	var bytes = Marshalls.base64_to_raw(img_b64)
+	var file = FileAccess.open(filepath, FileAccess.WRITE)
+	if not file:
+		return {"status": "error", "message": "Failed to open file for writing: " + filepath}
+
+	file.store_buffer(bytes)
+	file.close()
+
+	# Return relative path from project root
+	var relative_path = filepath.replace(project_path, "").trim_prefix("/").trim_prefix("\\")
+
+	return {
+		"status": "success",
+		"message": "Screenshot saved successfully",
+		"data": {
+			"filepath": relative_path,
+			"absolute_path": filepath,
+			"size": snapshot_data.get("meta", {}).get("size", {}),
+			"timestamp": timestamp
+		}
+	}
 
 func _enable_auto_visual_capture(command: Dictionary) -> Dictionary:
 	if inspector_plugin and inspector_plugin.has_method("enable_auto_capture"):

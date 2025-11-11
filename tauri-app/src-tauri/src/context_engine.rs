@@ -346,7 +346,7 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
 
         if !gateway.is_empty() {
             let payload = serde_json::json!({
-                "context7CompatibleLibraryID": "/godotengine/godot-docs",
+                "context7CompatibleLibraryID": "/websites/godotengine_en_stable",
                 "topic": topic,
                 "tokens": 4000
             });

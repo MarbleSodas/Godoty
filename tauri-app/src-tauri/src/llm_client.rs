@@ -6,11 +6,38 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::{Mutex, OnceLock};
 
+/// Usage information returned by LLM APIs
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    /// Actual cost in USD (OpenRouter returns this directly)
+    pub cost: Option<f64>,
+}
+
+
+/// Response from LLM including usage information
+#[derive(Debug, Clone)]
+pub struct LlmResponse {
+    pub content: String,
+    pub usage: Option<LlmUsage>,
+}
 
 /// Generic trait for LLM clients
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     async fn generate_response(&self, system_prompt: &str, user_input: &str) -> Result<String>;
+
+    /// Generate response with usage tracking
+    async fn generate_response_with_usage(&self, system_prompt: &str, user_input: &str) -> Result<LlmResponse> {
+        // Default implementation for backward compatibility
+        let content = self.generate_response(system_prompt, user_input).await?;
+        Ok(LlmResponse {
+            content,
+            usage: None,
+        })
+    }
 
     /// Optional: streaming with tool support. Default falls back to non-streaming
     async fn generate_response_streaming_with_tools(
@@ -62,12 +89,23 @@ impl OpenRouterClient {
 #[async_trait]
 impl LlmClient for OpenRouterClient {
     async fn generate_response(&self, system_prompt: &str, user_input: &str) -> Result<String> {
+        let response = self.generate_response_with_usage(system_prompt, user_input).await?;
+        Ok(response.content)
+    }
+
+    async fn generate_response_with_usage(&self, system_prompt: &str, user_input: &str) -> Result<LlmResponse> {
+        #[derive(Serialize)]
+        struct UsageConfig {
+            include: bool,
+        }
+
         #[derive(Serialize)]
         struct ChatRequest {
             model: String,
             messages: Vec<ChatMessage>,
             temperature: f32,
             max_tokens: i32,
+            usage: UsageConfig,
         }
 
         #[derive(Serialize, Deserialize)]
@@ -77,8 +115,19 @@ impl LlmClient for OpenRouterClient {
         }
 
         #[derive(Deserialize)]
+        struct ApiUsage {
+            prompt_tokens: u32,
+            completion_tokens: u32,
+            total_tokens: u32,
+            #[serde(default)]
+            cost: Option<f64>,
+        }
+
+        #[derive(Deserialize)]
         struct ChatResponse {
             choices: Vec<Choice>,
+            #[serde(default)]
+            usage: Option<ApiUsage>,
         }
 
         #[derive(Deserialize)]
@@ -114,6 +163,7 @@ impl LlmClient for OpenRouterClient {
             ],
             temperature: 0.7,
             max_tokens: 8192,
+            usage: UsageConfig { include: true },
         };
 
         let response = self
@@ -145,7 +195,29 @@ impl LlmClient for OpenRouterClient {
         })?;
 
         if let Some(choice) = chat_response.choices.first() {
-            Ok(choice.message.content.clone())
+            let usage = chat_response.usage.map(|u| LlmUsage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                cost: u.cost,
+            });
+
+            // Log usage information if available
+            if let Some(ref usage_info) = usage {
+                tracing::debug!(
+                    model = %self.model,
+                    prompt_tokens = usage_info.prompt_tokens,
+                    completion_tokens = usage_info.completion_tokens,
+                    total_tokens = usage_info.total_tokens,
+                    cost_usd = ?usage_info.cost,
+                    "LLM usage tracked"
+                );
+            }
+
+            Ok(LlmResponse {
+                content: choice.message.content.clone(),
+                usage,
+            })
         } else {
             Err(anyhow::anyhow!("No response from LLM"))
         }
