@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
 
 use crate::storage::Storage;
@@ -39,6 +39,39 @@ fn write_embedded_server_script(_app: &AppHandle) -> Result<PathBuf> {
 }
 
 #[derive(Debug, Clone)]
+enum RagExecutable {
+    Bundled(PathBuf),  // Standalone bundled executable
+    Python { cmd: String, script: PathBuf },  // Python interpreter + script
+}
+
+fn find_bundled_executable(app: &AppHandle) -> Option<PathBuf> {
+    // Determine the executable name based on platform
+    let exe_name = if cfg!(target_os = "windows") {
+        "rag_server.exe"
+    } else {
+        "rag_server"
+    };
+
+    // Try to resolve from resources directory
+    match app.path().resolve(exe_name, tauri::path::BaseDirectory::Resource) {
+        Ok(exe_path) => {
+            // Check if it exists (it might not in dev builds)
+            if exe_path.exists() {
+                println!("Found bundled RAG executable at: {:?}", exe_path);
+                return Some(exe_path);
+            } else {
+                println!("Executable path resolved but file doesn't exist: {:?}", exe_path);
+            }
+        }
+        Err(e) => {
+            println!("Could not resolve executable path: {}", e);
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone)]
 struct FoundPy { cmd: String }
 fn find_python_cmd() -> Option<FoundPy> {
     // Respect override
@@ -69,18 +102,48 @@ fn find_python_cmd() -> Option<FoundPy> {
     if cfg!(target_os = "windows") { Some(FoundPy{cmd:"py".into()}) } else { Some(FoundPy{cmd:"python3".into()}) }
 }
 
+fn find_rag_executable(app: &AppHandle) -> Result<RagExecutable> {
+    // First, try to find bundled executable
+    if let Some(bundled_path) = find_bundled_executable(app) {
+        println!("Using bundled RAG executable");
+        return Ok(RagExecutable::Bundled(bundled_path));
+    }
+
+    // Fall back to Python + script
+    println!("Bundled executable not found, falling back to Python interpreter");
+    let script_path = write_embedded_server_script(app)?;
+    let found = find_python_cmd().ok_or_else(|| {
+        anyhow::anyhow!("Python not found. Please install Python or use a bundled build.")
+    })?;
+
+    Ok(RagExecutable::Python {
+        cmd: found.cmd,
+        script: script_path,
+    })
+}
+
 pub fn start_rag(app: &AppHandle, state: &mut RagSidecarState, port: u16) -> Result<()> {
     if state.is_running() { return Ok(()); }
     clear_last_error();
 
-    let script_path = write_embedded_server_script(app)?;
+    // Find the appropriate executable (bundled or Python)
+    let executable = find_rag_executable(app)?;
 
-    // Prepare command
-    let found = find_python_cmd().unwrap_or(FoundPy{cmd:"python".into()});
-    let mut cmd = app.shell().command(&found.cmd);
-    cmd = cmd.arg("-u").arg(&script_path);
+    // Prepare command based on executable type
+    let mut cmd = match &executable {
+        RagExecutable::Bundled(exe_path) => {
+            println!("Starting bundled RAG server from: {:?}", exe_path);
+            app.shell().command(exe_path.to_string_lossy().to_string())
+        }
+        RagExecutable::Python { cmd: python_cmd, script } => {
+            println!("Starting RAG server with Python: {} {:?}", python_cmd, script);
+            let mut c = app.shell().command(python_cmd);
+            c = c.arg("-u").arg(script);
+            c
+        }
+    };
 
-    // Env
+    // Set environment variables
     let mut rag_root = Storage::get_config_dir()?; rag_root.push("rag_db");
     cmd = cmd.env("RAG_DB_ROOT", rag_root.to_string_lossy().to_string());
     cmd = cmd.env("RAG_PORT", port.to_string());
@@ -89,7 +152,14 @@ pub fn start_rag(app: &AppHandle, state: &mut RagSidecarState, port: u16) -> Res
     let (rx, child) = match cmd.spawn() {
         Ok(ok) => ok,
         Err(e) => {
-            let msg = format!("Failed to spawn Python for RAG sidecar (cmd='{}'): {}. Ensure Python is installed and accessible on PATH.", found.cmd, e);
+            let msg = match &executable {
+                RagExecutable::Bundled(path) => {
+                    format!("Failed to spawn bundled RAG server (path='{}'): {}.", path.display(), e)
+                }
+                RagExecutable::Python { cmd: python_cmd, .. } => {
+                    format!("Failed to spawn Python for RAG sidecar (cmd='{}'): {}. Ensure Python is installed and accessible on PATH.", python_cmd, e)
+                }
+            };
             set_last_error(msg.clone());
             let _ = app.emit("rag-status", RagStatusPayload{running:false, port:Some(port), last_error:Some(msg)});
             return Err(anyhow::anyhow!(e));
@@ -121,7 +191,10 @@ pub fn start_rag(app: &AppHandle, state: &mut RagSidecarState, port: u16) -> Res
 
     state.child = Some(child);
     state.port = port;
-    state.script_path = Some(script_path);
+    state.script_path = match executable {
+        RagExecutable::Bundled(path) => Some(path),
+        RagExecutable::Python { script, .. } => Some(script),
+    };
 
     let _ = app.emit("rag-status", RagStatusPayload{running:true, port:Some(port), last_error:None});
     Ok(())

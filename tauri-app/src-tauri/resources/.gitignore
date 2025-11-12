@@ -1,0 +1,8 @@
+# Ignore bundled executables (generated during build)
+rag_server
+rag_server.exe
+
+# Keep the directory structure
+!.gitkeep
+!.gitignore
+
