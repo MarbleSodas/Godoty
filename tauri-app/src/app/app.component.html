@@ -32,6 +32,8 @@
         (clearAllSessions)="handleClearAllSessions()"
       ></app-session-manager>
 
+      <app-project-metrics-panel></app-project-metrics-panel>
+
       <div class="glass-card p-3 flex items-center justify-between">
         <div class="flex items-center gap-2 text-sm">
           <span class="text-white/70">Project Index</span>
@@ -44,9 +46,6 @@
         </button>
       </div>
 
-      <!-- Knowledge Base Status -->
-      <app-knowledge-base-status></app-knowledge-base-status>
-
       <div class="glass-card p-4">
         <h2 class="text-base font-medium mb-3 text-white/90">Connection</h2>
         <button
@@ -57,33 +56,6 @@
         </button>
       </div>
 
-      <!-- Project Metrics -->
-      <div *ngIf="projectMetrics" class="glass-card p-4">
-        <h2 class="text-base font-medium mb-3 text-white/90 flex items-center gap-2">
-          <span>📊</span>
-          <span>Project Metrics</span>
-        </h2>
-        <div class="flex flex-col gap-2 text-sm">
-          <div class="flex justify-between text-white/80">
-            <span>Total Sessions:</span>
-            <span class="font-semibold">{{ projectMetrics.total_sessions }}</span>
-          </div>
-          <div class="flex justify-between text-white/80">
-            <span>Total Messages:</span>
-            <span class="font-semibold">{{ projectMetrics.total_messages }}</span>
-          </div>
-          <div class="flex justify-between text-white/80">
-            <span>Total Tokens:</span>
-            <span class="font-semibold">{{ projectMetrics.total_tokens.toLocaleString() }}</span>
-          </div>
-          <div class="flex justify-between text-green-400 font-bold border-t border-white/20 pt-2 mt-1">
-            <span>Total Cost:</span>
-            <span>${{ projectMetrics.total_cost_usd.toFixed(4) }}</span>
-          </div>
-        </div>
-      </div>
-
-      <app-metrics-panel></app-metrics-panel>
       <app-process-logs [sessionId]="activeSession?.id"></app-process-logs>
     </div>
   </main>

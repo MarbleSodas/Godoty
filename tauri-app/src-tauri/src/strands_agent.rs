@@ -1,10 +1,40 @@
 use crate::agent::ExecutionPlan;
-use crate::llm_client::LlmFactory;
+use crate::llm_client::{ChatMessageWithTools, LlmFactory, LlmResponse};
 use crate::llm_config::AgentType;
+use crate::mcp_client::McpClient;
+use crate::mcp_tools::get_mcp_tool_definitions;
+use crate::tool_executor::{format_tool_results_as_messages, ToolExecutor};
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::SystemTime;
+
+/// Represents a single thought/reasoning step from the orchestrator
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestratorThought {
+    /// Phase of decision-making (e.g., "analyzing_input", "checking_context", "selecting_tools", "planning")
+    pub phase: String,
+    /// Human-readable insight about what the orchestrator is thinking
+    pub insight: String,
+    /// Confidence level (0.0-1.0)
+    pub confidence: f32,
+    /// When this thought occurred (skipped in serialization)
+    #[serde(skip, default = "SystemTime::now")]
+    #[allow(dead_code)]
+    pub timestamp: SystemTime,
+}
+
+impl OrchestratorThought {
+    pub fn new(phase: impl Into<String>, insight: impl Into<String>, confidence: f32) -> Self {
+        Self {
+            phase: phase.into(),
+            insight: insight.into(),
+            confidence: confidence.clamp(0.0, 1.0),
+            timestamp: SystemTime::now(),
+        }
+    }
+}
 
 /// Base trait for all specialized agents
 #[async_trait::async_trait]
@@ -34,6 +64,9 @@ pub struct AgentOutput {
     pub metadata: serde_json::Map<String, Value>,
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    /// Orchestrator's thought process (reasoning steps)
+    #[serde(default)]
+    pub thoughts: Vec<OrchestratorThought>,
 }
 
 
@@ -166,8 +199,9 @@ async fn call_llm(
     }
 }
 
-/// Orchestrator Agent - routes the workflow and decides if research is needed
 
+
+/// Orchestrator Agent - routes the workflow and decides if research is needed
 pub struct OrchestratorAgent {
     api_key: String,
     client: Client,
@@ -189,6 +223,74 @@ impl OrchestratorAgent {
         self.llm_factory = llm_factory;
         self
     }
+
+    /// Analyze user input and fetch relevant Godot documentation if needed
+    async fn fetch_documentation_if_needed(
+        &self,
+        user_input: &str,
+        thoughts: &mut Vec<OrchestratorThought>,
+    ) -> Option<String> {
+        use crate::context_engine::ContextEngine;
+
+        // Common Godot node types and concepts that might need documentation
+        let godot_keywords = [
+            "CharacterBody2D", "CharacterBody3D", "RigidBody2D", "RigidBody3D",
+            "Sprite2D", "Sprite3D", "AnimatedSprite2D", "AnimatedSprite3D",
+            "CollisionShape2D", "CollisionShape3D", "Area2D", "Area3D",
+            "Camera2D", "Camera3D", "Control", "Button", "Label", "Panel",
+            "Node2D", "Node3D", "PackedScene", "Resource", "Signal",
+            "TileMap", "NavigationAgent2D", "NavigationAgent3D",
+            "AnimationPlayer", "AnimationTree", "AudioStreamPlayer",
+        ];
+
+        // Check if input contains any Godot-specific terms
+        let input_lower = user_input.to_lowercase();
+        let detected_keywords: Vec<&str> = godot_keywords
+            .iter()
+            .filter(|&&keyword| input_lower.contains(&keyword.to_lowercase()))
+            .copied()
+            .collect();
+
+        if detected_keywords.is_empty() {
+            thoughts.push(OrchestratorThought::new(
+                "documentation_check",
+                "No specific Godot types detected - using general knowledge",
+                0.8,
+            ));
+            return None;
+        }
+
+        // Fetch documentation for detected keywords
+        let topic = detected_keywords.join(" ");
+        thoughts.push(OrchestratorThought::new(
+            "documentation_fetch",
+            format!(
+                "Detected Godot types: {} - fetching documentation",
+                detected_keywords.join(", ")
+            ),
+            0.9,
+        ));
+
+        let ctx_engine = ContextEngine::new(&self.api_key);
+        match ctx_engine.fetch_from_context7(&topic).await {
+            Ok(docs) => {
+                thoughts.push(OrchestratorThought::new(
+                    "documentation_retrieved",
+                    format!("Retrieved {} chars of documentation for {}", docs.len(), topic),
+                    0.95,
+                ));
+                Some(docs)
+            }
+            Err(e) => {
+                thoughts.push(OrchestratorThought::new(
+                    "documentation_error",
+                    format!("Failed to fetch documentation: {} - proceeding with general knowledge", e),
+                    0.6,
+                ));
+                None
+            }
+        }
+    }
     /// Generate executable commands for a given execution plan using the Orchestrator model
     pub async fn generate_actions_for_plan(
         &self,
@@ -196,7 +298,7 @@ impl OrchestratorAgent {
         user_input: &str,
         plugin_examples: &str,
         allowed_actions_list: &str,
-    ) -> Result<String> {
+    ) -> Result<LlmResponse> {
         let system_prompt = format!(
             r#"You are a command generation agent for Godot.
 
@@ -246,11 +348,247 @@ Respond ONLY with the JSON array, no explanations.
                 user_input_preview = %user_prev,
                 "Agent LLM invocation (generate_actions_for_plan)"
             );
-            client.generate_response(&system_prompt, user_input).await
+            client.generate_response_with_usage(&system_prompt, user_input).await
         } else {
-            // Fallback to OpenRouter call
-            call_llm(&self.client, &self.api_key, &self.model, &system_prompt, user_input).await
+            // Fallback to OpenRouter call - wrap in LlmResponse
+            let content = call_llm(&self.client, &self.api_key, &self.model, &system_prompt, user_input).await?;
+            Ok(LlmResponse {
+                content,
+                usage: None,
+                tool_calls: None,
+            })
         }
+    }
+
+    /// Execute with tool calling support - allows the LLM to call MCP tools during decision-making
+    pub async fn execute_with_tools(
+        &self,
+        context: &AgentExecutionContext,
+        mcp_client: &mut Option<McpClient>,
+    ) -> Result<AgentOutput> {
+        let start_time = std::time::Instant::now();
+        let mut thoughts = Vec::new();
+
+        thoughts.push(OrchestratorThought::new(
+            "tool_calling_mode",
+            "Using tool calling mode - LLM can directly call MCP tools",
+            0.95,
+        ));
+
+        // Get the LLM client
+        let llm_client = if let Some(factory) = &self.llm_factory {
+            factory.create_client_for_agent(AgentType::Orchestrator)?
+        } else {
+            return Err(anyhow::anyhow!("LLM factory required for tool calling mode"));
+        };
+
+        // Prepare system prompt with comprehensive instructions
+        let system_prompt = format!(r#"You are the Orchestrator Agent for a Godot game development assistant with direct access to MCP tools.
+
+## Available MCP Tools
+
+You have DIRECT access to these tools - use them proactively to gather context:
+
+**File Operations:**
+- read_file(path): Read file contents from the project
+- write_file(path, content): Write content to a file
+- edit_block(path, old_content, new_content): Make surgical edits to existing files
+- list_directory(path): List files and directories
+- get_file_info(path): Get file metadata
+- move_file(source, destination): Move or rename files
+- create_directory(path): Create new directories
+
+**Search & Discovery:**
+- start_search(query, path): Search for files or content in the project
+- fetch_documentation(topic): Fetch official Godot documentation for specific topics
+
+## Your Workflow
+
+**STEP 1: GATHER COMPLETE CONTEXT** (CRITICAL - DO THIS FIRST!)
+Before making ANY decisions, you MUST gather comprehensive context:
+
+1. **Review the project structure** provided below - understand what scenes and scripts already exist
+2. **Use list_directory** to explore relevant directories (e.g., "res://scenes", "res://scripts")
+3. **Use read_file** to examine existing scenes/scripts that are related to the task
+4. **Use fetch_documentation** to get Godot API docs for node types you'll be working with
+5. **Use start_search** to find similar implementations or related code
+
+DO NOT skip context gathering! The project structure below is just an overview - you need to read actual files.
+
+**STEP 2: ANALYZE & PLAN**
+After gathering context, analyze the user's request:
+- Is this a simple task that can be done with direct commands?
+- Does it require research from the Research Agent?
+- What's the best approach given the existing project structure?
+
+**STEP 3: CREATE MODULAR PLAN**
+When creating scenes, follow these principles:
+- **Separate concerns**: Create individual scene files for each logical component
+- **Reusable components**: Make scenes that can be instantiated multiple times
+- **Proper hierarchy**: Use scene inheritance and composition appropriately
+- **Follow Godot conventions**: Use appropriate root node types (Control for UI, Node2D/3D for gameplay)
+
+Example: For a "player with health UI", create:
+1. `player.tscn` - CharacterBody2D with movement logic
+2. `health_bar.tscn` - Control-based UI component
+3. `player_hud.tscn` - Combines health bar and other UI elements
+4. Main scene that instances the player and HUD
+
+**STEP 4: PROVIDE DECISION**
+Return your decision as JSON:
+{{
+  "research_needed": boolean,  // true if Research Agent should gather more info
+  "research_queries": string[],  // specific queries for Research Agent
+  "simple_enough": boolean,  // true if you can handle this directly
+  "initial_plan": {{
+    "reasoning": string,  // explain your approach and why
+    "steps": [{{
+      "step_number": number,
+      "description": string,  // what this step accomplishes
+      "commands_needed": [string]  // Godot commands: create_scene, add_node, attach_script, etc.
+    }}],
+    "estimated_complexity": "low" | "medium" | "high"
+  }},
+  "direct_commands": []  // only for trivial tasks
+}}
+
+## Project Context
+
+{}
+
+## User Request
+
+{}"#, context.project_context, context.user_input);
+
+        // Initialize conversation with system message and user input
+        let mut messages = vec![
+            ChatMessageWithTools {
+                role: "system".to_string(),
+                content: system_prompt,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessageWithTools {
+                role: "user".to_string(),
+                content: format!(
+                    "{}\n\nREMINDER: Start by using MCP tools to gather context. Use list_directory, read_file, and fetch_documentation to understand the project before making decisions.",
+                    context.user_input
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        // Get tool definitions
+        let tools = get_mcp_tool_definitions();
+        let tool_executor = ToolExecutor::new(self.api_key.clone());
+
+        // Tool calling loop (max 10 iterations to allow thorough context gathering)
+        let max_iterations = 10;
+        let mut final_response = String::new();
+
+        for iteration in 0..max_iterations {
+            thoughts.push(OrchestratorThought::new(
+                "llm_call",
+                format!("Making LLM call with {} available tools (iteration {}/{})", tools.len(), iteration + 1, max_iterations),
+                0.9,
+            ));
+
+            // Call LLM with tools
+            let response = llm_client
+                .generate_response_with_tools(messages.clone(), Some(tools.clone()))
+                .await?;
+
+            // Check if LLM wants to call tools
+            if let Some(tool_calls) = &response.tool_calls {
+                // Log which tools are being called
+                let tool_names: Vec<String> = tool_calls.iter()
+                    .map(|tc| tc.function.name.clone())
+                    .collect();
+                thoughts.push(OrchestratorThought::new(
+                    "tool_calls_requested",
+                    format!("LLM requested {} tool calls: {}", tool_calls.len(), tool_names.join(", ")),
+                    0.85,
+                ));
+
+                // Add assistant message with tool calls to conversation
+                messages.push(ChatMessageWithTools {
+                    role: "assistant".to_string(),
+                    content: response.content.clone(),
+                    tool_calls: Some(tool_calls.clone()),
+                    tool_call_id: None,
+                });
+
+                // Execute tools
+                let results = tool_executor
+                    .execute_tools_parallel(tool_calls, mcp_client)
+                    .await;
+
+                // Log tool execution results with details
+                for (i, (tool_call_id, result)) in results.iter().enumerate() {
+                    let tool_name = &tool_calls[i].function.name;
+                    let status = if result.is_ok() { "success" } else { "error" };
+                    let detail = match result {
+                        Ok(val) => {
+                            let preview = serde_json::to_string(val)
+                                .unwrap_or_default()
+                                .chars()
+                                .take(100)
+                                .collect::<String>();
+                            format!("{}: {}", status, preview)
+                        }
+                        Err(e) => format!("{}: {}", status, e),
+                    };
+                    thoughts.push(OrchestratorThought::new(
+                        "tool_executed",
+                        format!("Tool '{}' ({}): {}", tool_name, tool_call_id, detail),
+                        if result.is_ok() { 0.9 } else { 0.5 },
+                    ));
+                }
+
+                // Add tool results to conversation
+                let tool_messages = format_tool_results_as_messages(results);
+                messages.extend(tool_messages);
+
+                // Continue loop to get next LLM response
+            } else {
+                // No tool calls - this is the final response
+                final_response = response.content;
+                thoughts.push(OrchestratorThought::new(
+                    "decision_made",
+                    "LLM provided final decision without requesting more tools",
+                    0.95,
+                ));
+                break;
+            }
+        }
+
+        // Check if we hit the iteration limit
+        if final_response.is_empty() {
+            thoughts.push(OrchestratorThought::new(
+                "max_iterations_reached",
+                format!("Reached maximum iterations ({}). Using last response.", max_iterations),
+                0.6,
+            ));
+            // Try to extract the last assistant message as the final response
+            for msg in messages.iter().rev() {
+                if msg.role == "assistant" && !msg.content.is_empty() {
+                    final_response = msg.content.clone();
+                    break;
+                }
+            }
+        }
+
+        let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+        Ok(AgentOutput {
+            content: final_response,
+            tokens_used: 0, // TODO: aggregate from all LLM calls
+            execution_time_ms,
+            metadata: serde_json::Map::new(),
+            cost_usd: None,
+            thoughts,
+        })
     }
 
 }
@@ -259,6 +597,15 @@ Respond ONLY with the JSON array, no explanations.
 impl StrandsAgent for OrchestratorAgent {
     async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
         let start_time = std::time::Instant::now();
+        let mut thoughts = Vec::new();
+
+        // Phase 1: Analyze input
+        let input_preview: String = context.user_input.chars().take(100).collect();
+        thoughts.push(OrchestratorThought::new(
+            "analyzing_input",
+            format!("Analyzing request: '{}'", input_preview),
+            0.9,
+        ));
 
         let heuristics_flag = {
             let u = context.user_input.to_lowercase();
@@ -266,35 +613,74 @@ impl StrandsAgent for OrchestratorAgent {
             indicators.iter().any(|w| u.contains(w))
         };
 
-        let system_prompt = r#"You are the Orchestrator Agent for a Godot assistant.
+        if heuristics_flag {
+            thoughts.push(OrchestratorThought::new(
+                "research_detection",
+                "Detected research indicators - may need additional context",
+                0.85,
+            ));
+        }
+
+        // Phase 2: Fetch documentation if needed
+        thoughts.push(OrchestratorThought::new(
+            "checking_documentation",
+            "Checking if Godot-specific documentation is needed",
+            0.8,
+        ));
+
+        let additional_docs = self.fetch_documentation_if_needed(&context.user_input, &mut thoughts).await;
+
+        // Phase 3: Prepare system prompt
+        thoughts.push(OrchestratorThought::new(
+            "preparing_context",
+            "Preparing orchestration context and available tools",
+            0.9,
+        ));
+
+        let system_prompt = format!(r#"You are the Orchestrator Agent for a Godot assistant.
+
 Decide whether additional RESEARCH is needed and whether the task is SIMPLE ENOUGH to implement directly.
 Return STRICT JSON with fields:
-{
+{{
   "research_needed": boolean,
   "research_queries": string[],
   "simple_enough": boolean,
-  "initial_plan": {
+  "initial_plan": {{
     "reasoning": string,
-    "steps": [{"step_number": number, "description": string, "commands_needed": [string]}],
+    "steps": [{{"step_number": number, "description": string, "commands_needed": [string]}}],
     "estimated_complexity": "low" | "medium" | "high"
-  } | null,
+  }} | null,
   "direct_commands": [object],
   "reasoning": string
-}
+}}
 Rules:
 - Only output JSON, no prose.
 - If simple_enough is true: ALWAYS return a concrete non-empty "direct_commands" array of executable Godoty command objects and you may set "initial_plan" to null.
 - If simple_enough is false: provide an "initial_plan" and set "direct_commands" to [].
-- Commands must adhere to the Godoty command schema provided in context (e.g., create_node, open_scene, modify_node, attach_script, select_nodes, focus_node, play).
-- For filesystem/code edits, emit Desktop Commander MCP commands with shape {"action":"desktop_commander","tool": one of ["read_file","write_file","edit_block","create_directory","list_directory","move_file","start_search","get_more_search_results","stop_search","get_file_info"], "args": object}. Prefer "edit_block" for surgical changes; "write_file" for new files; use directory and search tools as needed. Keep ALL paths within the project root.
-"#;
+- Commands must adhere to the Godoty command schema provided in context (e.g., create_node, open_scene, modify_node, attach_script, select_nodes, focus_node, play, capture_game_screenshot).
+- For filesystem/code edits, use desktop_commander tool with shape {{"action":"desktop_commander","tool": "read_file"|"write_file"|"edit_block"|"list_directory"|"start_search"|etc., "args": object}}.
+- When debugging or analyzing running game behavior, use capture_game_screenshot to capture the game's visual state for context in subsequent steps.
+- Visual context (screenshots) can be used to understand the current state and make informed decisions about next steps.
+{}
+"#, if let Some(ref docs) = additional_docs {
+    format!("\n# Additional Godot Documentation\n{}", docs.chars().take(2000).collect::<String>())
+} else {
+    String::new()
+});
         let user_msg = format!(
             "User Input: {}\nProject Context (truncated): {}",
             context.user_input,
             context.project_context.chars().take(600).collect::<String>()
         );
 
-        let content = if let Some(factory) = &self.llm_factory {
+        // Phase 4: Generate plan and commands
+        thoughts.push(OrchestratorThought::new(
+            "generating_plan",
+            "Invoking LLM to generate execution plan and commands",
+            0.85,
+        ));
+
+        let (content, cost_usd) = if let Some(factory) = &self.llm_factory {
             let client = factory.create_client_for_agent(AgentType::Orchestrator)?;
             let sys_prev = system_prompt.chars().take(200).collect::<String>();
             let user_prev = user_msg.chars().take(200).collect::<String>();
@@ -306,9 +692,23 @@ Rules:
                 user_input_preview = %user_prev,
                 "Agent LLM invocation"
             );
-            client.generate_response(system_prompt, &user_msg).await?
+            let response = client.generate_response_with_usage(&system_prompt, &user_msg).await?;
+            let cost = response.usage.as_ref().and_then(|u| u.cost);
+
+            thoughts.push(OrchestratorThought::new(
+                "llm_response_received",
+                format!("Received LLM response ({} chars)", response.content.len()),
+                0.9,
+            ));
+
+            (response.content, cost)
         } else {
             // Fallback: heuristic JSON with optional initial plan for simple intents
+            thoughts.push(OrchestratorThought::new(
+                "heuristic_fallback",
+                "Using heuristic-based decision making (no LLM factory configured)",
+                0.7,
+            ));
             let queries = vec![context.user_input.clone()];
             let u = context.user_input.to_lowercase();
             let simple_enough = [
@@ -348,15 +748,30 @@ Rules:
                 }))
             } else { None };
 
-            serde_json::json!({
+            let content = serde_json::json!({
                 "research_needed": heuristics_flag,
                 "research_queries": queries,
                 "simple_enough": simple_enough,
                 "initial_plan": initial_plan,
                 "direct_commands": direct_commands,
                 "reasoning": "Heuristic: based on user phrasing, action keywords, and KB hits"
-            }).to_string()
+            }).to_string();
+
+            thoughts.push(OrchestratorThought::new(
+                "heuristic_decision",
+                format!("Simple enough: {}, Research needed: {}", simple_enough, heuristics_flag),
+                0.75,
+            ));
+
+            (content, None)
         };
+
+        // Phase 5: Finalize and return
+        thoughts.push(OrchestratorThought::new(
+            "orchestration_complete",
+            format!("Orchestration complete in {}ms", start_time.elapsed().as_millis()),
+            0.95,
+        ));
 
         let exec_ms = start_time.elapsed().as_millis() as u64;
         Ok(AgentOutput {
@@ -364,7 +779,8 @@ Rules:
             tokens_used: 0,
             execution_time_ms: exec_ms,
             metadata: serde_json::Map::new(),
-            cost_usd: None,
+            cost_usd,
+            thoughts,
         })
     }
 
@@ -372,8 +788,11 @@ Rules:
 
 /// Research Agent - aggregates KB findings and optional web search
 pub struct ResearchAgent {
+    #[allow(dead_code)]
     api_key: String,
+    #[allow(dead_code)]
     client: Client,
+    #[allow(dead_code)]
     model: String,
     llm_factory: Option<LlmFactory>,
 }
@@ -398,6 +817,13 @@ impl ResearchAgent {
 impl StrandsAgent for ResearchAgent {
     async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
         let start_time = std::time::Instant::now();
+        let mut thoughts = Vec::new();
+
+        thoughts.push(OrchestratorThought::new(
+            "research_start",
+            "Starting research phase",
+            0.9,
+        ));
 
         // Derive queries
         let mut queries: Vec<String> = Vec::new();
@@ -411,6 +837,12 @@ impl StrandsAgent for ResearchAgent {
             }
         }
         if queries.is_empty() { queries.push(context.user_input.clone()); }
+
+        thoughts.push(OrchestratorThought::new(
+            "research_queries",
+            format!("Identified {} research queries", queries.len()),
+            0.85,
+        ));
 
         // Knowledge base searches removed - using Context7 via ContextEngine instead
         let kb_notes = String::new();
@@ -442,7 +874,7 @@ Guidelines:
             web_section
         );
 
-        let content = if let Some(factory) = &self.llm_factory {
+        let (content, cost_usd) = if let Some(factory) = &self.llm_factory {
             let client = factory.create_client_for_agent(AgentType::Researcher)?;
             let sys_prev = system_prompt.chars().take(200).collect::<String>();
             let user_prev = user_msg.chars().take(200).collect::<String>();
@@ -454,8 +886,23 @@ Guidelines:
                 user_input_preview = %user_prev,
                 "Agent LLM invocation"
             );
-            client.generate_response(system_prompt, &user_msg).await?
+            let response = client.generate_response_with_usage(system_prompt, &user_msg).await?;
+            let cost = response.usage.as_ref().and_then(|u| u.cost);
+
+            thoughts.push(OrchestratorThought::new(
+                "research_plan_generated",
+                format!("Generated research plan ({} chars)", response.content.len()),
+                0.9,
+            ));
+
+            (response.content, cost)
         } else {
+            thoughts.push(OrchestratorThought::new(
+                "research_heuristic",
+                "Using heuristic research planning",
+                0.7,
+            ));
+
             // Fallback: build a minimal heuristic plan from evidence
             let reasoning = if kb_hits_total > 0 {
                 "Heuristic plan derived from KB evidence"
@@ -469,7 +916,7 @@ Guidelines:
             } else {
                 "Apply the requested change using patterns found in the knowledge base and verify against official docs"
             };
-            serde_json::json!({
+            let content = serde_json::json!({
                 "reasoning": reasoning,
                 "steps": [{
                     "step_number": 1,
@@ -477,8 +924,15 @@ Guidelines:
                     "commands_needed": []
                 }],
                 "estimated_complexity": if kb_hits_total > 0 || web_count > 0 { "low" } else { "medium" }
-            }).to_string()
+            }).to_string();
+            (content, None)
         };
+
+        thoughts.push(OrchestratorThought::new(
+            "research_complete",
+            format!("Research complete in {}ms", start_time.elapsed().as_millis()),
+            0.95,
+        ));
 
         let mut metadata = serde_json::Map::new();
         metadata.insert("queries".into(), serde_json::json!(queries));
@@ -486,7 +940,14 @@ Guidelines:
         metadata.insert("kb_hits".into(), serde_json::json!(kb_hits_total));
 
         let exec_ms = start_time.elapsed().as_millis() as u64;
-        Ok(AgentOutput { content, tokens_used: 0, execution_time_ms: exec_ms, metadata, cost_usd: None })
+        Ok(AgentOutput {
+            content,
+            tokens_used: 0,
+            execution_time_ms: exec_ms,
+            metadata,
+            cost_usd,
+            thoughts,
+        })
     }
 
 }

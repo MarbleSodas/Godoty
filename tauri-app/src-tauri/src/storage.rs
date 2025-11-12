@@ -608,8 +608,14 @@ impl Storage {
             HashMap::new()
         };
 
+        // Preserve created_at from existing metrics if available
+        let mut updated_metrics = metrics.clone();
+        if let Some(existing) = all_metrics.get(&metrics.project_path) {
+            updated_metrics.created_at = existing.created_at;
+        }
+
         // Update metrics for this project
-        all_metrics.insert(metrics.project_path.clone(), metrics.clone());
+        all_metrics.insert(metrics.project_path.clone(), updated_metrics);
 
         // Save back to disk
         let json = serde_json::to_string_pretty(&all_metrics)?;

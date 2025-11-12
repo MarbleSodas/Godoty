@@ -106,6 +106,27 @@ impl WorkflowMetrics {
         self.total_time_ms = (self.completed_at - self.started_at) * 1000;
         self.success = success;
         self.error_message = error_message;
+
+        // Calculate total cost from individual cost components
+        self.total_cost_usd = self.planning_cost_usd
+            + self.generation_cost_usd
+            + self.validation_cost_usd;
+
+        // Log cost breakdown
+        if self.total_cost_usd > 0.0 {
+            tracing::info!(
+                total_cost_usd = self.total_cost_usd,
+                planning_cost_usd = self.planning_cost_usd,
+                generation_cost_usd = self.generation_cost_usd,
+                validation_cost_usd = self.validation_cost_usd,
+                "Workflow metrics finalized with cost breakdown"
+            );
+        } else {
+            tracing::warn!(
+                total_tokens = self.total_tokens,
+                "Workflow metrics finalized but NO COST DATA was captured from OpenRouter"
+            );
+        }
     }
 }
 
@@ -145,6 +166,16 @@ impl MetricsStore {
     pub async fn get_all_metrics(&self) -> Vec<WorkflowMetrics> {
         let store = self.metrics.read().await;
         store.clone()
+    }
+
+    /// Get the most recent metrics by request_id
+    #[allow(dead_code)]
+    pub async fn get_metrics_by_request_id(&self, request_id: &str) -> Option<WorkflowMetrics> {
+        let store = self.metrics.read().await;
+        store.iter()
+            .rev() // Search from most recent
+            .find(|m| m.request_id == request_id)
+            .cloned()
     }
 
     /// Get metrics summary

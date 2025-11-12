@@ -22,6 +22,8 @@ mod tscn_utils;
 mod websocket;
 
 mod mcp_client;
+mod mcp_tools;
+mod tool_executor;
 
 use crate::llm_client::set_tool_event_context;
 use agent::AgenticWorkflow;
@@ -684,6 +686,9 @@ async fn process_command(
         if let Some(session) = manager.get_active_session() {
             let storage = state.storage.lock().unwrap();
             let _ = storage.save_chat_session(session);
+
+            // Emit event to notify frontend that session list has changed
+            let _ = window.emit("session-list-changed", ());
         }
     }
 
@@ -1279,6 +1284,9 @@ Example for "Parent node not found: MainMenu/Container" when MainMenu exists:
 
     // Execute recovery commands with recursive recovery support
     println!("Executing {} recovery commands...", recovery_commands.len());
+    let mut successful_recovery_commands = 0;
+    let mut recovery_errors = Vec::new();
+
     for (idx, cmd) in recovery_commands.iter().enumerate() {
         println!(
             "Recovery command {} (depth {}): {}",
@@ -1467,51 +1475,79 @@ Example for "Parent node not found: MainMenu/Container" when MainMenu exists:
                     {
                         Ok(nested_recovery_msg) => {
                             println!("Nested recovery succeeded: {}", nested_recovery_msg);
+                            successful_recovery_commands += 1;
                             // Continue with next recovery command
                             continue;
                         }
                         Err(nested_recovery_err) => {
                             println!("Nested recovery failed: {}", nested_recovery_err);
-                            // Nested recovery failed, return error
+                            // Nested recovery failed, record error but CONTINUE with remaining recovery commands
                             let cmd_str = serde_json::to_string(cmd).unwrap_or_default();
-                            return Err(format!(
+                            recovery_errors.push(format!(
                                 "Recovery command {} failed: {}\nCommand was: {}\nNested recovery also failed: {}",
                                 idx + 1,
                                 error_msg,
                                 cmd_str,
                                 nested_recovery_err
                             ));
+                            // Continue to next recovery command instead of returning
+                            continue;
                         }
                     }
                 } else {
-                    // Max recovery depth reached
+                    // Max recovery depth reached, record error but CONTINUE with remaining recovery commands
                     let cmd_str = serde_json::to_string(cmd).unwrap_or_default();
                     println!(
-                        "Max recovery depth ({}) reached, cannot attempt further recovery",
+                        "Max recovery depth ({}) reached, cannot attempt further recovery for this command",
                         MAX_RECOVERY_DEPTH
                     );
-                    return Err(format!(
+                    recovery_errors.push(format!(
                         "Recovery command {} failed: {}\nCommand was: {}\nMax recovery depth ({}) reached",
                         idx + 1,
                         error_msg,
                         cmd_str,
                         MAX_RECOVERY_DEPTH
                     ));
+                    // Continue to next recovery command instead of returning
+                    continue;
                 }
             }
         }
         println!("Recovery command {} succeeded", idx + 1);
+        successful_recovery_commands += 1;
     }
 
-    println!(
-        "=== RECOVERY COMPLETED SUCCESSFULLY (Depth: {}) ===",
-        recovery_depth
-    );
-    Ok(format!(
-        "Successfully executed {} recovery commands at depth {}",
-        recovery_commands.len(),
-        recovery_depth
-    ))
+    // Report recovery results
+    if !recovery_errors.is_empty() {
+        println!(
+            "=== RECOVERY COMPLETED WITH ERRORS (Depth: {}) ===",
+            recovery_depth
+        );
+        println!(
+            "Successfully executed {} of {} recovery commands",
+            successful_recovery_commands,
+            recovery_commands.len()
+        );
+        println!("Errors encountered:\n{}", recovery_errors.join("\n"));
+        // Return partial success - some recovery commands worked
+        Ok(format!(
+            "Partially recovered: {} of {} recovery commands succeeded at depth {}. Errors: {}",
+            successful_recovery_commands,
+            recovery_commands.len(),
+            recovery_depth,
+            recovery_errors.join("; ")
+        ))
+    } else {
+        println!(
+            "=== RECOVERY COMPLETED SUCCESSFULLY (Depth: {}) ===",
+            recovery_depth
+        );
+        Ok(format!(
+            "Successfully executed {} recovery commands at depth {}",
+            recovery_commands.len(),
+            recovery_depth
+        ))
+    }
 }
 
 #[tauri::command]
@@ -2023,6 +2059,11 @@ async fn process_command_agentic(
         if let Some(session) = manager.get_active_session() {
             let storage = state.storage.lock().unwrap();
             let _ = storage.save_chat_session(session);
+
+            // Emit event to notify frontend that session list has changed (if title was updated)
+            if should_generate_title {
+                let _ = window.emit("session-list-changed", ());
+            }
         }
     }
 
@@ -2092,77 +2133,9 @@ async fn process_command_agentic(
         }
     };
 
-    // Gather visual context if this is a UI-related task
-    let visual_context = {
-        let is_ui_task = agent::AgenticWorkflow::is_ui_task(&input);
-
-        if is_ui_task {
-            emit_log(
-                &window,
-                "info",
-                "agent_activity",
-                "Detected UI task - capturing visual context",
-                Some("Assistant"),
-                Some("VisualContext"),
-                Some("processing"),
-                session_id_for_logs.clone(),
-                None,
-            );
-
-            // Try to capture screenshot from Godot editor
-            let (screenshot_b64, screenshot_meta, visual_analysis): (
-                Option<String>,
-                Option<Value>,
-                Option<String>,
-            ) = {
-                // Clone the client to avoid holding the lock across await
-                let client_clone = {
-                    let client_opt = state.ws_client.lock().unwrap();
-                    client_opt.clone()
-                };
-
-                if let Some(client) = client_clone {
-                    // Request visual snapshot from Godot
-                    match client
-                        .send_command(&serde_json::json!({"action": "get_visual_snapshot"}))
-                        .await
-                    {
-                        Ok(snapshot)
-                            if snapshot.get("status").and_then(|s| s.as_str())
-                                == Some("success") =>
-                        {
-                            if let Some(data) = snapshot.get("data") {
-                                let image_b64: Option<String> = data
-                                    .get("image_b64")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
-                                let meta: Option<Value> = data.get("meta").cloned();
-
-                                // Visual analysis removed
-                                let analysis: Option<String> = None;
-
-                                (image_b64, meta, analysis)
-                            } else {
-                                (None, None, None)
-                            }
-                        }
-                        _ => (None, None, None),
-                    }
-                } else {
-                    (None, None, None)
-                }
-            };
-
-            agent::VisualContext {
-                _screenshot_base64: screenshot_b64,
-                _screenshot_metadata: screenshot_meta,
-                visual_analysis,
-                is_ui_task: true,
-            }
-        } else {
-            agent::VisualContext::default()
-        }
-    };
+    // Visual context: only use game screenshots (no editor screenshots)
+    // Game screenshots are captured automatically after "play" commands
+    let visual_context = agent::VisualContext::default();
 
     // Create agent context
     let agent_context = agent::AgentContext {
@@ -2186,54 +2159,266 @@ async fn process_command_agentic(
         &window,
         &state,
         "Orchestrator",
-        "Analyzing your request and determining the best approach...",
+        "Analyzing your request and creating execution plan...",
         session_id_for_logs.clone(),
     );
 
-    let agent_response = match workflow.execute(&agent_context).await {
-        Ok(r) => r,
+    // Get agent config for tool calling feature flag
+    let agent_config = state.agent_llm_config.lock().unwrap().clone();
+
+    // Get MCP client if available
+    let mut mcp_client_opt = {
+        let mut client_guard = state.mcp_client.lock().unwrap();
+        client_guard.take()
+    };
+
+    // Initialize iterative execution with MCP client and config
+    let mut exec_state = match workflow.initialize_iterative_execution(&agent_context, &mut mcp_client_opt, Some(&agent_config)).await {
+        Ok(state) => state,
         Err(e) => {
-            // Emit error log for agentic workflow failure
+            // Return MCP client to state
+            if let Some(client) = mcp_client_opt {
+                let mut client_guard = state.mcp_client.lock().unwrap();
+                *client_guard = Some(client);
+            }
+
             emit_log(
                 &window,
                 "error",
                 "agent_activity",
-                &format!("Agentic workflow failed: {}", e),
+                &format!("Failed to initialize iterative execution: {}", e),
                 Some("AgenticWorkflow"),
-                Some("Execute"),
+                Some("Initialize"),
                 Some("error"),
                 session_id_for_logs.clone(),
                 None,
             );
+            return Err(format!("Failed to initialize iterative execution: {}", e));
+        }
+    };
 
-            // Append assistant error message to chat and persist
-            {
-                let mut manager = state.chat_session_manager.lock().unwrap();
-                if let Some(session) = manager.get_active_session_mut() {
-                    let mut msg = ChatMessage::assistant(
-                        format!("Agentic workflow failed: {}", e),
-                        None,
-                        None,
-                        None,
-                        None,
-                    );
-                    // Attach basic metrics
-                    msg.metrics = Some(chat_session::MessageMetrics {
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        total_tokens: 0,
-                        latency_ms: processing_start.elapsed().as_millis() as u64,
-                        tool_call_times: Vec::new(),
-                        cost_estimate_usd: None,
-                    });
-                    session.add_message(msg);
-                    let storage = state.storage.lock().unwrap();
-                    let _ = storage.save_chat_session(session);
+    // Return MCP client to state after initialization
+    if let Some(client) = mcp_client_opt {
+        let mut client_guard = state.mcp_client.lock().unwrap();
+        *client_guard = Some(client);
+    }
+
+    emit_log(
+        &window,
+        "info",
+        "agent_activity",
+        "Execution plan created - starting iterative command execution",
+        Some("AgenticWorkflow"),
+        Some("Plan"),
+        Some("completed"),
+        session_id_for_logs.clone(),
+        Some(json!({ "plan": exec_state.plan })),
+    );
+
+    // Iterative execution loop
+    let mut iteration = 0;
+    let max_iterations = 50; // Safety limit
+    let mut all_results = Vec::new();
+
+    while !exec_state.is_complete && iteration < max_iterations {
+        iteration += 1;
+
+        // Generate next command
+        emit_agent_thought(
+            &window,
+            &state,
+            "Orchestrator",
+            &format!("Generating command {} based on previous results...", iteration),
+            session_id_for_logs.clone(),
+        );
+
+        let step_response = match workflow.generate_next_command(&agent_context, &exec_state).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                emit_log(
+                    &window,
+                    "error",
+                    "agent_activity",
+                    &format!("Failed to generate next command: {}", e),
+                    Some("AgenticWorkflow"),
+                    Some("GenerateCommand"),
+                    Some("error"),
+                    session_id_for_logs.clone(),
+                    None,
+                );
+                break;
+            }
+        };
+
+        // Update state
+        exec_state = step_response.state;
+
+        // Check if complete
+        if step_response.is_complete || step_response.command.is_none() {
+            emit_log(
+                &window,
+                "info",
+                "agent_activity",
+                "Task completed - no more commands to execute",
+                Some("AgenticWorkflow"),
+                Some("Complete"),
+                Some("completed"),
+                session_id_for_logs.clone(),
+                None,
+            );
+            break;
+        }
+
+        let cmd = step_response.command.unwrap();
+
+        // Execute the command
+        let action_name = cmd
+            .get("action")
+            .and_then(|a| a.as_str())
+            .unwrap_or("unknown");
+
+        emit_log(
+            &window,
+            "info",
+            "action",
+            &format!("Executing command {}: {}", iteration, action_name),
+            Some(if action_name == "desktop_commander" { "DesktopCommander" } else { "GodotBridge" }),
+            Some("Execute"),
+            Some("processing"),
+            session_id_for_logs.clone(),
+            Some(json!({ "iteration": iteration, "action": action_name, "command": cmd })),
+        );
+
+        println!(
+            "Executing command {}: {}",
+            iteration,
+            serde_json::to_string(&cmd).unwrap_or_default()
+        );
+
+        let result = if action_name == "desktop_commander" {
+            // Ensure MCP client exists
+            let need_init = {
+                let c = state.mcp_client.lock().unwrap();
+                c.is_none()
+            };
+            if need_init {
+                let project_path = {
+                    let p = state.godot_project_path.lock().unwrap();
+                    p.clone().ok_or("Godot project path not set. Please set it in settings.")?
+                };
+                match McpClient::new(Path::new(&project_path)).await {
+                    Ok(client) => {
+                        let mut c = state.mcp_client.lock().unwrap();
+                        *c = Some(client);
+                    }
+                    Err(e) => {
+                        let err = json!({
+                            "status": "error",
+                            "error": format!("Failed to start DesktopCommander MCP: {}", e)
+                        });
+                        emit_log(
+                            &window,
+                            "error",
+                            "action",
+                            &format!("Command {} failed", iteration),
+                            Some("DesktopCommander"),
+                            Some("Execute"),
+                            Some("failed"),
+                            session_id_for_logs.clone(),
+                            Some(json!({ "iteration": iteration, "response_preview": err.to_string() })),
+                        );
+                        workflow.record_execution_result(&mut exec_state, cmd, err.clone());
+                        all_results.push(err);
+                        continue;
+                    }
                 }
             }
+            let mut client = {
+                let mut c = state.mcp_client.lock().unwrap();
+                c.take().ok_or("DesktopCommander MCP client missing")?
+            };
+            let tool = cmd
+                .get("tool")
+                .and_then(|t| t.as_str())
+                .ok_or("Missing field 'tool' for desktop_commander")?;
+            let args = cmd.get("args").cloned().unwrap_or(json!({}));
+            let call_res = client
+                .call_tool(tool, args)
+                .await
+                .map(|v| json!({"status":"success","data": v}))
+                .unwrap_or_else(|e| json!({"status":"error","error": e.to_string()}));
+            {
+                let mut c = state.mcp_client.lock().unwrap();
+                *c = Some(client);
+            }
+            call_res
+        } else {
+            let client = {
+                let ws_client = state.ws_client.lock().unwrap();
+                ws_client.as_ref().ok_or("Not connected to Godot")?.clone()
+            };
+            client
+                .send_command(&cmd)
+                .await
+                .map_err(|e| format!("Failed to send command: {}", e))?
+        };
 
-            return Err(format!("Agentic workflow failed: {}", e));
+        // Log result
+        let resp_preview = result.to_string().chars().take(300).collect::<String>();
+        let level = if result.get("error").is_some() || result.get("status").and_then(|s| s.as_str()) == Some("error") {
+            "error"
+        } else {
+            "debug"
+        };
+        emit_log(
+            &window,
+            level,
+            "action",
+            &format!("Command {} response", iteration),
+            Some(if action_name == "desktop_commander" { "DesktopCommander" } else { "GodotBridge" }),
+            Some("Execute"),
+            Some(if level == "error" { "failed" } else { "completed" }),
+            session_id_for_logs.clone(),
+            Some(json!({ "iteration": iteration, "response_preview": resp_preview })),
+        );
+
+        // Record result for next iteration
+        workflow.record_execution_result(&mut exec_state, cmd.clone(), result.clone());
+        all_results.push(result.clone());
+
+        // Auto-capture screenshot after play command
+        if action_name == "play" && result.get("status").and_then(|s| s.as_str()) == Some("success") {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+            let client = {
+                let ws_client = state.ws_client.lock().unwrap();
+                ws_client.as_ref().cloned()
+            };
+            if let Some(client) = client {
+                if let Ok(screenshot_result) = client.send_command(&json!({"action": "capture_game_screenshot"})).await {
+                    if screenshot_result.get("status").and_then(|s| s.as_str()) == Some("success") {
+                        emit_log(
+                            &window,
+                            "info",
+                            "action",
+                            "Game screenshot captured for context",
+                            Some("GodotBridge"),
+                            Some("VisualContext"),
+                            Some("completed"),
+                            session_id_for_logs.clone(),
+                            Some(json!({ "screenshot_data": screenshot_result.get("data") })),
+                        );
+                    }
+                }
+            }
         }
+    }
+
+    // Create agent_response for compatibility with existing code
+    let agent_response = agent::AgentResponse {
+        commands: exec_state.executed_commands.clone(),
+        thoughts: exec_state.thoughts.clone(),
+        plan: exec_state.plan.clone(),
+        metrics: None,
     };
 
     // Emit agent thoughts as persistent messages
@@ -2293,25 +2478,28 @@ async fn process_command_agentic(
         }
     }
 
-    // Emit agentic plan summary
+    // Emit agentic completion log
     emit_log(
         &window,
         "info",
         "agent_activity",
         &format!(
-            "Agentic plan ready: {} command(s)",
+            "Iterative execution complete: {} command(s) executed",
             agent_response.commands.len()
         ),
         Some("Assistant"),
         Some("AgenticWorkflow"),
-        Some("processing"),
+        Some("completed"),
         session_id_for_logs.clone(),
-        Some(json!({ "count": agent_response.commands.len() })),
+        Some(json!({ "count": agent_response.commands.len(), "iterations": iteration })),
     );
 
-    // Execute commands
-    let mut results = Vec::new();
-    for (idx, cmd) in agent_response.commands.iter().enumerate() {
+    // Use results from iterative execution
+    let mut results = all_results;
+
+    // Skip old command execution loop - commands were already executed iteratively
+    if false {
+        for (idx, cmd) in agent_response.commands.iter().enumerate() {
         // Log agentic command execution
         let action_name = cmd
             .get("action")
@@ -2424,24 +2612,65 @@ async fn process_command_agentic(
             session_id_for_logs.clone(),
             Some(json!({ "index": idx + 1, "response_preview": resp_preview })),
         );
-        results.push(result);
-    }
 
-    // Emit agentic completion log
-    emit_log(
-        &window,
-        "info",
-        "agent_activity",
-        &format!(
-            "Agentic workflow completed: {} command(s) executed",
-            results.len()
-        ),
-        Some("Assistant"),
-        Some("AgenticWorkflow"),
-        Some("completed"),
-        session_id_for_logs.clone(),
-        Some(json!({ "executed": results.len() })),
-    );
+        // If this was a "play" command, automatically capture game screenshot after a delay
+        if action_name == "play" && result.get("status").and_then(|s| s.as_str()) == Some("success") {
+            // Wait a bit for the game to start and render
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+
+            let client = {
+                let ws_client = state.ws_client.lock().unwrap();
+                ws_client.as_ref().cloned()
+            };
+
+            if let Some(client) = client {
+                match client.send_command(&json!({"action": "capture_game_screenshot"})).await {
+                    Ok(screenshot_result) => {
+                        if screenshot_result.get("status").and_then(|s| s.as_str()) == Some("success") {
+                            emit_log(
+                                &window,
+                                "info",
+                                "action",
+                                "Game screenshot captured for context",
+                                Some("GodotBridge"),
+                                Some("VisualContext"),
+                                Some("completed"),
+                                session_id_for_logs.clone(),
+                                Some(json!({ "screenshot_data": screenshot_result.get("data") })),
+                            );
+
+                            // Store the screenshot data for potential use in next iteration
+                            // This could be added to a shared context store if needed
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to capture game screenshot: {}", e);
+                    }
+                }
+            }
+        }
+
+        results.push(result);
+        }
+    } // End of skipped old execution loop
+
+    // Final completion log (already emitted above, so skip duplicate)
+    if false {
+        emit_log(
+            &window,
+            "info",
+            "agent_activity",
+            &format!(
+                "Agentic workflow completed: {} command(s) executed",
+                results.len()
+            ),
+            Some("Assistant"),
+            Some("AgenticWorkflow"),
+            Some("completed"),
+            session_id_for_logs.clone(),
+            Some(json!({ "executed": results.len() })),
+        );
+    }
 
     // Add assistant message to session with thoughts
     {
@@ -2499,9 +2728,12 @@ async fn process_command_agentic(
                 cost_estimate_usd: if actual_cost > 0.0 { Some(actual_cost) } else { None },
             });
 
-            // Update session cost with actual cost from OpenRouter
+            // Update session cost and tokens with actual values from OpenRouter
             if actual_cost > 0.0 {
                 session.add_message_cost(actual_cost);
+            }
+            if total_tokens > 0 {
+                session.add_message_tokens(total_tokens);
             }
 
             session.add_message(msg);
@@ -2515,6 +2747,42 @@ async fn process_command_agentic(
             let storage = state.storage.lock().unwrap();
             let _ = storage.save_chat_session(session);
         }
+    }
+
+    // Update project metrics after command execution
+    if let Some(project_path) = state.godot_project_path.lock().unwrap().clone() {
+        let storage = state.storage.lock().unwrap();
+        let manager = state.chat_session_manager.lock().unwrap();
+
+        // Calculate total metrics from all sessions
+        let sessions = manager.get_all_sessions();
+        let mut total_messages = 0;
+        let mut total_tokens = 0;
+        let mut total_cost = 0.0;
+
+        for session in sessions {
+            // Count only user messages
+            total_messages += session.messages.iter().filter(|m| m.role == chat_session::MessageRole::User).count();
+            total_tokens += session.metadata.total_tokens_used;
+            total_cost += session.metadata.total_cost_usd;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let metrics = storage::ProjectMetrics {
+            project_path: project_path.clone(),
+            total_sessions: sessions.len(),
+            total_messages,
+            total_tokens,
+            total_cost_usd: total_cost,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let _ = storage.save_project_metrics(&metrics);
     }
 
     Ok(format!(
@@ -2722,7 +2990,8 @@ fn update_project_metrics(state: State<'_, AppState>) -> Result<(), String> {
     let mut total_cost = 0.0;
 
     for session in sessions {
-        total_messages += session.messages.len();
+        // Count only user messages
+        total_messages += session.messages.iter().filter(|m| m.role == chat_session::MessageRole::User).count();
         total_tokens += session.metadata.total_tokens_used;
         total_cost += session.metadata.total_cost_usd;
     }

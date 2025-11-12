@@ -1,0 +1,22 @@
+# Python dependencies for Godoty RAG Sidecar
+# Install with: pip install -r rag_requirements.txt
+
+# Web framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+
+# LangChain and vector store (use compatible versions)
+langchain>=0.1.0
+langchain-community>=0.0.16
+langchain-text-splitters>=0.0.1
+
+# Vector database
+chromadb>=0.4.22
+
+# Embeddings
+sentence-transformers>=2.3.0
+
+# Additional dependencies
+numpy>=1.24.0,<2.0.0
+

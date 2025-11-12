@@ -1,0 +1,45 @@
+/* Project Metrics Panel - Enhanced Styling */
+
+.project-metrics-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.cost-highlight-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.cost-highlight-card::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: linear-gradient(
+    45deg,
+    transparent,
+    rgba(74, 222, 128, 0.1),
+    transparent
+  );
+  animation: shimmer 3s infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%) translateY(-100%) rotate(45deg);
+  }
+  100% {
+    transform: translateX(100%) translateY(100%) rotate(45deg);
+  }
+}
+
+.metric-card {
+  position: relative;
+  backdrop-filter: blur(8px);
+}
+
+.metric-card:hover {
+  transform: translateY(-2px);
+}

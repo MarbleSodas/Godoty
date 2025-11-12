@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { RouterOutlet, RouterLink } from '@angular/router';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus, ProjectMetrics } from './models/command.model';
+import { Command, ConnectionStatus, ChatSession, ChatMessage, MessageStatus } from './models/command.model';
 import { IndexingStatus, IndexingStatusResponse, IndexingStatusEvent } from './models/indexing-status.model';
 import { ProcessLogService } from './services/process-log.service';
 import { ProcessLogEntry } from './models/process-log.model';
@@ -12,8 +12,7 @@ import { StatusPanelComponent } from './components/status-panel/status-panel.com
 import { ChatViewComponent } from './components/chat-view/chat-view.component';
 import { SessionManagerComponent } from './components/session-manager/session-manager.component';
 import { ProcessLogsComponent } from './components/process-logs/process-logs.component';
-import { MetricsPanelComponent } from './components/metrics-panel/metrics-panel.component';
-import { KnowledgeBaseStatusComponent } from './components/knowledge-base-status/knowledge-base-status.component';
+import { ProjectMetricsPanelComponent } from './components/project-metrics-panel/project-metrics-panel.component';
 
 @Component({
   selector: 'app-root',
@@ -26,8 +25,7 @@ import { KnowledgeBaseStatusComponent } from './components/knowledge-base-status
     ChatViewComponent,
     SessionManagerComponent,
     ProcessLogsComponent,
-    MetricsPanelComponent,
-    KnowledgeBaseStatusComponent
+    ProjectMetricsPanelComponent
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css']
@@ -39,7 +37,6 @@ export class AppComponent implements OnInit {
   apiKey: string = '';
   isReindexingProject: boolean = false;
   isRebuildingRag: boolean = false;
-  projectMetrics: ProjectMetrics | null = null;
 
   async handleReindexProject(): Promise<void> {
     this.isReindexingProject = true;
@@ -145,25 +142,7 @@ export class AppComponent implements OnInit {
     this.listenToIndexingStatusChanges();
     this.connectToGodot();
     this.loadChatSessions();
-    this.loadProjectMetrics();
-  }
-
-  async loadProjectMetrics(): Promise<void> {
-    try {
-      this.projectMetrics = await invoke<ProjectMetrics>('get_project_metrics');
-    } catch (error) {
-      console.log('No project metrics available yet:', error);
-      this.projectMetrics = null;
-    }
-  }
-
-  async updateProjectMetrics(): Promise<void> {
-    try {
-      await invoke('update_project_metrics');
-      await this.loadProjectMetrics();
-    } catch (error) {
-      console.error('Failed to update project metrics:', error);
-    }
+    this.listenToSessionListChanges();
   }
 
   async loadApiKey(): Promise<void> {
@@ -205,6 +184,17 @@ export class AppComponent implements OnInit {
       });
     } catch (error) {
       console.error('Failed to listen to indexing status changes:', error);
+    }
+  }
+
+  async listenToSessionListChanges(): Promise<void> {
+    try {
+      await listen('session-list-changed', async () => {
+        console.log('Session list changed, reloading sessions...');
+        await this.loadChatSessions();
+      });
+    } catch (error) {
+      console.error('Failed to listen to session list changes:', error);
     }
   }
 
@@ -256,23 +246,34 @@ export class AppComponent implements OnInit {
     // Apply optimistic update to active session and session list
     let usedTempSession = false;
     if (this.activeSession) {
+      // Check if this is the first user message and update title accordingly
+      const isFirstMessage = this.activeSession.messages.length === 0;
+      const shouldUpdateTitle = isFirstMessage &&
+        (this.activeSession.title === 'New Chat' || this.activeSession.title === 'New Session' ||
+         this.activeSession.title.startsWith('Session '));
+
       const updatedActive: ChatSession = {
         ...this.activeSession,
+        title: shouldUpdateTitle ? this.generateSessionTitle(input) : this.activeSession.title,
         messages: [...this.activeSession.messages, optimisticMessage],
         updated_at: nowSec
       };
       this.activeSession = updatedActive; // triggers change detection
       // Update session in list immutably so Session Manager reflects instantly
       this.chatSessions = this.chatSessions.map(s =>
-        s.id === updatedActive.id ? { ...s, messages: updatedActive.messages, updated_at: nowSec } : s
+        s.id === updatedActive.id ? { ...s, title: updatedActive.title, messages: updatedActive.messages, updated_at: nowSec } : s
       );
     } else {
       // No active session yet: create a temporary client-only session so UI updates instantly
       usedTempSession = true;
       this._tempSessionId = `temp-${nowSec}-${Math.random().toString(36).slice(2, 6)}`;
+
+      // Generate title from first user message (matching backend logic)
+      const tempTitle = this.generateSessionTitle(input);
+
       const tempSession: ChatSession = {
         id: this._tempSessionId,
-        title: 'New Session',
+        title: tempTitle,
         messages: [optimisticMessage],
         created_at: nowSec,
         updated_at: nowSec,
@@ -294,6 +295,12 @@ export class AppComponent implements OnInit {
     const startMs = Date.now();
     const logsSub = this.logs.onEntry().subscribe((entry) => {
       if (entry.timestamp && entry.timestamp < startMs) return; // ignore old entries
+
+      // Filter out debug messages and internal/verbose categories from chat display
+      const excludedCategories = ['debug', 'internal', 'websocket', 'connection', 'information_flow', 'message_update'];
+      if (entry.level === 'debug' || excludedCategories.includes(entry.category || '')) {
+        return; // Don't show debug messages in chat
+      }
 
       const statusMap: Record<string, MessageStatus> = {
         idle: 'thinking',
@@ -402,9 +409,6 @@ export class AppComponent implements OnInit {
 
       // Reconcile with backend session: fetch the authoritative active session
       await this.loadActiveSession();
-
-      // Update project metrics after successful message
-      await this.updateProjectMetrics();
 
       // Reflect the fetched active session in the sessions list
       if (this.activeSession) {
@@ -562,6 +566,22 @@ export class AppComponent implements OnInit {
   async handleQuickCreateSession(): Promise<void> {
     const timestamp = new Date().toLocaleString();
     await this.handleCreateSession(`Chat ${timestamp}`);
+  }
+
+  /**
+   * Generate a session title from the first user message
+   * Matches the backend logic in lib.rs::generate_session_title_from_message
+   */
+  private generateSessionTitle(message: string): string {
+    // Take first line or first 50 characters, whichever comes first
+    const firstLine = message.split('\n')[0];
+    const title = firstLine.substring(0, 50);
+
+    // Add ellipsis if we truncated and it's not due to a newline
+    if (title.length < message.length && !message.includes('\n')) {
+      return `${title}...`;
+    }
+    return title;
   }
 }
 

@@ -6,6 +6,12 @@ export interface WorkflowMetrics {
   validation_tokens: number;
   documentation_tokens: number;
 
+  // Cost tracking (in USD)
+  total_cost_usd: number;
+  planning_cost_usd: number;
+  generation_cost_usd: number;
+  validation_cost_usd: number;
+
   // Execution time (milliseconds)
   total_time_ms: number;
   planning_time_ms: number;

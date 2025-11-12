@@ -1,106 +1,105 @@
 <div
-  class="bg-black/30 rounded-2xl p-5 mb-4 border-2 border-white/10 transition-all shadow-md hover:bg-black/40 hover:border-white/20 hover:shadow-lg max-w-full break-words"
+  class="mb-4 max-w-full break-words"
   [ngClass]="{
-    'border-l-4 border-l-primary-400 bg-gradient-to-br from-primary-400/15 to-primary-500/10 border-primary-400/30': message.role === 'user',
-    'border-l-4 border-l-purple-600 bg-gradient-to-br from-purple-600/15 to-purple-700/10 border-purple-600/30': message.role === 'assistant',
-    'border-l-4 border-l-cyan-500 bg-gradient-to-br from-cyan-500/15 to-cyan-600/10 border-cyan-500/30': message.role === 'system',
     'animate-pulse-glow': isProcessing()
   }"
 >
-  <div class="flex justify-between items-center mb-3">
-    <div class="flex items-center gap-2">
-      <span class="text-xl">{{ getRoleIcon() }}</span>
-      <span class="font-semibold text-white/90">{{ getRoleLabel() }}</span>
-      <span class="text-sm text-white/50">{{ formatTimestamp(message.timestamp) }}</span>
-    </div>
-    <div class="flex gap-2 flex-wrap">
-      <!-- Status Badge -->
-      <span
-        *ngIf="message.status"
-        class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold border cursor-default"
-        [ngClass]="{
-          'bg-green-500/15 border-green-500/30 text-green-500': getStatusClass() === 'status-sent',
-          'bg-amber-500/15 border-amber-500/30 text-amber-500 animate-status-pulse': getStatusClass() === 'status-processing',
-          'bg-blue-500/15 border-blue-500/30 text-blue-500': getStatusClass() === 'status-complete',
-          'bg-red-500/15 border-red-500/30 text-red-500': getStatusClass() === 'status-error'
-        }"
-      >
-        <span class="text-sm inline-flex items-center">{{ getStatusIcon() }}</span>
-        <span class="text-xs uppercase tracking-wide">{{ getStatusLabel() }}</span>
-      </span>
+  <!-- Main Message Content -->
+  <div class="bg-[#1a1a1a] rounded-lg p-4 border border-white/10 transition-all shadow-md hover:border-white/20">
+    <!-- Header -->
+    <div class="flex justify-between items-start mb-3">
+      <div class="flex items-center gap-2">
+        <span class="text-lg">{{ getRoleIcon() }}</span>
+        <span class="font-medium text-white/90 text-sm">{{ getRoleLabel() }}</span>
+        <span class="text-xs text-white/40">{{ formatTimestamp(message.timestamp) }}</span>
+      </div>
+      <div class="flex gap-2 flex-wrap items-center">
+        <!-- Context Badge -->
+        <button
+          *ngIf="message.context_used"
+          class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20 transition-colors cursor-pointer"
+          (click)="toggleContext()"
+        >
+          <span class="text-xs">📚</span>
+          <span class="text-xs">Context</span>
+        </button>
 
-      <!-- Context Badge -->
-      <span
-        *ngIf="message.context_used"
-        class="px-3 py-1 rounded-xl text-xs cursor-pointer transition-all bg-blue-500/30 border border-blue-500/50 hover:bg-blue-500/50"
-        (click)="toggleContext()"
-      >
-        📚 Context
-      </span>
+        <!-- Status Badge -->
+        <span
+          *ngIf="message.status"
+          class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border"
+          [ngClass]="{
+            'bg-green-500/10 border-green-500/30 text-green-400': getStatusClass() === 'status-sent',
+            'bg-amber-500/10 border-amber-500/30 text-amber-400 animate-status-pulse': getStatusClass() === 'status-processing',
+            'bg-blue-500/10 border-blue-500/30 text-blue-400': getStatusClass() === 'status-complete',
+            'bg-red-500/10 border-red-500/30 text-red-400': getStatusClass() === 'status-error'
+          }"
+        >
+          <span class="text-xs">{{ getStatusIcon() }}</span>
+          <span class="text-xs">{{ getStatusLabel() }}</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- Message Content -->
+    <div class="text-white/85 leading-relaxed whitespace-pre-wrap break-words text-sm">
+      <span [class.inline]="message.isStreaming">{{ message.content }}</span>
+      <span *ngIf="message.isStreaming" class="inline-block ml-0.5 text-purple-500/80 font-bold animate-[blink_1s_step-end_infinite]">▊</span>
     </div>
   </div>
 
-  <div class="text-white/90 leading-relaxed whitespace-pre-wrap break-words relative max-w-full">
-    <span [class.inline]="message.isStreaming">{{ message.content }}</span>
-    <span *ngIf="message.isStreaming" class="inline-block ml-0.5 text-purple-600/80 font-bold animate-[blink_1s_step-end_infinite]">▊</span>
-  </div>
 
   <!-- Visual Snapshot -->
-  <div *ngIf="message.visual_snapshot_b64" class="mt-4 p-4 bg-green-500/12 border border-green-500/35 rounded-lg">
-    <div class="flex items-center gap-2 mb-3 font-semibold text-white/90">
-      <span class="text-lg">🖼️</span>
-      <span class="text-sm">Visual Snapshot</span>
+  <div *ngIf="message.visual_snapshot_b64" class="mt-3 bg-[#1a1a1a] rounded-lg p-4 border border-green-500/30">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="text-base">🖼️</span>
+      <span class="text-xs font-medium text-white/80">Visual Snapshot</span>
     </div>
-    <img [src]="'data:image/png;base64,' + message.visual_snapshot_b64" alt="Visual Snapshot" class="max-w-full rounded-md border border-white/20" />
-    <div *ngIf="message.visual_snapshot_meta" class="mt-2 flex gap-4 text-sm text-white/70">
+    <img [src]="'data:image/png;base64,' + message.visual_snapshot_b64" alt="Visual Snapshot" class="max-w-full rounded border border-white/10" />
+    <div *ngIf="message.visual_snapshot_meta" class="mt-2 flex gap-4 text-xs text-white/60">
       <span>Scene: {{ message.visual_snapshot_meta?.scene_path || '—' }}</span>
       <span *ngIf="message.visual_snapshot_meta?.timestamp">Time: {{ (message.visual_snapshot_meta.timestamp * 1000) | date:'short' }}</span>
     </div>
   </div>
 
-  <!-- Thought Process Section - Always visible for assistant messages -->
-  <div *ngIf="message.thought_process && message.thought_process.length > 0" class="mt-4 p-4 bg-purple-600/15 rounded-lg border-2 border-purple-600/40">
-    <div class="flex items-center gap-2 mb-3 font-semibold text-white/90">
-      <span class="text-lg">💭</span>
-      <span class="text-sm">Agent Thought Process</span>
-      <span class="text-xs text-purple-400 ml-auto">{{ message.thought_process.length }} steps</span>
-    </div>
-    <div class="flex flex-col gap-3">
-      <div *ngFor="let thought of message.thought_process" class="bg-black/30 p-3 rounded-md border-l-4 border-purple-500/70 hover:bg-black/40 transition-colors">
-        <div class="text-xs font-bold text-purple-400 mb-1.5">Step {{ thought.step_number }}</div>
-        <div class="text-sm text-white/95 mb-1.5 font-medium">{{ thought.description }}</div>
-        <div class="text-sm text-white/70 italic">{{ thought.reasoning }}</div>
+  <!-- Thought Process Section - Compact Design -->
+  <div *ngIf="message.thought_process && message.thought_process.length > 0" class="mt-3">
+    <div class="flex flex-col gap-2">
+      <div *ngFor="let thought of message.thought_process" class="bg-[#1a1a1a] rounded-lg p-3 border border-white/10 hover:border-white/20 transition-colors">
+        <div class="text-xs text-purple-400/80 mb-1">Step {{ thought.step_number }}</div>
+        <div class="text-sm text-white/90 mb-1">{{ thought.description }}</div>
+        <div class="text-xs text-white/60 italic">{{ thought.reasoning }}</div>
       </div>
     </div>
   </div>
 
   <!-- Context Information Section -->
-  <div *ngIf="message.context_used && contextExpanded" class="mt-4 p-4 bg-blue-500/15 rounded-lg border-2 border-blue-500/40 animate-fade-in">
-    <div class="flex items-center gap-2 mb-3 font-semibold text-white/90">
-      <span class="text-lg">📚</span>
-      <span class="text-sm">Context Used</span>
+  <div *ngIf="message.context_used && contextExpanded" class="mt-3 bg-[#1a1a1a] rounded-lg p-4 border border-blue-500/30 animate-fade-in">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="text-base">📚</span>
+      <span class="text-xs font-medium text-white/80">Context Used</span>
     </div>
     <div class="flex flex-col gap-2">
-      <div class="flex items-start gap-2 text-sm">
-        <span class="font-semibold text-blue-500 min-w-[140px]">Godot Docs:</span>
-        <span class="text-white/80">{{ message.context_used.godot_docs_used ? '✓ Used' : '✗ Not used' }}</span>
+      <div class="flex items-start gap-2 text-xs">
+        <span class="font-medium text-blue-400 min-w-[120px]">Godot Docs:</span>
+        <span class="text-white/70">{{ message.context_used.godot_docs_used ? '✓ Used' : '✗ Not used' }}</span>
       </div>
-      <div class="flex items-start gap-2 text-sm">
-        <span class="font-semibold text-blue-500 min-w-[140px]">Previous Messages:</span>
-        <span class="text-white/80">{{ message.context_used.previous_messages_count }}</span>
+      <div class="flex items-start gap-2 text-xs">
+        <span class="font-medium text-blue-400 min-w-[120px]">Previous Messages:</span>
+        <span class="text-white/70">{{ message.context_used.previous_messages_count }}</span>
       </div>
-      <div class="flex items-start gap-2 text-sm">
-        <span class="font-semibold text-blue-500 min-w-[140px]">Context Size:</span>
-        <span class="text-white/80">{{ (message.context_used.total_context_size / 1024).toFixed(2) }} KB</span>
+      <div class="flex items-start gap-2 text-xs">
+        <span class="font-medium text-blue-400 min-w-[120px]">Context Size:</span>
+        <span class="text-white/70">{{ (message.context_used.total_context_size / 1024).toFixed(2) }} KB</span>
       </div>
-      <div class="flex items-start gap-2 text-sm">
-        <span class="font-semibold text-blue-500 min-w-[140px]">Visual Analysis:</span>
-        <span class="text-white/80">{{ message.context_used.visual_analysis_used ? '✓ Used' : '✗ Not used' }}</span>
+      <div class="flex items-start gap-2 text-xs">
+        <span class="font-medium text-blue-400 min-w-[120px]">Visual Analysis:</span>
+        <span class="text-white/70">{{ message.context_used.visual_analysis_used ? '✓ Used' : '✗ Not used' }}</span>
       </div>
-      <div *ngIf="message.context_used.project_files_referenced.length > 0" class="flex items-start gap-2 text-sm">
-        <span class="font-semibold text-blue-500 min-w-[140px]">Files Referenced:</span>
+      <div *ngIf="message.context_used.project_files_referenced.length > 0" class="flex items-start gap-2 text-xs">
+        <span class="font-medium text-blue-400 min-w-[120px]">Files Referenced:</span>
         <div class="flex flex-col gap-1 mt-1">
-          <div *ngFor="let file of message.context_used.project_files_referenced" class="text-sm text-white/80 px-2.5 py-1.5 bg-black/30 rounded border-l-2 border-blue-500/50">
+          <div *ngFor="let file of message.context_used.project_files_referenced" class="text-xs text-white/70 px-2 py-1 bg-black/30 rounded border-l-2 border-blue-500/50">
             📄 {{ file }}
           </div>
         </div>
@@ -108,40 +107,66 @@
     </div>
   </div>
 
-  <!-- Tool Calls Section -->
-  <div *ngIf="message.tool_calls && message.tool_calls.length > 0" class="mt-4 p-4 bg-amber-500/12 rounded-lg border border-amber-500/35">
-    <div class="flex items-center gap-2 mb-3 font-semibold text-white/90">
-      <span class="text-lg">🛠️</span>
-      <span class="text-sm">Tool Calls</span>
-    </div>
+  <!-- Tool Calls Section - Compact Card Design -->
+  <div *ngIf="message.tool_calls && message.tool_calls.length > 0" class="mt-3">
     <div class="flex flex-col gap-2">
-      <div *ngFor="let tc of message.tool_calls; let i = index" class="text-sm text-white/85 bg-black/25 p-3 rounded border-l-2 border-amber-500/50">
-        <div class="font-semibold text-amber-400">{{ i + 1 }}. {{ tc.function.name }}</div>
-        <pre class="text-white/80 whitespace-pre-wrap break-words text-xs mt-1">{{ tc.function.arguments }}</pre>
+      <div *ngFor="let tc of message.tool_calls; let i = index"
+           class="bg-[#1a1a1a] rounded-lg p-3 border border-white/10 hover:border-white/20 transition-colors">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-base">{{ getToolIcon(tc.function.name) }}</span>
+          <span class="text-xs font-medium text-white/90">{{ formatToolName(tc.function.name) }}</span>
+          <span class="ml-auto">
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-green-500/10 border border-green-500/30">
+              <span class="text-xs text-green-400">●</span>
+            </span>
+          </span>
+        </div>
+        <div class="text-xs text-white/60 font-mono bg-black/30 rounded p-2 border border-white/5">
+          {{ formatToolArguments(tc.function.arguments) }}
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Metrics Section -->
+  <!-- Metrics Section - Compact Design -->
   <ng-container *ngIf="message.metrics as m">
-    <div class="mt-4 p-4 bg-slate-500/12 rounded-lg border border-slate-500/35">
-      <div class="flex items-center gap-2 mb-3 font-semibold text-white/90">
-        <span class="text-lg">📊</span>
-        <span class="text-sm">Metrics</span>
+    <div class="mt-3 bg-[#1a1a1a] rounded-lg p-4 border border-white/10">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-base">📊</span>
+        <span class="text-xs font-medium text-white/80">API Metrics</span>
+        <span *ngIf="m.cost_estimate_usd != null && m.cost_estimate_usd > 0" class="ml-auto inline-flex items-center gap-1 px-2 py-1 bg-green-500/10 border border-green-500/30 rounded-md">
+          <span class="text-xs">💰</span>
+          <span class="text-xs text-green-400 font-medium">${{ m.cost_estimate_usd!.toFixed(4) }}</span>
+        </span>
       </div>
-      <div class="grid grid-cols-2 gap-2 text-sm">
-        <div class="text-white/80">Input tokens: <span class="font-semibold">{{ m.input_tokens }}</span></div>
-        <div class="text-white/80">Output tokens: <span class="font-semibold">{{ m.output_tokens }}</span></div>
-        <div class="text-white/80">Total tokens: <span class="font-semibold">{{ m.total_tokens }}</span></div>
-        <div class="text-white/80">Latency: <span class="font-semibold">{{ m.latency_ms }} ms</span></div>
-        <div *ngIf="m.cost_estimate_usd != null" class="text-white/80">Cost: <span class="font-semibold">${{ m.cost_estimate_usd!.toFixed(4) }}</span></div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="bg-blue-500/5 border border-blue-400/10 rounded p-2">
+          <div class="text-blue-300/60 text-[10px] mb-0.5">Input Tokens</div>
+          <div class="text-blue-400 font-semibold">{{ m.input_tokens | number }}</div>
+        </div>
+        <div class="bg-purple-500/5 border border-purple-400/10 rounded p-2">
+          <div class="text-purple-300/60 text-[10px] mb-0.5">Output Tokens</div>
+          <div class="text-purple-400 font-semibold">{{ m.output_tokens | number }}</div>
+        </div>
+        <div class="bg-cyan-500/5 border border-cyan-400/10 rounded p-2">
+          <div class="text-cyan-300/60 text-[10px] mb-0.5">Total Tokens</div>
+          <div class="text-cyan-400 font-semibold">{{ m.total_tokens | number }}</div>
+        </div>
+        <div class="bg-amber-500/5 border border-amber-400/10 rounded p-2">
+          <div class="text-amber-300/60 text-[10px] mb-0.5">Latency</div>
+          <div class="text-amber-400 font-semibold">{{ m.latency_ms }} ms</div>
+        </div>
       </div>
       <ng-container *ngIf="m.tool_call_times as tct">
-        <div *ngIf="tct.length" class="mt-2">
-          <div class="text-white/80 text-sm mb-1">Tool timings:</div>
-          <div class="flex flex-col gap-1">
-            <div *ngFor="let t of tct" class="text-xs text-white/75 bg-black/25 rounded px-2 py-1">
-              ⏱️ {{ t.name }} — {{ t.duration_ms }} ms
+        <div *ngIf="tct.length" class="mt-3 pt-3 border-t border-white/5">
+          <div class="text-white/70 text-xs font-medium mb-2 flex items-center gap-1">
+            <span>⏱️</span>
+            <span>Tool Timings</span>
+          </div>
+          <div class="grid grid-cols-1 gap-1.5">
+            <div *ngFor="let t of tct" class="flex items-center justify-between text-xs bg-indigo-500/5 border border-indigo-400/10 rounded px-2 py-1.5">
+              <span class="text-indigo-300/80 font-medium">{{ t.name }}</span>
+              <span class="text-indigo-400 font-semibold">{{ t.duration_ms }} ms</span>
             </div>
           </div>
         </div>

@@ -32,6 +32,30 @@
   </div>
 
   <div *ngIf="session" class="flex flex-col flex-1 min-h-0 overflow-hidden">
+    <!-- Session Stats Header -->
+    <div class="bg-gradient-to-r from-black/40 to-black/30 border-b-2 border-white/10 px-6 py-3.5 flex items-center justify-between flex-shrink-0 backdrop-blur-sm">
+      <div class="flex items-center gap-5 text-sm">
+        <span class="flex items-center gap-2 text-white/80 hover:text-white/95 transition-colors">
+          <span class="text-lg">💬</span>
+          <span class="font-semibold">{{ getUserMessageCount(session) }}</span>
+          <span class="text-xs text-white/60">messages</span>
+        </span>
+        <span class="flex items-center gap-2 text-white/80 hover:text-white/95 transition-colors" *ngIf="session.metadata.total_tokens_used > 0">
+          <span class="text-lg">🔢</span>
+          <span class="font-semibold">{{ session.metadata.total_tokens_used | number }}</span>
+          <span class="text-xs text-white/60">tokens</span>
+        </span>
+        <span class="inline-flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-green-500/20 to-emerald-500/20 border border-green-400/40 rounded-lg shadow-lg shadow-green-500/10 hover:shadow-green-500/20 transition-all" *ngIf="session.metadata.total_cost_usd && session.metadata.total_cost_usd > 0">
+          <span class="text-base">💰</span>
+          <span class="font-black text-green-400 text-base tracking-wide">${{ session.metadata.total_cost_usd.toFixed(4) }}</span>
+          <span class="text-xs text-green-300/70">session cost</span>
+        </span>
+      </div>
+      <div class="text-xs text-white/50 font-medium">
+        Session: <span class="text-white/70">{{ session.title }}</span>
+      </div>
+    </div>
+
     <!-- Messages Container -->
     <div class="flex-1 overflow-y-auto overflow-x-hidden p-6 scroll-smooth min-h-0" #messagesContainer (scroll)="onScroll()">
       <div *ngIf="filteredMessages(session).length === 0" class="flex flex-col items-center justify-center h-full gap-4">

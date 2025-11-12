@@ -96,8 +96,6 @@ EDITOR / SELECTION / RUN
    {{"action": "play", "mode": "current"}}  or  {{"action": "play", "mode": "custom", "path": "res://Level1.tscn"}}
 13. add_command_palette_command: Register a custom command in the editor palette
    {{"action": "add_command_palette_command", "display_name": "Center on Player", "key": "center_on_player", "action_to_execute": "focus_node", "payload": {{"path": "Root/Player"}}}}
-14. capture_screenshot: Capture and save a screenshot of the current scene to .godoty/screenshots/
-   {{"action": "capture_screenshot", "filename": "optional_custom_name.png"}}
 
 SEARCH (auto-selection/focus optional)
 15. search_nodes_by_type: Find nodes by type
@@ -130,6 +128,8 @@ DEBUG
    {{"action": "get_debug_output", "limit": 200}}
 26. clear_debug_output: Clear captured debug buffer
    {{"action": "clear_debug_output"}}
+27. capture_game_screenshot: Capture a screenshot of the running game (must be playing)
+   {{"action": "capture_game_screenshot", "filename": "optional_custom_name.png", "wait_frames": 3}}
 "#;
 
         let system_prompt = format!(

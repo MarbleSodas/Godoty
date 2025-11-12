@@ -22,7 +22,7 @@ impl Default for GuardrailConfig {
         Self {
             max_iterations: 10,
             max_tokens_per_request: 10000,
-            max_commands_per_request: 20,
+            max_commands_per_request: 1, // Changed to 1 for iterative execution
             rate_limit_requests_per_min: 30,
             enable_command_validation: true,
             allowed_command_types: vec![
@@ -161,12 +161,12 @@ impl Guardrails {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
-        // Check command count
+        // Check command count - now just a warning since we execute iteratively
+        // max_commands_per_request is set to 1 for iterative execution
         if commands.len() > self.config.max_commands_per_request as usize {
-            errors.push(format!(
-                "Too many commands: {} > {}",
-                commands.len(),
-                self.config.max_commands_per_request
+            warnings.push(format!(
+                "Note: {} commands provided, but iterative execution processes one at a time",
+                commands.len()
             ));
         }
 

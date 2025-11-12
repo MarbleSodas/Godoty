@@ -3,8 +3,6 @@ extends Node
 var editor_plugin: EditorPlugin
 var debugger_plugin: EditorDebuggerPlugin
 
-var inspector_plugin: Node
-
 func execute_command(command: Dictionary):
 	var action = command.get("action", "")
 
@@ -25,17 +23,9 @@ func execute_command(command: Dictionary):
 			return _inspect_scene_file(command)
 		"get_current_scene_detailed":
 			return _get_current_scene_detailed(command)
-		# Visual context commands
-		"capture_visual_context":
-			return _capture_visual_context(command)
-		"get_visual_snapshot":
-			return _get_visual_snapshot(command)
-		"capture_screenshot":
-			return _capture_screenshot(command)
-		"enable_auto_visual_capture":
-			return _enable_auto_visual_capture(command)
-		"disable_auto_visual_capture":
-			return _disable_auto_visual_capture(command)
+		# Debug screenshot command
+		"capture_game_screenshot":
+			return await _capture_game_screenshot(command)
 		# New editor integration commands (EditorInterface / CommandPalette)
 		"select_nodes":
 			return _select_nodes(command)
@@ -928,55 +918,74 @@ func _stop_debug_capture(command: Dictionary) -> Dictionary:
 		return {"status": "success", "message": "Debug capture disabled"}
 	return {"status": "error", "message": "Debugger plugin not available"}
 
-# === Visual capture commands ===
-func _capture_visual_context(command: Dictionary) -> Dictionary:
-	if inspector_plugin and inspector_plugin.has_method("capture_snapshot"):
-		var meta := command.get("metadata", {})
-		var data = inspector_plugin.call("capture_snapshot", "manual", meta)
-		return {"status": "success", "message": "Visual snapshot captured", "data": data}
-	return {"status": "error", "message": "Inspector plugin not available"}
+# === Debug screenshot command ===
+func _capture_game_screenshot(command: Dictionary) -> Dictionary:
+	# Check if game is running by checking if we have an active debugger session
+	var editor_interface = editor_plugin.get_editor_interface()
+	if not editor_interface.is_playing_scene():
+		return {"status": "error", "message": "No game is currently running. Use 'play' command first."}
 
-func _get_visual_snapshot(command: Dictionary) -> Dictionary:
-	if inspector_plugin and inspector_plugin.has_method("get_last_snapshot"):
-		var data = inspector_plugin.call("get_last_snapshot")
-		return {"status": "success", "message": "Last visual snapshot", "data": data}
-	return {"status": "error", "message": "Inspector plugin not available"}
+	# Wait a moment for the game to render
+	var wait_frames = command.get("wait_frames", 3)
+	for i in range(wait_frames):
+		await editor_plugin.get_tree().process_frame
 
-func _capture_screenshot(command: Dictionary) -> Dictionary:
-	if not inspector_plugin or not inspector_plugin.has_method("capture_snapshot"):
-		return {"status": "error", "message": "Inspector plugin not available"}
+	# Capture from the running game's viewport
+	# The game runs in a separate window, but we can access its viewport through the tree
+	var game_viewport: Viewport = null
 
-	# Capture the screenshot
-	var snapshot_data = inspector_plugin.call("capture_snapshot", "orchestrator_request", {})
-	var img_b64 = snapshot_data.get("image_b64", "")
+	# Try to get the game viewport from the running scene tree
+	# When a game is running, it's in a separate SceneTree, but we can access it through the debugger
+	# For now, we'll capture the main viewport which should show the game when it's running
+	var root = editor_plugin.get_tree().root
+	if root:
+		# Get the last child which is typically the running game window
+		var child_count = root.get_child_count()
+		if child_count > 0:
+			# The running game is usually the last window
+			var last_window = root.get_child(child_count - 1)
+			if last_window is Window:
+				game_viewport = last_window.get_viewport()
 
-	if img_b64.is_empty():
-		return {"status": "error", "message": "Failed to capture screenshot"}
+	if not game_viewport:
+		# Fallback: try to get viewport from root
+		game_viewport = root.get_viewport() if root else null
+
+	if not game_viewport:
+		return {"status": "error", "message": "Could not access game viewport"}
+
+	# Capture the viewport texture
+	var tex := game_viewport.get_texture()
+	if not tex:
+		return {"status": "error", "message": "Failed to get viewport texture"}
+
+	var image: Image = tex.get_image()
+	if not image:
+		return {"status": "error", "message": "Failed to get image from texture"}
+
+	var size = image.get_size()
+	var bytes: PackedByteArray = image.save_png_to_buffer()
+	var img_b64 = Marshalls.raw_to_base64(bytes)
 
 	# Get project path
 	var project_path = ProjectSettings.globalize_path("res://")
-	var screenshots_dir = project_path.path_join(".godoty").path_join("screenshots")
+	var screenshots_dir = project_path.path_join(".godoty").path_join("screenshots").path_join("game")
 
 	# Create directory if it doesn't exist
-	var dir = DirAccess.open(project_path)
-	if not dir:
-		return {"status": "error", "message": "Failed to access project directory"}
-
 	if not DirAccess.dir_exists_absolute(screenshots_dir):
 		var err = DirAccess.make_dir_recursive_absolute(screenshots_dir)
 		if err != OK:
-			return {"status": "error", "message": "Failed to create screenshots directory: " + str(err)}
+			return {"status": "error", "message": "Failed to create game screenshots directory: " + str(err)}
 
 	# Generate filename with timestamp
 	var timestamp = Time.get_datetime_string_from_system().replace(":", "-")
-	var filename = command.get("filename", "screenshot_%s.png" % timestamp)
+	var filename = command.get("filename", "game_%s.png" % timestamp)
 	if not filename.ends_with(".png"):
 		filename += ".png"
 
 	var filepath = screenshots_dir.path_join(filename)
 
-	# Decode base64 and save to file
-	var bytes = Marshalls.base64_to_raw(img_b64)
+	# Save to file
 	var file = FileAccess.open(filepath, FileAccess.WRITE)
 	if not file:
 		return {"status": "error", "message": "Failed to open file for writing: " + filepath}
@@ -989,26 +998,16 @@ func _capture_screenshot(command: Dictionary) -> Dictionary:
 
 	return {
 		"status": "success",
-		"message": "Screenshot saved successfully",
+		"message": "Game screenshot captured successfully",
 		"data": {
 			"filepath": relative_path,
 			"absolute_path": filepath,
-			"size": snapshot_data.get("meta", {}).get("size", {}),
-			"timestamp": timestamp
+			"size": {"w": size.x, "h": size.y},
+			"timestamp": timestamp,
+			"image_b64": img_b64,
+			"type": "game_debug"
 		}
 	}
-
-func _enable_auto_visual_capture(command: Dictionary) -> Dictionary:
-	if inspector_plugin and inspector_plugin.has_method("enable_auto_capture"):
-		inspector_plugin.call("enable_auto_capture")
-		return {"status": "success", "message": "Auto visual capture enabled"}
-	return {"status": "error", "message": "Inspector plugin not available"}
-
-func _disable_auto_visual_capture(command: Dictionary) -> Dictionary:
-	if inspector_plugin and inspector_plugin.has_method("disable_auto_capture"):
-		inspector_plugin.call("disable_auto_capture")
-		return {"status": "success", "message": "Auto visual capture disabled"}
-	return {"status": "error", "message": "Inspector plugin not available"}
 
 func _clear_debug_output(command: Dictionary) -> Dictionary:
 	if debugger_plugin:

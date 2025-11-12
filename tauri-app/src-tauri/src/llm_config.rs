@@ -25,6 +25,9 @@ pub struct ModelSelection {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentLlmConfig {
     pub agents: HashMap<AgentType, ModelSelection>,
+    /// Enable tool calling mode for orchestrator (allows direct MCP tool access)
+    #[serde(default)]
+    pub enable_tool_calling: bool,
 }
 
 impl Default for AgentLlmConfig {
@@ -49,7 +52,10 @@ impl Default for AgentLlmConfig {
         );
 
 
-        Self { agents }
+        Self {
+            agents,
+            enable_tool_calling: true, // Enable by default for better context gathering
+        }
     }
 }
 

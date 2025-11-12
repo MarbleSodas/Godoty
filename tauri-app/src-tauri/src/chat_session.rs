@@ -149,6 +149,11 @@ impl ChatSession {
         self.metadata.total_cost_usd += cost;
     }
 
+    /// Update session tokens by adding message tokens
+    pub fn add_message_tokens(&mut self, tokens: u32) {
+        self.metadata.total_tokens_used += tokens as usize;
+    }
+
     /// Update the session title
     pub fn update_title(&mut self, new_title: String) {
         self.title = new_title;

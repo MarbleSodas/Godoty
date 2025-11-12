@@ -1,4 +1,5 @@
 use crate::llm_config::{AgentLlmConfig, AgentType, ApiKeyStore, LlmProvider, ModelSelection};
+use crate::mcp_tools::{ToolDefinition, ToolCall};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -22,6 +23,18 @@ pub struct LlmUsage {
 pub struct LlmResponse {
     pub content: String,
     pub usage: Option<LlmUsage>,
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+/// Chat message that supports tool calls and tool results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageWithTools {
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// Generic trait for LLM clients
@@ -36,7 +49,27 @@ pub trait LlmClient: Send + Sync {
         Ok(LlmResponse {
             content,
             usage: None,
+            tool_calls: None,
         })
+    }
+
+    /// Generate response with tool calling support
+    async fn generate_response_with_tools(
+        &self,
+        messages: Vec<ChatMessageWithTools>,
+        _tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<LlmResponse> {
+        // Default implementation falls back to simple generation
+        let system_msg = messages.iter()
+            .find(|m| m.role == "system")
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let user_msg = messages.iter()
+            .filter(|m| m.role == "user")
+            .next_back()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        self.generate_response_with_usage(&system_msg, &user_msg).await
     }
 
     /// Optional: streaming with tool support. Default falls back to non-streaming
@@ -204,19 +237,183 @@ impl LlmClient for OpenRouterClient {
 
             // Log usage information if available
             if let Some(ref usage_info) = usage {
-                tracing::debug!(
+                if let Some(cost) = usage_info.cost {
+                    tracing::info!(
+                        model = %self.model,
+                        prompt_tokens = usage_info.prompt_tokens,
+                        completion_tokens = usage_info.completion_tokens,
+                        total_tokens = usage_info.total_tokens,
+                        cost_usd = cost,
+                        "OpenRouter API usage tracked with cost"
+                    );
+                } else {
+                    tracing::warn!(
+                        model = %self.model,
+                        prompt_tokens = usage_info.prompt_tokens,
+                        completion_tokens = usage_info.completion_tokens,
+                        total_tokens = usage_info.total_tokens,
+                        "OpenRouter API usage tracked but NO COST returned - ensure 'usage.include=true' is set"
+                    );
+                }
+            } else {
+                tracing::warn!(
                     model = %self.model,
-                    prompt_tokens = usage_info.prompt_tokens,
-                    completion_tokens = usage_info.completion_tokens,
-                    total_tokens = usage_info.total_tokens,
-                    cost_usd = ?usage_info.cost,
-                    "LLM usage tracked"
+                    "OpenRouter API response contained NO USAGE information"
                 );
             }
 
             Ok(LlmResponse {
                 content: choice.message.content.clone(),
                 usage,
+                tool_calls: None,
+            })
+        } else {
+            Err(anyhow::anyhow!("No response from LLM"))
+        }
+    }
+
+    async fn generate_response_with_tools(
+        &self,
+        messages: Vec<ChatMessageWithTools>,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<LlmResponse> {
+        #[derive(Serialize)]
+        struct UsageConfig {
+            include: bool,
+        }
+
+        #[derive(Serialize)]
+        struct ChatRequestWithTools {
+            model: String,
+            messages: Vec<ChatMessageWithTools>,
+            temperature: f32,
+            max_tokens: i32,
+            usage: UsageConfig,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            tools: Option<Vec<ToolDefinition>>,
+        }
+
+        #[derive(Deserialize)]
+        struct ApiUsage {
+            prompt_tokens: u32,
+            completion_tokens: u32,
+            total_tokens: u32,
+            #[serde(default)]
+            cost: Option<f64>,
+        }
+
+        #[derive(Deserialize)]
+        struct ChatResponseWithTools {
+            choices: Vec<ChoiceWithTools>,
+            #[serde(default)]
+            usage: Option<ApiUsage>,
+        }
+
+        #[derive(Deserialize)]
+        struct ChoiceWithTools {
+            message: MessageWithTools,
+        }
+
+        #[derive(Deserialize)]
+        struct MessageWithTools {
+            #[allow(dead_code)]
+            role: String,
+            content: Option<String>,
+            #[serde(default)]
+            tool_calls: Option<Vec<ToolCall>>,
+        }
+
+        tracing::debug!(
+            provider = "OpenRouter",
+            model = %self.model,
+            endpoint = %self.endpoint(),
+            message_count = messages.len(),
+            has_tools = tools.is_some(),
+            tool_count = tools.as_ref().map(|t| t.len()).unwrap_or(0),
+            "LLM call with tools starting"
+        );
+
+        let request = ChatRequestWithTools {
+            model: self.model.clone(),
+            messages,
+            temperature: 0.7,
+            max_tokens: 8192,
+            usage: UsageConfig { include: true },
+            tools,
+        };
+
+        let response = self
+            .client
+            .post(self.endpoint())
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://github.com/godoty/godoty")
+            .header("X-Title", "Godoty AI Assistant")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "LLM API request failed: {} - {}",
+                status,
+                error_text
+            ));
+        }
+
+        let response_text = response.text().await?;
+        let chat_response: ChatResponseWithTools = serde_json::from_str(&response_text).map_err(|e| {
+            let preview = response_text.chars().take(500).collect::<String>();
+            anyhow::anyhow!(
+                "Failed to parse LLM chat response JSON: {}. Raw preview: {}",
+                e,
+                preview
+            )
+        })?;
+
+        if let Some(choice) = chat_response.choices.first() {
+            let usage = chat_response.usage.map(|u| LlmUsage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                cost: u.cost,
+            });
+
+            if let Some(ref usage_info) = usage {
+                if let Some(cost) = usage_info.cost {
+                    tracing::info!(
+                        model = %self.model,
+                        prompt_tokens = usage_info.prompt_tokens,
+                        completion_tokens = usage_info.completion_tokens,
+                        total_tokens = usage_info.total_tokens,
+                        cost_usd = cost,
+                        has_tool_calls = choice.message.tool_calls.is_some(),
+                        "OpenRouter API usage tracked with cost (tool calling mode)"
+                    );
+                } else {
+                    tracing::warn!(
+                        model = %self.model,
+                        prompt_tokens = usage_info.prompt_tokens,
+                        completion_tokens = usage_info.completion_tokens,
+                        total_tokens = usage_info.total_tokens,
+                        has_tool_calls = choice.message.tool_calls.is_some(),
+                        "OpenRouter API usage tracked but NO COST returned (tool calling mode)"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    model = %self.model,
+                    has_tool_calls = choice.message.tool_calls.is_some(),
+                    "OpenRouter API response contained NO USAGE information (tool calling mode)"
+                );
+            }
+
+            Ok(LlmResponse {
+                content: choice.message.content.clone().unwrap_or_default(),
+                usage,
+                tool_calls: choice.message.tool_calls.clone(),
             })
         } else {
             Err(anyhow::anyhow!("No response from LLM"))

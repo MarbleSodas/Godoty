@@ -56,17 +56,11 @@ export class SessionManagerComponent {
     return date.toLocaleDateString();
   }
 
-  getSessionPreview(session: ChatSession): string {
-    const msgs = (session.messages || []).filter(m => !m.sessionId || m.sessionId === session.id);
-    if (msgs.length === 0) {
-      return 'No messages yet';
-    }
-    const lastMessage = msgs[msgs.length - 1];
-    return lastMessage.content.substring(0, 60) + (lastMessage.content.length > 60 ? '...' : '');
-  }
-
   getFilteredCount(session: ChatSession): number {
-    return (session.messages || []).filter(m => !m.sessionId || m.sessionId === session.id).length;
+    // Only count user messages
+    return (session.messages || [])
+      .filter(m => (!m.sessionId || m.sessionId === session.id) && m.role === 'user')
+      .length;
   }
 
   trackBySessionId(_index: number, s: ChatSession): string {

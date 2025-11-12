@@ -141,8 +141,11 @@ impl ContextEngine {
         // 3. Search project index + enrich with Vector DB (RAG) if available
         let mut project_context = self.search_project_index(&context_query, project_index);
         if let Some(rag) = self.fetch_rag_for_project(&project_index.project_path, &context_query).await {
+            tracing::info!("Enriching context with RAG vector search results");
             project_context.push_str("\n\n# Project Vector Index (RAG) Results\n");
             project_context.push_str(&rag);
+        } else {
+            tracing::debug!("No RAG results available for context enrichment");
         }
 
         // 4. Build chat history context
@@ -318,7 +321,7 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
     }
 
     /// Fetch from Context7 API (via configurable gateway) and merge with bundled docs
-    async fn fetch_from_context7(&self, query: &str) -> Result<String> {
+    pub async fn fetch_from_context7(&self, query: &str) -> Result<String> {
         // Derive a focused topic from the query
         fn derive_topic(q: &str) -> String {
             let candidates: Vec<&str> = q
@@ -465,121 +468,194 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
         let q = query.to_lowercase();
         let mut out = String::new();
 
-        // Scenes with matching name/root type or nodes
-        out.push_str("## Relevant Scenes\n");
-        for scene in &index.scenes {
-            let scene_name_match = scene.name.to_lowercase().contains(&q);
-            let root_type_match = scene
-                .root_type
-                .as_ref()
-                .map(|t| t.to_lowercase().contains(&q))
-                .unwrap_or(false);
-
-            // Collect nodes that match by name/type/path
-            let mut matching_nodes = Vec::new();
-            for n in &scene.nodes {
-                if n.name.to_lowercase().contains(&q)
-                    || n.node_type.to_lowercase().contains(&q)
-                    || n.path.to_lowercase().contains(&q)
-                {
-                    matching_nodes.push(n);
-                }
-            }
-
-            if scene_name_match || root_type_match || !matching_nodes.is_empty() {
-                out.push_str(&format!(
-                    "- {} (root: {}) • path: {}\n",
-                    scene.name,
-                    scene
-                        .root_type
-                        .as_ref()
-                        .map(|s| s.as_str())
-                        .unwrap_or("Unknown"),
-                    scene.path
-                ));
-
-                if !matching_nodes.is_empty() {
-                    out.push_str("  Nodes matching:\n");
-                    for n in matching_nodes.iter().take(5) {
-                        out.push_str(&format!("  - {} ({}) at {}\n", n.name, n.node_type, n.path));
-                    }
-                    if matching_nodes.len() > 5 {
-                        out.push_str(&format!("  ... and {} more\n", matching_nodes.len() - 5));
-                    }
-                }
-            }
-        }
-
-        // Scripts with matching name/classes/functions/content
-        out.push_str("\n## Relevant Scripts\n");
-        for s in &index.scripts {
-            let name_match = s.name.to_lowercase().contains(&q) || s.path.to_lowercase().contains(&q);
-            let matched_classes: Vec<&String> = s
-                .classes
-                .iter()
-                .filter(|c| c.to_lowercase().contains(&q))
-                .collect();
-            let matched_funcs: Vec<&String> = s
-                .functions
-                .iter()
-                .filter(|f| f.to_lowercase().contains(&q))
-                .collect();
-
-            let content_match = s.content_preview.to_lowercase().contains(&q);
-
-            if name_match || !matched_classes.is_empty() || !matched_funcs.is_empty() || content_match {
-                out.push_str(&format!("- {} • path: {}\n", s.name, s.path));
-                if !matched_classes.is_empty() {
-                    let list = matched_classes
-                        .iter()
-                        .take(5)
-                        .map(|c| c.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    out.push_str(&format!("  Classes: {}\n", list));
-                    if matched_classes.len() > 5 {
-                        out.push_str(&format!("  ... and {} more\n", matched_classes.len() - 5));
-                    }
-                }
-                if !matched_funcs.is_empty() {
-                    let list = matched_funcs
-                        .iter()
-                        .take(8)
-                        .map(|f| f.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    out.push_str(&format!("  Functions: {}\n", list));
-                    if matched_funcs.len() > 8 {
-                        out.push_str(&format!("  ... and {} more\n", matched_funcs.len() - 8));
-                    }
-                }
-                if content_match {
-                    let snippet: String = s.content_preview.chars().take(140).collect();
-                    out.push_str(&format!("  Preview: {}\n", snippet.replace('\n', " ")));
-                }
-            }
-        }
-
-        // Resources with matching name/type/path
-        out.push_str("\n## Relevant Resources\n");
-        for r in &index.resources {
-            if r.name.to_lowercase().contains(&q)
-                || r.resource_type.to_lowercase().contains(&q)
-                || r.path.to_lowercase().contains(&q)
-            {
-                out.push_str(&format!(
-                    "- {} ({}) • path: {}\n",
-                    r.name, r.resource_type, r.path
-                ));
-            }
-        }
-
+        // ALWAYS provide comprehensive project structure overview first
+        out.push_str("## Project Structure Overview\n");
         out.push_str(&format!(
-            "\n## Project Summary\n- Total Scenes: {}\n- Total Scripts: {}\n- Total Resources: {}\n",
+            "Total: {} scenes, {} scripts, {} resources\n\n",
             index.scenes.len(),
             index.scripts.len(),
             index.resources.len()
         ));
+
+        // List all scenes (up to 30 to avoid overwhelming context)
+        out.push_str("### All Scenes\n");
+        let scene_limit = 30;
+        for (i, scene) in index.scenes.iter().enumerate() {
+            if i >= scene_limit {
+                out.push_str(&format!("... and {} more scenes\n", index.scenes.len() - scene_limit));
+                break;
+            }
+            out.push_str(&format!(
+                "- {} (root: {}) • {}\n",
+                scene.name,
+                scene.root_type.as_deref().unwrap_or("Unknown"),
+                scene.path
+            ));
+        }
+
+        // List all scripts (up to 40 to avoid overwhelming context)
+        out.push_str("\n### All Scripts\n");
+        let script_limit = 40;
+        for (i, script) in index.scripts.iter().enumerate() {
+            if i >= script_limit {
+                out.push_str(&format!("... and {} more scripts\n", index.scripts.len() - script_limit));
+                break;
+            }
+            let classes_preview = if !script.classes.is_empty() {
+                format!(" [{}]", script.classes.iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("- {}{} • {}\n", script.name, classes_preview, script.path));
+        }
+
+        // List all resources (up to 30 to avoid overwhelming context)
+        out.push_str("\n### All Resources\n");
+        let resource_limit = 30;
+        for (i, resource) in index.resources.iter().enumerate() {
+            if i >= resource_limit {
+                out.push_str(&format!("... and {} more resources\n", index.resources.len() - resource_limit));
+                break;
+            }
+            out.push_str(&format!(
+                "- {} ({}) • {}\n",
+                resource.name, resource.resource_type, resource.path
+            ));
+        }
+
+        // Now add query-specific matches if query is meaningful
+        if !q.trim().is_empty() && q.len() > 2 {
+            out.push_str("\n---\n");
+            out.push_str("## Query-Specific Matches\n");
+            out.push_str(&format!("Searching for: '{}'\n\n", query));
+
+            // Scenes with matching name/root type or nodes
+            let mut found_scenes = false;
+            let mut scenes_section = String::from("### Matching Scenes\n");
+            for scene in &index.scenes {
+                let scene_name_match = scene.name.to_lowercase().contains(&q);
+                let root_type_match = scene
+                    .root_type
+                    .as_ref()
+                    .map(|t| t.to_lowercase().contains(&q))
+                    .unwrap_or(false);
+
+                // Collect nodes that match by name/type/path
+                let mut matching_nodes = Vec::new();
+                for n in &scene.nodes {
+                    if n.name.to_lowercase().contains(&q)
+                        || n.node_type.to_lowercase().contains(&q)
+                        || n.path.to_lowercase().contains(&q)
+                    {
+                        matching_nodes.push(n);
+                    }
+                }
+
+                if scene_name_match || root_type_match || !matching_nodes.is_empty() {
+                    found_scenes = true;
+                    scenes_section.push_str(&format!(
+                        "- {} (root: {}) • path: {}\n",
+                        scene.name,
+                        scene
+                            .root_type
+                            .as_deref()
+                            .unwrap_or("Unknown"),
+                        scene.path
+                    ));
+
+                    if !matching_nodes.is_empty() {
+                        scenes_section.push_str("  Nodes matching:\n");
+                        for n in matching_nodes.iter().take(5) {
+                            scenes_section.push_str(&format!("  - {} ({}) at {}\n", n.name, n.node_type, n.path));
+                        }
+                        if matching_nodes.len() > 5 {
+                            scenes_section.push_str(&format!("  ... and {} more\n", matching_nodes.len() - 5));
+                        }
+                    }
+                }
+            }
+            if found_scenes {
+                out.push_str(&scenes_section);
+            }
+
+            // Scripts with matching name/classes/functions/content
+            let mut found_scripts = false;
+            let mut scripts_section = String::from("\n### Matching Scripts\n");
+            for s in &index.scripts {
+                let name_match = s.name.to_lowercase().contains(&q) || s.path.to_lowercase().contains(&q);
+                let matched_classes: Vec<&String> = s
+                    .classes
+                    .iter()
+                    .filter(|c| c.to_lowercase().contains(&q))
+                    .collect();
+                let matched_funcs: Vec<&String> = s
+                    .functions
+                    .iter()
+                    .filter(|f| f.to_lowercase().contains(&q))
+                    .collect();
+
+                let content_match = s.content_preview.to_lowercase().contains(&q);
+
+                if name_match || !matched_classes.is_empty() || !matched_funcs.is_empty() || content_match {
+                    found_scripts = true;
+                    scripts_section.push_str(&format!("- {} • path: {}\n", s.name, s.path));
+                    if !matched_classes.is_empty() {
+                        let list = matched_classes
+                            .iter()
+                            .take(5)
+                            .map(|c| c.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        scripts_section.push_str(&format!("  Classes: {}\n", list));
+                        if matched_classes.len() > 5 {
+                            scripts_section.push_str(&format!("  ... and {} more\n", matched_classes.len() - 5));
+                        }
+                    }
+                    if !matched_funcs.is_empty() {
+                        let list = matched_funcs
+                            .iter()
+                            .take(8)
+                            .map(|f| f.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        scripts_section.push_str(&format!("  Functions: {}\n", list));
+                        if matched_funcs.len() > 8 {
+                            scripts_section.push_str(&format!("  ... and {} more\n", matched_funcs.len() - 8));
+                        }
+                    }
+                    if content_match {
+                        let snippet: String = s.content_preview.chars().take(140).collect();
+                        scripts_section.push_str(&format!("  Preview: {}\n", snippet.replace('\n', " ")));
+                    }
+                }
+            }
+            if found_scripts {
+                out.push_str(&scripts_section);
+            }
+
+            // Resources with matching name/type/path
+            let mut found_resources = false;
+            let mut resources_section = String::from("\n### Matching Resources\n");
+            for r in &index.resources {
+                if r.name.to_lowercase().contains(&q)
+                    || r.resource_type.to_lowercase().contains(&q)
+                    || r.path.to_lowercase().contains(&q)
+                {
+                    found_resources = true;
+                    resources_section.push_str(&format!(
+                        "- {} ({}) • path: {}\n",
+                        r.name, r.resource_type, r.path
+                    ));
+                }
+            }
+            if found_resources {
+                out.push_str(&resources_section);
+            }
+
+            if !found_scenes && !found_scripts && !found_resources {
+                out.push_str("No specific matches found for this query.\n");
+            }
+        }
 
         out
     }
@@ -587,6 +663,7 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
     async fn fetch_rag_for_project(&self, project_path: &str, query: &str) -> Option<String> {
         // Respect offline mode
         if std::env::var("GODOTY_OFFLINE").ok().as_deref() == Some("1") {
+            tracing::debug!("RAG search skipped: offline mode enabled");
             return None;
         }
         let port: u16 = std::env::var("RAG_PORT")
@@ -599,11 +676,20 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
             "query": query,
             "k": 5
         });
+
+        tracing::debug!(
+            port = port,
+            project_path = project_path,
+            query_preview = %query.chars().take(100).collect::<String>(),
+            "Attempting RAG vector search"
+        );
+
         match self.client.post(url).json(&body).send().await {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
                     Ok(v) => {
                         if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
+                            let result_count = results.len();
                             let mut out = String::new();
                             for r in results.iter().take(5) {
                                 let score = r.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
@@ -612,13 +698,43 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
                                 let snippet: String = content.chars().take(200).collect();
                                 out.push_str(&format!("- {:.3} {}: {}\n", score, source, snippet));
                             }
-                            if out.is_empty() { None } else { Some(out) }
-                        } else { None }
+                            if out.is_empty() {
+                                tracing::info!("RAG search returned no results");
+                                None
+                            } else {
+                                tracing::info!(
+                                    result_count = result_count,
+                                    "RAG search successful - retrieved {} relevant code snippets",
+                                    result_count
+                                );
+                                Some(out)
+                            }
+                        } else {
+                            tracing::warn!("RAG search response missing 'results' field");
+                            None
+                        }
                     }
-                    Err(_) => None,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to parse RAG search response JSON");
+                        None
+                    }
                 }
             }
-            _ => None,
+            Ok(resp) => {
+                tracing::warn!(
+                    status = %resp.status(),
+                    "RAG search request failed with non-success status"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    port = port,
+                    "RAG search request failed - is RAG sidecar running?"
+                );
+                None
+            }
         }
     }
 
@@ -668,7 +784,8 @@ mod tests {
             .await
             .unwrap();
         assert!(ctx.godot_docs.len() > 10);
-        assert!(ctx.project_context.contains("Total Scenes"));
+        // Updated to match new format which includes "Project Structure Overview"
+        assert!(ctx.project_context.contains("Project Structure Overview") || ctx.project_context.contains("Total:"));
         assert!(ctx.context_query.to_lowercase().contains("player"));
 
         let formatted = engine.format_context_for_ai(&ctx);

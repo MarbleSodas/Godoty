@@ -40,12 +40,12 @@
       (click)="handleSelectSession(session.id)"
     >
       <div class="flex-1 min-w-0">
-        <div class="font-semibold text-white/90 mb-1 text-sm truncate">{{ session.title }}</div>
-        <div class="text-xs text-white/60 mb-1 truncate">{{ getSessionPreview(session) }}</div>
-        <div class="flex gap-3 text-xs text-white/50">
+        <div class="font-semibold text-white/90 mb-1.5 text-sm truncate">{{ session.title }}</div>
+        <div class="flex gap-3 text-xs text-white/50 items-center">
           <span>{{ formatDate(session.updated_at) }}</span>
           <span>{{ getFilteredCount(session) }} msgs</span>
-          <span *ngIf="session.metadata.total_cost_usd && session.metadata.total_cost_usd > 0" class="text-green-400 font-semibold">
+          <span *ngIf="session.metadata.total_cost_usd && session.metadata.total_cost_usd > 0"
+                class="inline-flex items-center px-2 py-0.5 rounded bg-green-500/20 border border-green-400/40 text-green-400 font-bold text-[0.7rem]">
             ${{ session.metadata.total_cost_usd.toFixed(4) }}
           </span>
         </div>

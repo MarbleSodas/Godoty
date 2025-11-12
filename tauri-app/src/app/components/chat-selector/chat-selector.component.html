@@ -9,6 +9,8 @@
         </div>
         <div class="session-meta" *ngIf="activeSession">
           <span class="meta-count">{{ activeSession.messages.length }} messages</span>
+          <span class="meta-separator" *ngIf="activeSession.metadata.total_cost_usd && activeSession.metadata.total_cost_usd > 0">•</span>
+          <span class="meta-cost" *ngIf="activeSession.metadata.total_cost_usd && activeSession.metadata.total_cost_usd > 0">\${{ activeSession.metadata.total_cost_usd.toFixed(4) }}</span>
           <span class="meta-separator">•</span>
           <span class="meta-time">{{ formatDate(activeSession.updated_at) }}</span>
         </div>
@@ -46,6 +48,8 @@
           <div class="session-item-preview">{{ getSessionPreview(session) }}</div>
           <div class="session-item-meta">
             <span class="meta-messages">{{ session.messages.length }} msgs</span>
+            <span class="meta-separator" *ngIf="session.metadata.total_cost_usd && session.metadata.total_cost_usd > 0">•</span>
+            <span class="meta-cost" *ngIf="session.metadata.total_cost_usd && session.metadata.total_cost_usd > 0">\${{ session.metadata.total_cost_usd.toFixed(4) }}</span>
             <span class="meta-separator">•</span>
             <span class="meta-time">{{ formatDate(session.updated_at) }}</span>
           </div>
