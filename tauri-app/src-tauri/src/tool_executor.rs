@@ -32,10 +32,19 @@ impl ToolExecutor {
         );
 
         match function_name.as_str() {
-            // Desktop Commander MCP tools
-            "read_file" | "write_file" | "edit_block" | "list_directory" 
-            | "create_directory" | "move_file" | "get_file_info" 
-            | "start_search" | "get_more_search_results" | "stop_search" => {
+            // Desktop Commander MCP tools - File Operations
+            "read_file" | "write_file" | "edit_block" | "list_directory"
+            | "create_directory" | "move_file" | "get_file_info"
+            | "read_multiple_files" => {
+                self.execute_desktop_commander_tool(function_name, args, mcp_client).await
+            }
+            // Desktop Commander MCP tools - Search Operations
+            "start_search" | "get_more_search_results" | "stop_search" => {
+                self.execute_desktop_commander_tool(function_name, args, mcp_client).await
+            }
+            // Desktop Commander MCP tools - Process Management
+            "start_process" | "read_process" | "interact_with_process"
+            | "list_processes" | "kill_process" => {
                 self.execute_desktop_commander_tool(function_name, args, mcp_client).await
             }
             // Context7 HTTP tool

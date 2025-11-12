@@ -246,8 +246,30 @@ impl Guardrails {
             }
             // Editor actions / selection
             "open_scene" => {
-                if cmd.get("path").is_none() {
-                    return Err(anyhow!("Missing required field 'path'"));
+                let path = cmd
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("Missing required field 'path'"))?;
+
+                // Validate path is not empty
+                if path.is_empty() {
+                    return Err(anyhow!("Scene path cannot be empty"));
+                }
+
+                // Validate path is not just a directory
+                if path == "res://" || path == "user://" {
+                    return Err(anyhow!(
+                        "Invalid scene path: '{}' is a directory, not a scene file. Please provide a full path like 'res://MyScene.tscn'",
+                        path
+                    ));
+                }
+
+                // Validate path ends with .tscn
+                if !path.ends_with(".tscn") {
+                    return Err(anyhow!(
+                        "Invalid scene path: '{}' must end with '.tscn'",
+                        path
+                    ));
                 }
             }
             "select_nodes" => {
@@ -280,6 +302,34 @@ impl Guardrails {
                 }
                 if cmd.get("new_name").is_none() {
                     return Err(anyhow!("Missing required field 'new_name'"));
+                }
+            }
+            // Scene inspection
+            "inspect_scene_file" => {
+                let path = cmd
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("Missing required field 'path'"))?;
+
+                // Validate path is not empty
+                if path.is_empty() {
+                    return Err(anyhow!("Scene path cannot be empty"));
+                }
+
+                // Validate path is not just a directory
+                if path == "res://" || path == "user://" {
+                    return Err(anyhow!(
+                        "Invalid scene path: '{}' is a directory, not a scene file. Please provide a full path like 'res://MyScene.tscn'",
+                        path
+                    ));
+                }
+
+                // Validate path ends with .tscn
+                if !path.ends_with(".tscn") {
+                    return Err(anyhow!(
+                        "Invalid scene path: '{}' must end with '.tscn'",
+                        path
+                    ));
                 }
             }
             // Search
@@ -420,5 +470,88 @@ mod tests {
         let res = guard.validate_commands(&cmds).unwrap();
         assert!(!res.valid);
         assert!(res.errors.iter().any(|e| e.contains("Missing required object field 'args'")));
+    }
+
+    // open_scene validation tests
+    #[test]
+    fn validate_open_scene_valid_path_ok() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "open_scene",
+            "path": "res://MainMenu.tscn"
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(res.valid, "expected valid, got errors: {:?}", res.errors);
+    }
+
+    #[test]
+    fn validate_open_scene_empty_path_fails() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "open_scene",
+            "path": ""
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(!res.valid);
+        assert!(res.errors.iter().any(|e| e.contains("Scene path cannot be empty")));
+    }
+
+    #[test]
+    fn validate_open_scene_directory_path_fails() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "open_scene",
+            "path": "res://"
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(!res.valid);
+        assert!(res.errors.iter().any(|e| e.contains("is a directory")));
+    }
+
+    #[test]
+    fn validate_open_scene_no_extension_fails() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "open_scene",
+            "path": "res://MainMenu"
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(!res.valid);
+        assert!(res.errors.iter().any(|e| e.contains("must end with '.tscn'")));
+    }
+
+    #[test]
+    fn validate_open_scene_missing_path_fails() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "open_scene"
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(!res.valid);
+        assert!(res.errors.iter().any(|e| e.contains("Missing required field 'path'")));
+    }
+
+    // inspect_scene_file validation tests
+    #[test]
+    fn validate_inspect_scene_file_valid_path_ok() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "inspect_scene_file",
+            "path": "res://Player.tscn"
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(res.valid, "expected valid, got errors: {:?}", res.errors);
+    }
+
+    #[test]
+    fn validate_inspect_scene_file_directory_path_fails() {
+        let guard = Guardrails::with_defaults();
+        let cmds = vec![json!({
+            "action": "inspect_scene_file",
+            "path": "res://"
+        })];
+        let res = guard.validate_commands(&cmds).unwrap();
+        assert!(!res.valid);
+        assert!(res.errors.iter().any(|e| e.contains("is a directory")));
     }
 }

@@ -82,11 +82,11 @@ export class AgentConfigService {
       agents: {
         [AgentType.Orchestrator]: {
           provider: LlmProvider.OpenRouter,
-          model_name: 'minimax/minimax-m2:free'
+          model_name: 'x-ai/grok-4-fast'
         },
         [AgentType.Researcher]: {
           provider: LlmProvider.OpenRouter,
-          model_name: 'qwen/qwen3-235b-a22b:free'
+          model_name: 'deepseek/deepseek-v3.2-exp'
         }
       }
     };

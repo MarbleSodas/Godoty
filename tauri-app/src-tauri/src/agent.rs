@@ -484,8 +484,9 @@ STRICT SCHEMA RULES:
 
 Generate a JSON array of commands to execute the plan.
 Each command must be a valid JSON object matching the plugin's command schema OR the Desktop Commander MCP command schema.
-- Desktop Commander MCP command shape: {{"action":"desktop_commander","tool": one of ["read_file","write_file","edit_block","create_directory","list_directory","move_file","start_search","get_more_search_results","stop_search","get_file_info"], "args": object}}
+- Desktop Commander MCP command shape: {{"action":"desktop_commander","tool": one of ["read_file","write_file","edit_block","create_directory","list_directory","move_file","start_search","get_more_search_results","stop_search","get_file_info","read_multiple_files","start_process","interact_with_process","read_process","list_processes","kill_process"], "args": object}}
 - Prefer "edit_block" for surgical edits to existing files; "write_file" for new files; use search/directory tools as needed.
+- Use process tools ("start_process", "interact_with_process") for running scripts, validation, or command execution.
 - Keep ALL file/directory paths within the project root shown in context.
 Respond ONLY with the JSON array, no explanations.
 "#,

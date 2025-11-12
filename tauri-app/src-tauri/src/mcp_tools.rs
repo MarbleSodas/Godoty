@@ -34,7 +34,7 @@ pub struct FunctionCall {
 /// Get all available MCP tool definitions
 pub fn get_mcp_tool_definitions() -> Vec<ToolDefinition> {
     vec![
-        // Desktop Commander tools
+        // Desktop Commander - File Operations
         create_read_file_tool(),
         create_write_file_tool(),
         create_edit_block_tool(),
@@ -42,9 +42,17 @@ pub fn get_mcp_tool_definitions() -> Vec<ToolDefinition> {
         create_create_directory_tool(),
         create_move_file_tool(),
         create_get_file_info_tool(),
+        create_read_multiple_files_tool(),
+        // Desktop Commander - Search Operations
         create_start_search_tool(),
         create_get_more_search_results_tool(),
         create_stop_search_tool(),
+        // Desktop Commander - Process Management
+        create_start_process_tool(),
+        create_read_process_tool(),
+        create_interact_with_process_tool(),
+        create_list_processes_tool(),
+        create_kill_process_tool(),
         // Context7 tool
         create_fetch_documentation_tool(),
     ]
@@ -255,6 +263,144 @@ fn create_stop_search_tool() -> ToolDefinition {
                 "type": "object",
                 "properties": {},
                 "required": []
+            }),
+        },
+    }
+}
+
+fn create_read_multiple_files_tool() -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "read_multiple_files".to_string(),
+            description: "Read the contents of multiple files simultaneously".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Array of file paths relative to project root"
+                    }
+                },
+                "required": ["paths"]
+            }),
+        },
+    }
+}
+
+fn create_start_process_tool() -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "start_process".to_string(),
+            description: "Start a new process/command with intelligent state detection. Use for running scripts, commands, or starting interactive processes like Python REPL.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute"
+                    },
+                    "timeout_ms": {
+                        "type": "number",
+                        "description": "Maximum time to wait for command completion in milliseconds (default: 30000)"
+                    },
+                    "shell": {
+                        "type": "string",
+                        "description": "Optional shell to use (e.g., 'powershell', 'cmd', 'bash')"
+                    }
+                },
+                "required": ["command", "timeout_ms"]
+            }),
+        },
+    }
+}
+
+fn create_read_process_tool() -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "read_process".to_string(),
+            description: "Read output from a running process with intelligent completion detection".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pid": {
+                        "type": "number",
+                        "description": "Process ID to read from"
+                    },
+                    "timeout_ms": {
+                        "type": "number",
+                        "description": "Maximum time to wait in milliseconds"
+                    }
+                },
+                "required": ["pid"]
+            }),
+        },
+    }
+}
+
+fn create_interact_with_process_tool() -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "interact_with_process".to_string(),
+            description: "Send input to a running process and receive response. Primary tool for running scripts and interactive commands.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pid": {
+                        "type": "number",
+                        "description": "Process ID to interact with"
+                    },
+                    "input": {
+                        "type": "string",
+                        "description": "Input text to send to the process"
+                    },
+                    "timeout_ms": {
+                        "type": "number",
+                        "description": "Maximum time to wait for response in milliseconds (default: 8000)"
+                    }
+                },
+                "required": ["pid", "input"]
+            }),
+        },
+    }
+}
+
+fn create_list_processes_tool() -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "list_processes".to_string(),
+            description: "List all active terminal sessions/processes started by this agent".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+    }
+}
+
+fn create_kill_process_tool() -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "kill_process".to_string(),
+            description: "Force terminate a running process by PID".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pid": {
+                        "type": "number",
+                        "description": "Process ID to terminate"
+                    }
+                },
+                "required": ["pid"]
             }),
         },
     }

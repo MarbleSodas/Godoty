@@ -34,12 +34,12 @@ impl Default for AgentLlmConfig {
     fn default() -> Self {
         let mut agents = HashMap::new();
 
-        // Default configuration using OpenRouter with free models
+        // Default configuration using OpenRouter with high-performance models
         agents.insert(
             AgentType::Orchestrator,
             ModelSelection {
                 provider: LlmProvider::OpenRouter,
-                model_name: "minimax/minimax-m2:free".to_string(),
+                model_name: "x-ai/grok-4-fast".to_string(),
             },
         );
 
@@ -47,7 +47,7 @@ impl Default for AgentLlmConfig {
             AgentType::Researcher,
             ModelSelection {
                 provider: LlmProvider::OpenRouter,
-                model_name: "qwen/qwen3-235b-a22b:free".to_string(),
+                model_name: "deepseek/deepseek-v3.2-exp".to_string(),
             },
         );
 
@@ -92,20 +92,9 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
     models.insert(
         LlmProvider::OpenRouter,
         vec![
-            "minimax/minimax-m2:free".to_string(),
-            "qwen/qwen3-coder:free".to_string(),
-            "qwen/qwen3-235b-a22b:free".to_string(),
-            "meta-llama/llama-3.3-70b-instruct:free".to_string(),
-            "z-ai/glm-4.5-air:free".to_string(),
-            "nvidia/nemotron-nano-12b-v2-vl:free".to_string(),
-            "google/gemini-2.0-flash-thinking-exp:free".to_string(),
-            "google/gemini-2.0-flash-exp:free".to_string(),
-            // Requested additions
             "x-ai/grok-4-fast".to_string(),
             "deepseek/deepseek-v3.2-exp".to_string(),
-            // Paid/standard options
-            "anthropic/claude-3.5-sonnet".to_string(),
-            "openai/gpt-4o".to_string(),
+            "openrouter/polaris-alpha".to_string(),
         ],
     );
 

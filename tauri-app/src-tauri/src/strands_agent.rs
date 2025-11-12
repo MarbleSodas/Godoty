@@ -214,7 +214,7 @@ impl OrchestratorAgent {
         Self {
             api_key: api_key.to_string(),
             client: Client::new(),
-            model: "minimax/minimax-m2:free".to_string(),
+            model: "x-ai/grok-4-fast".to_string(),
             llm_factory: None,
         }
     }
@@ -387,20 +387,37 @@ Respond ONLY with the JSON array, no explanations.
 
 ## Available MCP Tools
 
-You have DIRECT access to these tools - use them proactively to gather context:
+You have DIRECT access to these tools - use them proactively to gather context and manage files/scripts:
 
 **File Operations:**
 - read_file(path): Read file contents from the project
-- write_file(path, content): Write content to a file
-- edit_block(path, old_content, new_content): Make surgical edits to existing files
+- read_multiple_files(paths): Read multiple files simultaneously for efficiency
+- write_file(path, content): Write content to a file (creates if doesn't exist)
+- edit_block(path, old_text, new_text): Make surgical edits to existing files
 - list_directory(path): List files and directories
-- get_file_info(path): Get file metadata
+- get_file_info(path): Get file metadata (size, modified time, etc.)
 - move_file(source, destination): Move or rename files
 - create_directory(path): Create new directories
 
 **Search & Discovery:**
 - start_search(query, path): Search for files or content in the project
+- get_more_search_results(): Get additional results from ongoing search
+- stop_search(): Stop an ongoing search
 - fetch_documentation(topic): Fetch official Godot documentation for specific topics
+
+**Process & Script Management:**
+- start_process(command, timeout_ms, shell?): Start a new process/script with intelligent state detection
+- interact_with_process(pid, input, timeout_ms?): Send input to running process and get response
+- read_process(pid, timeout_ms?): Read output from a running process
+- list_processes(): List all active terminal sessions/processes
+- kill_process(pid): Force terminate a running process
+
+**Use Cases for Process Tools:**
+- Running GDScript validation scripts
+- Executing build commands or asset processing scripts
+- Running test suites or linters
+- Interactive Python/Node.js REPLs for data processing
+- Any command-line tool execution
 
 ## Your Workflow
 
@@ -409,11 +426,20 @@ Before making ANY decisions, you MUST gather comprehensive context:
 
 1. **Review the project structure** provided below - understand what scenes and scripts already exist
 2. **Use list_directory** to explore relevant directories (e.g., "res://scenes", "res://scripts")
-3. **Use read_file** to examine existing scenes/scripts that are related to the task
+3. **Use read_file or read_multiple_files** to examine existing scenes/scripts that are related to the task
 4. **Use fetch_documentation** to get Godot API docs for node types you'll be working with
 5. **Use start_search** to find similar implementations or related code
 
 DO NOT skip context gathering! The project structure below is just an overview - you need to read actual files.
+
+**SCRIPT & FILE MANAGEMENT BEST PRACTICES:**
+When managing scripts and files:
+- **Use write_file** for creating new scripts/files
+- **Use edit_block** for modifying existing files (more precise than rewriting entire file)
+- **Use read_multiple_files** when you need to examine several related files at once
+- **Use start_process** to run validation scripts, tests, or build commands
+- **Use interact_with_process** for interactive script execution (e.g., Python REPL for data processing)
+- **Always validate** scripts after creation by running them with start_process if applicable
 
 **STEP 2: ANALYZE & PLAN**
 After gathering context, analyze the user's request:
@@ -658,7 +684,8 @@ Rules:
 - If simple_enough is true: ALWAYS return a concrete non-empty "direct_commands" array of executable Godoty command objects and you may set "initial_plan" to null.
 - If simple_enough is false: provide an "initial_plan" and set "direct_commands" to [].
 - Commands must adhere to the Godoty command schema provided in context (e.g., create_node, open_scene, modify_node, attach_script, select_nodes, focus_node, play, capture_game_screenshot).
-- For filesystem/code edits, use desktop_commander tool with shape {{"action":"desktop_commander","tool": "read_file"|"write_file"|"edit_block"|"list_directory"|"start_search"|etc., "args": object}}.
+- For filesystem/code edits, use desktop_commander tool with shape {{"action":"desktop_commander","tool": "read_file"|"write_file"|"edit_block"|"list_directory"|"start_search"|"read_multiple_files"|etc., "args": object}}.
+- For running scripts/commands, use desktop_commander process tools: {{"action":"desktop_commander","tool": "start_process"|"interact_with_process"|"read_process"|"list_processes"|"kill_process", "args": object}}.
 - When debugging or analyzing running game behavior, use capture_game_screenshot to capture the game's visual state for context in subsequent steps.
 - Visual context (screenshots) can be used to understand the current state and make informed decisions about next steps.
 {}
@@ -802,7 +829,7 @@ impl ResearchAgent {
         Self {
             api_key: api_key.to_string(),
             client: Client::new(),
-            model: "qwen/qwen3-235b-a22b:free".to_string(),
+            model: "deepseek/deepseek-v3.2-exp".to_string(),
             llm_factory: None,
         }
     }
