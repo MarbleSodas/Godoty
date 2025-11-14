@@ -43,3 +43,4 @@ tauri-app/src-tauri/godot_docs_index/
 */.keys.json
 .env
 
+/CLAUDE.md

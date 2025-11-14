@@ -23,6 +23,7 @@ mod websocket;
 
 mod mcp_client;
 mod mcp_tools;
+mod mcp_config;
 mod tool_executor;
 
 use crate::llm_client::set_tool_event_context;
@@ -36,8 +37,9 @@ use crate::rag_sidecar::RagSidecarState;
 use metrics::MetricsStore;
 
 use project_indexer::{IndexingStatus, ProjectIndex, ProjectIndexer};
+use crate::mcp_client::McpClientManager;
 use storage::Storage;
-use crate::mcp_client::McpClient;
+use crate::mcp_config::McpConfigManager;
 use std::path::Path;
 
 use websocket::WebSocketClient;
@@ -58,8 +60,10 @@ struct AppState {
     api_key_store: Arc<Mutex<ApiKeyStore>>,
     // RAG sidecar state
     rag_state: Arc<Mutex<RagSidecarState>>,
-    // DesktopCommander MCP client (stdio JSON-RPC)
-    mcp_client: Arc<Mutex<Option<McpClient>>>,
+    // Enhanced MCP client manager with multi-server support
+    mcp_client: Arc<Mutex<Option<McpClientManager>>>,
+    // MCP configuration manager
+    mcp_config: Arc<Mutex<Option<McpConfigManager>>>,
 }
 
 impl Default for AppState {
@@ -83,6 +87,26 @@ impl Default for AppState {
             .load_api_keys()
             .unwrap_or_else(|_| ApiKeyStore::new());
 
+        // Initialize MCP config manager with default config path
+        let mcp_config_path = Storage::get_config_dir().unwrap_or_else(|_| {
+            std::env::current_dir().unwrap().join("config")
+        }).join("mcp_config.json");
+        let mcp_config = if mcp_config_path.exists() {
+            match tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(McpConfigManager::new(mcp_config_path))
+            }) {
+                Ok(config) => Some(config),
+                Err(e) => {
+                    tracing::warn!("Failed to load MCP config: {}, using defaults", e);
+                    None
+                }
+            }
+        } else {
+            // MCP config is not used directly - McpClientManager uses hardcoded configurations
+            // This ensures compatibility with the existing MCP client implementation
+            None
+        };
+
         Self {
             ws_client: Arc::new(Mutex::new(None)),
             ai_processor: Arc::new(Mutex::new(None)),
@@ -98,6 +122,7 @@ impl Default for AppState {
             api_key_store: Arc::new(Mutex::new(api_key_store)),
             rag_state: Arc::new(Mutex::new(RagSidecarState::default())),
             mcp_client: Arc::new(Mutex::new(None)),
+            mcp_config: Arc::new(Mutex::new(mcp_config)),
         }
     }
 }
@@ -524,6 +549,22 @@ async fn set_godot_project_path(
     {
         let mut project_path = state.godot_project_path.lock().unwrap();
         *project_path = Some(path.clone());
+    }
+
+    // Initialize MCP client now that we have a project path
+    {
+        let mcp_client_result = McpClientManager::new(Path::new(&path)).await;
+        match mcp_client_result {
+            Ok(client) => {
+                let mut mcp_client_guard = state.mcp_client.lock().unwrap();
+                *mcp_client_guard = Some(client);
+                tracing::info!("MCP client initialized successfully for project: {}", path);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize MCP client: {}. File operations will be limited.", e);
+                // Continue without MCP client - system will still work but with limited capabilities
+            }
+        }
     }
 
     // Set status to Indexing and emit event
@@ -2306,7 +2347,7 @@ async fn process_command_agentic(
                     let p = state.godot_project_path.lock().unwrap();
                     p.clone().ok_or("Godot project path not set. Please set it in settings.")?
                 };
-                match McpClient::new(Path::new(&project_path)).await {
+                match McpClientManager::new(Path::new(&project_path)).await {
                     Ok(client) => {
                         let mut c = state.mcp_client.lock().unwrap();
                         *c = Some(client);
@@ -2535,7 +2576,7 @@ async fn process_command_agentic(
                     p.clone().ok_or("Godot project path not set. Please set it in settings.")?
                 };
                 // Create client outside lock
-                match McpClient::new(Path::new(&project_path)).await {
+                match McpClientManager::new(Path::new(&project_path)).await {
                     Ok(client) => {
                         let mut c = state.mcp_client.lock().unwrap();
                         *c = Some(client);
@@ -3071,6 +3112,22 @@ fn trigger_automatic_indexing_on_startup(app: &tauri::App) {
                 let mut path = state.godot_project_path.lock().unwrap();
                 *path = Some(project_path.clone());
             }
+
+            // Initialize MCP client for startup project path
+            let state_clone = state.inner().clone();
+            let project_path_clone = project_path.clone();
+            tauri::async_runtime::spawn(async move {
+                match McpClientManager::new(Path::new(&project_path_clone)).await {
+                    Ok(client) => {
+                        let mut mcp_client_guard = state_clone.mcp_client.lock().unwrap();
+                        *mcp_client_guard = Some(client);
+                        tracing::info!("MCP client initialized on startup for project: {}", project_path_clone);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize MCP client on startup: {}. File operations will be limited.", e);
+                    }
+                }
+            });
 
             // Set status to Indexing
             {

@@ -1,9 +1,8 @@
 use crate::agent::ExecutionPlan;
 use crate::llm_client::{ChatMessageWithTools, LlmFactory, LlmResponse};
 use crate::llm_config::AgentType;
-use crate::mcp_client::McpClient;
-use crate::mcp_tools::get_mcp_tool_definitions;
-use crate::tool_executor::{format_tool_results_as_messages, ToolExecutor};
+use crate::mcp_client::McpClientManager;
+use crate::tool_executor::{format_tool_results_as_messages, ToolExecutor, AgentType as ToolAgentType};
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -364,7 +363,7 @@ Respond ONLY with the JSON array, no explanations.
     pub async fn execute_with_tools(
         &self,
         context: &AgentExecutionContext,
-        mcp_client: &mut Option<McpClient>,
+        mcp_client: &mut Option<McpClientManager>,
     ) -> Result<AgentOutput> {
         let start_time = std::time::Instant::now();
         let mut thoughts = Vec::new();
@@ -383,43 +382,50 @@ Respond ONLY with the JSON array, no explanations.
         };
 
         // Prepare system prompt with comprehensive instructions
-        let system_prompt = format!(r#"You are the Orchestrator Agent for a Godot game development assistant with direct access to MCP tools.
+        let system_prompt = format!(r#"You are the Orchestrator Agent for a Godot game development assistant with direct access to enhanced MCP tools.
 
-## Available MCP Tools
+## Available MCP Tools (40+ tools across 3 servers)
 
 You have DIRECT access to these tools - use them proactively to gather context and manage files/scripts:
 
-**File Operations:**
-- read_file(path): Read file contents from the project
+**File Operations (Desktop Commander):**
+- read_file(path, offset?, length?): Read file contents from the project
 - read_multiple_files(paths): Read multiple files simultaneously for efficiency
-- write_file(path, content): Write content to a file (creates if doesn't exist)
-- edit_block(path, old_text, new_text): Make surgical edits to existing files
-- list_directory(path): List files and directories
-- get_file_info(path): Get file metadata (size, modified time, etc.)
+- write_file(path, content, mode?): Write content to a file (creates if doesn't exist)
+- edit_block(path, old_string, new_string): Make surgical edits to existing files
+- list_directory(path, depth?): List files and directories with detailed information
+- get_file_info(path): Get file metadata (size, modified time, line count, etc.)
 - move_file(source, destination): Move or rename files
-- create_directory(path): Create new directories
+- create_directory(path): Create new directories (supports nested paths)
 
-**Search & Discovery:**
-- start_search(query, path): Search for files or content in the project
-- get_more_search_results(): Get additional results from ongoing search
-- stop_search(): Stop an ongoing search
-- fetch_documentation(topic): Fetch official Godot documentation for specific topics
+**Enhanced Search & Discovery (Desktop Commander + Context7):**
+- start_search(query, path, search_type?, file_pattern?, ignore_case?, max_results?): Streaming search for files or content
+- get_more_search_results(session_id, offset?, length?): Get additional results from ongoing search
+- stop_search(session_id): Stop an ongoing search session
+- fetch_documentation(topic, tokens?): Fetch comprehensive documentation for libraries, frameworks, or topics
+- resolve_library_id(libraryName): Resolve library names to Context7-compatible IDs
+- get_library_docs(context7CompatibleLibraryID, topic?, tokens?): Get detailed library documentation
 
-**Process & Script Management:**
-- start_process(command, timeout_ms, shell?): Start a new process/script with intelligent state detection
-- interact_with_process(pid, input, timeout_ms?): Send input to running process and get response
-- read_process(pid, timeout_ms?): Read output from a running process
+**Sequential Thinking & Analysis (Sequential Thinking Server):**
+- sequentialthinking(thought, next_thought_needed, thought_number, total_thoughts, ...): Dynamic problem-solving through structured thoughts
+- brainstorm(prompt, methodology?, domain?, constraints?, existing_context?, idea_count?, include_analysis?): Generate ideas with various frameworks (SCAMPER, Design Thinking, lateral thinking)
+- reflect(subject, context?, successes?, challenges?, learnings?, future_actions?): Reflect on actions and improve future approaches
+
+**Process & Script Management (Desktop Commander):**
+- start_process(command, timeout_ms?, shell?, verbose_timing?): Start processes with intelligent state detection
+- interact_with_process(pid, input, timeout_ms?, wait_for_prompt?, verbose_timing?): Send input to running processes
+- read_process(pid, timeout_ms?, verbose_timing?): Read output from running processes
 - list_processes(): List all active terminal sessions/processes
-- kill_process(pid): Force terminate a running process
+- kill_process(pid): Force terminate running processes
 
-**Use Cases for Process Tools:**
-- Running GDScript validation scripts
-- Executing build commands or asset processing scripts
-- Running test suites or linters
-- Interactive Python/Node.js REPLs for data processing
-- Any command-line tool execution
+**Use Cases for Enhanced Tools:**
+- **Sequential Thinking**: Complex problem decomposition, step-by-step reasoning, iterative refinement
+- **Brainstorming**: Creative solutions, feature ideas, design alternatives, innovation workshops
+- **Reflection**: Post-implementation analysis, learning from mistakes, process improvement
+- **Enhanced Documentation**: Access to 1000+ libraries via Context7, up-to-date API references
+- **Streaming Search**: Large project analysis, code pattern discovery, comprehensive file exploration
 
-## Your Workflow
+## Your Enhanced Workflow
 
 **STEP 1: GATHER COMPLETE CONTEXT** (CRITICAL - DO THIS FIRST!)
 Before making ANY decisions, you MUST gather comprehensive context:
@@ -427,32 +433,38 @@ Before making ANY decisions, you MUST gather comprehensive context:
 1. **Review the project structure** provided below - understand what scenes and scripts already exist
 2. **Use list_directory** to explore relevant directories (e.g., "res://scenes", "res://scripts")
 3. **Use read_file or read_multiple_files** to examine existing scenes/scripts that are related to the task
-4. **Use fetch_documentation** to get Godot API docs for node types you'll be working with
-5. **Use start_search** to find similar implementations or related code
+4. **Use fetch_documentation** or **get_library_docs** to get comprehensive docs for libraries/frameworks
+5. **Use start_search** for comprehensive code discovery and pattern finding
+6. **Use sequentialthinking** for complex problem decomposition and step-by-step analysis
 
 DO NOT skip context gathering! The project structure below is just an overview - you need to read actual files.
 
-**SCRIPT & FILE MANAGEMENT BEST PRACTICES:**
+**STEP 2: THINK & ANALYZE (NEW ENHANCED APPROACH)**
+Use the thinking tools for better decision-making:
+
+**For Complex Problems:**
+- **Use sequentialthinking** to break down complex requirements into manageable steps
+- **Use brainstorm** to explore multiple implementation approaches and creative solutions
+- **Use reflect** to consider potential issues and improvements before implementation
+
+**For Simple Tasks:**
+- Proceed directly to planning with the context gathered
+
+**STEP 3: ENHANCED SCRIPT & FILE MANAGEMENT**
 When managing scripts and files:
-- **Use write_file** for creating new scripts/files
-- **Use edit_block** for modifying existing files (more precise than rewriting entire file)
-- **Use read_multiple_files** when you need to examine several related files at once
-- **Use start_process** to run validation scripts, tests, or build commands
-- **Use interact_with_process** for interactive script execution (e.g., Python REPL for data processing)
-- **Always validate** scripts after creation by running them with start_process if applicable
+- **Use write_file** for creating new scripts/files with proper modes (rewrite/append)
+- **Use edit_block** for precise surgical edits to existing files
+- **Use read_multiple_files** for examining related files efficiently
+- **Use enhanced search** (start_search with advanced filters) for comprehensive code discovery
+- **Use process tools** for validation, testing, and build automation
+- **Use documentation tools** for accessing up-to-date library references and API docs
 
-**STEP 2: ANALYZE & PLAN**
-After gathering context, analyze the user's request:
-- Is this a simple task that can be done with direct commands?
-- Does it require research from the Research Agent?
-- What's the best approach given the existing project structure?
-
-**STEP 3: CREATE MODULAR PLAN**
-When creating scenes, follow these principles:
-- **Separate concerns**: Create individual scene files for each logical component
-- **Reusable components**: Make scenes that can be instantiated multiple times
-- **Proper hierarchy**: Use scene inheritance and composition appropriately
-- **Follow Godot conventions**: Use appropriate root node types (Control for UI, Node2D/3D for gameplay)
+**STEP 4: CREATE MODULAR PLAN**
+When creating scenes or implementing features, follow these principles:
+- **Separate concerns**: Individual scene files for each logical component
+- **Reusable components**: Scenes that can be instantiated multiple times
+- **Proper hierarchy**: Appropriate scene inheritance and composition
+- **Follow Godot conventions**: Correct root node types and naming patterns
 
 Example: For a "player with health UI", create:
 1. `player.tscn` - CharacterBody2D with movement logic
@@ -460,7 +472,7 @@ Example: For a "player with health UI", create:
 3. `player_hud.tscn` - Combines health bar and other UI elements
 4. Main scene that instances the player and HUD
 
-**STEP 4: PROVIDE DECISION**
+**STEP 5: PROVIDE DECISION**
 Return your decision as JSON:
 {{
   "research_needed": boolean,  // true if Research Agent should gather more info
@@ -477,6 +489,13 @@ Return your decision as JSON:
   }},
   "direct_commands": []  // only for trivial tasks
 }}
+
+**ENHANCED CAPABILITIES:**
+- **Multi-server tool access**: Seamlessly use tools from Desktop Commander, Sequential Thinking, and Context7 servers
+- **Advanced search**: Streaming search with pagination and filtering
+- **Comprehensive documentation**: Access to 1000+ libraries and frameworks
+- **Structured reasoning**: Use sequential thinking for complex problem-solving
+- **Creative exploration**: Brainstorm multiple approaches before implementation
 
 ## Project Context
 
@@ -505,9 +524,9 @@ Return your decision as JSON:
             },
         ];
 
-        // Get tool definitions
-        let tools = get_mcp_tool_definitions();
+        // Get tool definitions for Orchestrator agent
         let tool_executor = ToolExecutor::new(self.api_key.clone());
+        let tools = tool_executor.get_tools_for_agent(ToolAgentType::Orchestrator);
 
         // Tool calling loop (max 10 iterations to allow thorough context gathering)
         let max_iterations = 10;
@@ -545,9 +564,9 @@ Return your decision as JSON:
                     tool_call_id: None,
                 });
 
-                // Execute tools
+                // Execute tools with agent type filtering
                 let results = tool_executor
-                    .execute_tools_parallel(tool_calls, mcp_client)
+                    .execute_tools_parallel(tool_calls, mcp_client, Some(ToolAgentType::Orchestrator))
                     .await;
 
                 // Log tool execution results with details
@@ -837,6 +856,219 @@ impl ResearchAgent {
     pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
         self.llm_factory = llm_factory;
         self
+    }
+
+    /// Execute with selective MCP tool access - allows research agent to use read-only tools
+    pub async fn execute_with_tools(
+        &self,
+        context: &AgentExecutionContext,
+        mcp_client: &mut Option<McpClientManager>,
+    ) -> Result<AgentOutput> {
+        let start_time = std::time::Instant::now();
+        let mut thoughts = Vec::new();
+
+        thoughts.push(OrchestratorThought::new(
+            "research_tool_mode",
+            "Research Agent using selective MCP tools for data gathering and analysis",
+            0.95,
+        ));
+
+        // Get the LLM client
+        let llm_client = if let Some(factory) = &self.llm_factory {
+            factory.create_client_for_agent(AgentType::Researcher)?
+        } else {
+            return Err(anyhow::anyhow!("LLM factory required for research tool mode"));
+        };
+
+        // Get tool definitions for Research agent (read-only access)
+        let tool_executor = ToolExecutor::new(self.api_key.clone());
+        let tools = tool_executor.get_tools_for_agent(ToolAgentType::Research);
+
+        thoughts.push(OrchestratorThought::new(
+            "available_tools",
+            format!("Research Agent has access to {} read-only tools", tools.len()),
+            0.9,
+        ));
+
+        // Prepare system prompt for research-focused tool usage
+        let system_prompt = format!(r#"You are the Research Agent for a Godot game development assistant with selective access to MCP tools for research and analysis.
+
+## Available Research Tools (Read-Only Access)
+
+You have access to these READ-ONLY tools for gathering information:
+
+**File Analysis (Read-Only):**
+- read_file(path, offset?, length?): Read file contents from the project
+- read_multiple_files(paths): Read multiple files simultaneously for analysis
+- list_directory(path, depth?): List files and directories to understand project structure
+- get_file_info(path): Get file metadata for analysis
+
+**Search & Discovery:**
+- start_search(query, path, search_type?, file_pattern?, ignore_case?, max_results?): Search for files or content patterns
+- get_more_search_results(session_id, offset?, length?): Get additional search results
+- stop_search(session_id): Stop ongoing search sessions
+
+**Enhanced Documentation:**
+- fetch_documentation(topic, tokens?): Fetch comprehensive documentation for libraries, frameworks, or topics
+- resolve_library_id(libraryName): Resolve library names to Context7-compatible IDs
+- get_library_docs(context7CompatibleLibraryID, topic?, tokens?): Get detailed library documentation
+
+**Sequential Thinking & Analysis:**
+- sequentialthinking(thought, next_thought_needed, thought_number, total_thoughts, ...): Structured reasoning through research problems
+- brainstorm(prompt, methodology?, domain?, constraints?, existing_context?, idea_count?, include_analysis?): Generate research ideas and approaches
+- reflect(subject, context?, successes?, challenges?, learnings?, future_actions?): Reflect on research findings
+
+## Research Workflow
+
+**STEP 1: UNDERSTAND THE RESEARCH NEED**
+Analyze the user's request and previous orchestrator output to understand:
+- What information is needed?
+- What are the key questions to answer?
+- What type of analysis is required?
+
+**STEP 2: GATHER COMPREHENSIVE DATA**
+Use your tools to gather relevant information:
+- **Explore project structure** with list_directory to understand the codebase
+- **Read relevant files** with read_file/read_multiple_files to understand existing implementations
+- **Search for patterns** with start_search to find related code or configurations
+- **Fetch documentation** with fetch_documentation for API references and best practices
+- **Use sequential thinking** to break down complex research questions
+
+**STEP 3: ANALYZE & SYNTHESIZE**
+- **Use brainstorm** to generate multiple analytical approaches
+- **Use reflect** to validate findings and identify gaps
+- **Synthesize information** from multiple sources
+
+**STEP 4: PROVIDE RESEARCH OUTPUT**
+Return your research findings as JSON:
+{{
+  "findings": string,  // comprehensive summary of what you discovered
+  "recommendations": string[],  // actionable recommendations based on research
+  "implementation_notes": string,  // guidance for implementing the solution
+  "complexity_assessment": "low" | "medium" | "high",
+  "next_steps": string[]  // recommended next actions
+}}
+
+## Project Context
+
+{}
+
+## User Request & Previous Analysis
+
+{}"#, context.project_context, context.user_input);
+
+        // Initialize conversation
+        let mut messages = vec![
+            ChatMessageWithTools {
+                role: "system".to_string(),
+                content: system_prompt,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessageWithTools {
+                role: "user".to_string(),
+                content: format!(
+                    "{}\n\nAs the Research Agent, use your tools to gather comprehensive information and provide detailed analysis.",
+                    context.user_input
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        // Tool calling loop (max 8 iterations for thorough research)
+        let max_iterations = 8;
+        let mut final_response = String::new();
+
+        for iteration in 0..max_iterations {
+            thoughts.push(OrchestratorThought::new(
+                "research_iteration",
+                format!("Research analysis iteration {}/{} with {} tools", iteration + 1, max_iterations, tools.len()),
+                0.9,
+            ));
+
+            // Call LLM with research tools
+            let response = llm_client
+                .generate_response_with_tools(messages.clone(), Some(tools.clone()))
+                .await?;
+
+            // Check if LLM wants to call tools
+            if let Some(tool_calls) = &response.tool_calls {
+                let tool_names: Vec<String> = tool_calls.iter()
+                    .map(|tc| tc.function.name.clone())
+                    .collect();
+                thoughts.push(OrchestratorThought::new(
+                    "research_tools_requested",
+                    format!("Research tools requested: {}", tool_names.join(", ")),
+                    0.85,
+                ));
+
+                // Add assistant message with tool calls
+                messages.push(ChatMessageWithTools {
+                    role: "assistant".to_string(),
+                    content: response.content.clone(),
+                    tool_calls: Some(tool_calls.clone()),
+                    tool_call_id: None,
+                });
+
+                // Execute research tools with Research agent filtering
+                let results = tool_executor
+                    .execute_tools_parallel(tool_calls, mcp_client, Some(ToolAgentType::Research))
+                    .await;
+
+                // Log research tool results
+                for (i, (tool_call_id, result)) in results.iter().enumerate() {
+                    let tool_name = &tool_calls[i].function.name;
+                    let status = if result.is_ok() { "success" } else { "error" };
+                    thoughts.push(OrchestratorThought::new(
+                        "research_tool_executed",
+                        format!("Research tool '{}' ({}): {}", tool_name, tool_call_id, status),
+                        if result.is_ok() { 0.9 } else { 0.5 },
+                    ));
+                }
+
+                // Add tool results to conversation
+                let tool_messages = format_tool_results_as_messages(results);
+                messages.extend(tool_messages);
+
+            } else {
+                // No more tool calls - final research response
+                final_response = response.content;
+                thoughts.push(OrchestratorThought::new(
+                    "research_complete",
+                    "Research analysis completed with comprehensive findings",
+                    0.95,
+                ));
+                break;
+            }
+        }
+
+        // Handle iteration limit
+        if final_response.is_empty() {
+            thoughts.push(OrchestratorThought::new(
+                "research_max_iterations",
+                "Reached maximum research iterations, synthesizing available information",
+                0.7,
+            ));
+            // Extract last response
+            for msg in messages.iter().rev() {
+                if msg.role == "assistant" && !msg.content.is_empty() {
+                    final_response = msg.content.clone();
+                    break;
+                }
+            }
+        }
+
+        let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+        Ok(AgentOutput {
+            content: final_response,
+            tokens_used: 0, // TODO: aggregate from research calls
+            execution_time_ms,
+            metadata: serde_json::Map::new(),
+            cost_usd: None,
+            thoughts,
+        })
     }
 }
 

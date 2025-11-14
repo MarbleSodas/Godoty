@@ -341,27 +341,34 @@ impl AgenticWorkflow {
         if research_needed {
             let research_agent = ResearchAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
             let research_ctx = AgentExecutionContext { previous_output: Some(orch_output.content.clone()), ..orch_context.clone() };
-            if let Ok(res) = research_agent.execute(&research_ctx).await {
-                // Track research cost in planning metrics
-                if let Some(cost) = res.cost_usd {
-                    metrics.planning_cost_usd += cost;
-                }
 
-                // Convert research agent thoughts to agent thoughts
-                for research_thought in res.thoughts.iter() {
-                    thoughts.push(AgentThought {
-                        step: thoughts.len() + 1,
-                        thought: format!("[{}] {}", research_thought.phase, research_thought.insight),
-                        action: Some("research".to_string()),
-                        observation: Some(format!("Confidence: {:.0}%", research_thought.confidence * 100.0)),
-                    });
-                }
+            // Use tool calling mode for research agent if enabled and MCP client is available
+            let use_tool_calling = config.map(|c| c.enable_tool_calling).unwrap_or(true);
+            let res = if use_tool_calling && mcp_client.is_some() {
+                research_agent.execute_with_tools(&research_ctx, mcp_client).await?
+            } else {
+                research_agent.execute(&research_ctx).await?
+            };
 
-                // Try to parse a plan from research content
-                match serde_json::from_str::<ExecutionPlan>(&Self::extract_json(&res.content)?) {
-                    Ok(p) => plan_opt = Some(p),
-                    Err(_) => research_summary = res.content,
-                }
+            // Track research cost in planning metrics
+            if let Some(cost) = res.cost_usd {
+                metrics.planning_cost_usd += cost;
+            }
+
+            // Convert research agent thoughts to agent thoughts
+            for research_thought in res.thoughts.iter() {
+                thoughts.push(AgentThought {
+                    step: thoughts.len() + 1,
+                    thought: format!("[{}] {}", research_thought.phase, research_thought.insight),
+                    action: Some("research".to_string()),
+                    observation: Some(format!("Confidence: {:.0}%", research_thought.confidence * 100.0)),
+                });
+            }
+
+            // Try to parse a plan from research content
+            match serde_json::from_str::<ExecutionPlan>(&Self::extract_json(&res.content)?) {
+                Ok(p) => plan_opt = Some(p),
+                Err(_) => research_summary = res.content,
             }
         }
 
@@ -1035,8 +1042,8 @@ Do NOT add extra closing braces - each object should have exactly one closing br
             visual_context: visual_context_str.clone(),
         };
 
-        // Use tool calling mode if enabled in config
-        let use_tool_calling = config.map(|c| c.enable_tool_calling).unwrap_or(false);
+        // Use tool calling mode if enabled in config (default is true)
+        let use_tool_calling = config.map(|c| c.enable_tool_calling).unwrap_or(true);
         let orch_output = if use_tool_calling && mcp_client.is_some() {
             orchestrator.execute_with_tools(&orch_context, mcp_client).await?
         } else {

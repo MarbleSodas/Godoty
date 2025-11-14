@@ -67,6 +67,15 @@ func execute_command(command: Dictionary):
 			return _get_debug_output(command)
 		"get_project_path":
 			return _get_project_path(command)
+		# Visual context commands
+		"capture_visual_context":
+			return await _capture_visual_context(command)
+		"get_visual_snapshot":
+			return await _get_visual_snapshot(command)
+		"enable_auto_visual_capture":
+			return _enable_auto_visual_capture(command)
+		"disable_auto_visual_capture":
+			return _disable_auto_visual_capture(command)
 		_:
 			return {
 				"status": "error",
@@ -1171,4 +1180,292 @@ func _get_project_path(command: Dictionary) -> Dictionary:
 			"project_path": project_path
 		}
 	}
+
+# --- Visual Context Commands ---
+
+var _auto_capture_enabled: bool = false
+var _auto_capture_timer: Timer = null
+var _last_visual_context: Dictionary = {}
+
+func _capture_visual_context(command: Dictionary) -> Dictionary:
+	"""Capture comprehensive visual context including scene tree, editor state, and viewport"""
+	print("Godoty: capture_visual_context called")
+
+	var editor_interface = editor_plugin.get_editor_interface()
+	var edited_scene = editor_interface.get_edited_scene_root()
+
+	var context = {
+		"timestamp": Time.get_datetime_string_from_system(),
+		"editor_state": {
+			"current_scene_path": editor_interface.get_current_scene_path(),
+			"selected_nodes": [],
+			"focused_node": "",
+			"playing": editor_interface.is_playing_scene()
+		},
+		"scene_tree": null,
+		"viewport_info": {},
+		"editor_layout": {
+			"visible_docks": [],
+			"active_inspector": ""
+		}
+	}
+
+	# Get selected nodes
+	var selected = editor_interface.get_selection().get_selected_nodes()
+	for node in selected:
+		if edited_scene:
+			context.editor_state.selected_nodes.append(str(edited_scene.get_path_to(node)))
+
+	# Get focused node
+	var focused = editor_interface.get_inspector().get_edited_object()
+	if focused and edited_scene:
+		context.editor_state.focused_node = str(edited_scene.get_path_to(focused))
+
+	# Get scene tree structure if scene is open
+	if edited_scene:
+		context.scene_tree = _build_scene_tree_snapshot(edited_scene)
+
+	# Get viewport information
+	var viewport = editor_interface.get_editor_viewport_2d()
+	if viewport:
+		context.viewport_info = {
+			"size": viewport.get_size(),
+			"camera_transform": viewport.get_canvas_transform(),
+			"visible_rect": viewport.get_visible_rect()
+		}
+
+	# Get visible docks
+	var main_screen = editor_interface.get_main_screen_control()
+	if main_screen:
+		for child in main_screen.get_children():
+			if child.visible:
+				context.editor_layout.visible_docks.append(child.name)
+
+	# Store for auto-capture
+	_last_visual_context = context
+
+	return {
+		"status": "success",
+		"message": "Captured visual context",
+		"data": context
+	}
+
+func _get_visual_snapshot(command: Dictionary) -> Dictionary:
+	"""Get a visual snapshot of the current editor viewport"""
+	print("Godoty: get_visual_snapshot called")
+
+	var editor_interface = editor_plugin.get_editor_interface()
+	var viewport = editor_interface.get_editor_viewport_2d()
+
+	if not viewport:
+		# Try 3D viewport if 2D is not available
+		var viewport_3d = editor_interface.get_editor_viewport_3d(0)
+		if viewport_3d:
+			return await _capture_3d_viewport(viewport_3d)
+		else:
+			return {
+				"status": "error",
+				"message": "No viewport available for capture"
+			}
+
+	# Capture 2D viewport
+	var img = viewport.get_texture().get_image()
+	if img:
+		var timestamp = Time.get_unix_time_from_system()
+		var filename = "visual_snapshot_%d.png" % timestamp
+		var path = "user://snapshots/" + filename
+
+		# Ensure directory exists
+		var dir = DirAccess.open("user://")
+		if dir:
+			dir.make_dir("snapshots")
+
+		# Save image
+		img.save_png(path)
+		var global_path = ProjectSettings.globalize_path(path)
+
+		# Also save as base64 for immediate transfer
+		var base64 = Marshalls.raw_to_base64(img.save_png_to_buffer())
+
+		return {
+			"status": "success",
+			"message": "Captured visual snapshot",
+			"data": {
+				"image_path": global_path,
+				"filename": filename,
+				"base64_data": base64,
+				"width": img.get_width(),
+				"height": img.get_height(),
+				"timestamp": timestamp
+			}
+		}
+	else:
+		return {
+			"status": "error",
+			"message": "Failed to capture viewport image"
+		}
+
+func _capture_3d_viewport(viewport: SubViewport) -> Dictionary:
+	"""Helper to capture 3D viewport"""
+	# Create a copy of the viewport texture
+	var viewport_texture = viewport.get_texture()
+	if viewport_texture:
+		var img = viewport_texture.get_image()
+		if img:
+			var timestamp = Time.get_unix_time_from_system()
+			var filename = "visual_snapshot_3d_%d.png" % timestamp
+			var path = "user://snapshots/" + filename
+
+			# Ensure directory exists
+			var dir = DirAccess.open("user://")
+			if dir:
+				dir.make_dir("snapshots")
+
+			# Save image
+			img.save_png(path)
+			var global_path = ProjectSettings.globalize_path(path)
+
+			return {
+				"status": "success",
+				"message": "Captured 3D visual snapshot",
+				"data": {
+					"image_path": global_path,
+					"filename": filename,
+					"width": img.get_width(),
+					"height": img.get_height(),
+					"timestamp": timestamp,
+					"viewport_type": "3d"
+				}
+			}
+
+	return {
+		"status": "error",
+		"message": "Failed to capture 3D viewport"
+	}
+
+func _enable_auto_visual_capture(command: Dictionary) -> Dictionary:
+	"""Enable automatic visual capture at intervals"""
+	var interval = command.get("interval", 5.0)  # Default 5 seconds
+
+	if _auto_capture_enabled:
+		return {
+			"status": "success",
+			"message": "Auto visual capture already enabled",
+			"data": {"interval": interval}
+		}
+
+	_auto_capture_enabled = true
+
+	# Create timer if it doesn't exist
+	if not _auto_capture_timer:
+		_auto_capture_timer = Timer.new()
+		_auto_capture_timer.wait_time = interval
+		_auto_capture_timer.timeout.connect(_on_auto_capture_timeout)
+		editor_plugin.add_child(_auto_capture_timer)
+
+	_auto_capture_timer.wait_time = interval
+	_auto_capture_timer.autostart = true
+	_auto_capture_timer.start()
+
+	print("Godoty: Auto visual capture enabled with interval: ", interval, " seconds")
+
+	return {
+		"status": "success",
+		"message": "Auto visual capture enabled",
+		"data": {
+			"interval": interval,
+			"enabled": true
+		}
+	}
+
+func _disable_auto_visual_capture(command: Dictionary) -> Dictionary:
+	"""Disable automatic visual capture"""
+	if not _auto_capture_enabled:
+		return {
+			"status": "success",
+			"message": "Auto visual capture already disabled"
+		}
+
+	_auto_capture_enabled = false
+
+	if _auto_capture_timer and _auto_capture_timer.is_connected("timeout", _on_auto_capture_timeout):
+		_auto_capture_timer.stop()
+		_auto_capture_timer.autostart = false
+
+	print("Godoty: Auto visual capture disabled")
+
+	return {
+		"status": "success",
+		"message": "Auto visual capture disabled",
+		"data": {"enabled": false}
+	}
+
+func _on_auto_capture_timeout():
+	"""Timer callback for automatic capture"""
+	if _auto_capture_enabled:
+		print("Godoty: Auto-capturing visual context...")
+		# Capture context in background
+		_capture_visual_context({})
+
+func _build_scene_tree_snapshot(root: Node) -> Dictionary:
+	"""Build a lightweight snapshot of the scene tree"""
+	var snapshot = {
+		"name": root.name,
+		"type": root.get_class(),
+		"path": "/root",
+		"visible": root.visible if root.has_method("is_visible") else true,
+		"properties": _extract_node_properties(root),
+		"children": []
+	}
+
+	for child in root.get_children():
+		snapshot.children.append(_build_node_snapshot(child, root))
+
+	return snapshot
+
+func _build_node_snapshot(node: Node, root: Node) -> Dictionary:
+	var node_path = str(root.get_path_to(node))
+	var snapshot = {
+		"name": node.name,
+		"type": node.get_class(),
+		"path": node_path,
+		"visible": node.visible if node.has_method("is_visible") else true,
+		"properties": _extract_node_properties(node),
+		"children": []
+	}
+
+	# Limit depth for performance
+	if node.get_child_count() < 100:
+		for child in node.get_children():
+			snapshot.children.append(_build_node_snapshot(child, root))
+
+	return snapshot
+
+func _extract_node_properties(node: Node) -> Dictionary:
+	"""Extract key properties from a node for visual context"""
+	var props = {}
+
+	# Common properties
+	if node.has_method("get_position"):
+		props.position = node.call("get_position")
+	if node.has_method("get_global_position"):
+		props.global_position = node.call("get_global_position")
+	if node.has_method("get_scale"):
+		props.scale = node.call("get_scale")
+	if node.has_method("get_rotation"):
+		props.rotation = node.call("get_rotation")
+	if node.has_method("get_size"):
+		props.size = node.call("get_size")
+	if node.has_method("get_modulate"):
+		props.modulate = node.call("get_modulate")
+
+	# Script properties
+	if node.get_script():
+		props.script_path = node.get_script().get_path()
+
+	# Group membership
+	if node.get_groups().size() > 0:
+		props.groups = node.get_groups()
+
+	return props
 

@@ -39,7 +39,7 @@ impl Default for AgentLlmConfig {
             AgentType::Orchestrator,
             ModelSelection {
                 provider: LlmProvider::OpenRouter,
-                model_name: "x-ai/grok-4-fast".to_string(),
+                model_name: "openai/gpt-5.1".to_string(),
             },
         );
 
@@ -94,7 +94,7 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
         vec![
             "x-ai/grok-4-fast".to_string(),
             "deepseek/deepseek-v3.2-exp".to_string(),
-            "openrouter/polaris-alpha".to_string(),
+            "openai/gpt-5.1".to_string(),
         ],
     );
 
