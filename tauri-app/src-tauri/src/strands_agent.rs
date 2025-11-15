@@ -2,12 +2,19 @@ use crate::agent::ExecutionPlan;
 use crate::llm_client::{ChatMessageWithTools, LlmFactory, LlmResponse};
 use crate::llm_config::AgentType;
 use crate::mcp_client::McpClientManager;
+use crate::streaming_agent::{
+    StreamingStrandsAgent, StreamingAgentContext, StreamingAgentResponse,
+    ToolExecutionResult, ToolExecutionStatus, AgentLoopState
+};
 use crate::tool_executor::{format_tool_results_as_messages, ToolExecutor, AgentType as ToolAgentType};
+use crate::dynamic_context_provider::DynamicProjectContextProvider;
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Represents a single thought/reasoning step from the orchestrator
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,13 +52,15 @@ pub trait StrandsAgent: Send + Sync {
 #[derive(Clone)]
 pub struct AgentExecutionContext {
     pub user_input: String,
-    pub _chat_history: String,
     pub project_context: String,
-    #[allow(dead_code)]
-    pub execution_plan: Option<ExecutionPlan>,
+    #[allow(dead_code)] // Future enhancement: Sequential context integration
     pub previous_output: Option<String>,
-    #[allow(dead_code)]
-    pub visual_context: Option<String>,
+    /// Optional dynamic context provider for real-time updates
+    #[allow(dead_code)] // Enhancement plan: Dynamic context updates
+    pub dynamic_context_provider: Option<Arc<DynamicProjectContextProvider>>,
+    /// Project path for context operations
+    #[allow(dead_code)] // Enhancement plan: Project-specific context operations
+    pub project_path: Option<String>,
 }
 
 /// Output from agent execution
@@ -73,139 +82,19 @@ pub struct AgentOutput {
 
 
 
-/// Helper function to call LLM API
-#[allow(dead_code)]
-async fn call_llm(
-    client: &Client,
-    api_key: &str,
-    model: &str,
-    system_prompt: &str,
-    user_input: &str,
-) -> Result<String> {
-    #[derive(Serialize)]
-    struct ChatRequest {
-        model: String,
-        messages: Vec<ChatMessage>,
-        temperature: f32,
-        max_tokens: i32,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    struct ChatMessage {
-        role: String,
-        content: String,
-    }
-
-    #[derive(Deserialize)]
-    struct ChatResponse {
-        choices: Vec<Choice>,
-        #[serde(default)]
-        usage: Option<Usage>,
-    }
-
-    #[derive(Deserialize)]
-    struct Choice {
-        message: ChatMessage,
-        #[serde(default)]
-        finish_reason: Option<String>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct Usage {
-        #[allow(dead_code)]
-        #[serde(default)]
-        prompt_tokens: u32,
-        #[allow(dead_code)]
-        #[serde(default)]
-        completion_tokens: u32,
-        #[allow(dead_code)]
-        #[serde(default)]
-        total_tokens: u32,
-    }
-
-    let request = ChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt.to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user_input.to_string(),
-            },
-        ],
-        temperature: 0.7,
-        max_tokens: 16384, // Increased from 8192 to prevent truncation
-    };
-
-    let sys_prev = system_prompt.chars().take(200).collect::<String>();
-    let user_prev = user_input.chars().take(200).collect::<String>();
-    tracing::debug!(
-        provider = "OpenRouter",
-        model = %model,
-        endpoint = "https://openrouter.ai/api/v1/chat/completions",
-        system_prompt_preview = %sys_prev,
-        user_input_preview = %user_prev,
-        "Agent LLM invocation (fallback)"
-    );
-
-    let response = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .header("HTTP-Referer", "https://github.com/godoty/godoty")
-        .header("X-Title", "Godoty AI Assistant")
-        .json(&request)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "LLM API request failed: {}",
-            response.status()
-        ));
-    }
-
-    let response_text = response.text().await?;
-    let chat_response: ChatResponse = serde_json::from_str(&response_text).map_err(|e| {
-        let preview = response_text.chars().take(500).collect::<String>();
-        anyhow::anyhow!(
-            "Failed to parse LLM response JSON: {}. Raw preview: {}",
-            e,
-            preview
-        )
-    })?;
-
-    if let Some(choice) = chat_response.choices.first() {
-        // Check if response was truncated due to token limit
-        if let Some(ref finish_reason) = choice.finish_reason {
-            if finish_reason == "length" {
-                tracing::warn!(
-                    model = %model,
-                    usage = ?chat_response.usage,
-                    response_len = response_text.len(),
-                    "LLM response was truncated due to max_tokens limit. Consider increasing max_tokens or reducing prompt size."
-                );
-                // Log the full response for debugging
-                tracing::debug!(full_response = %response_text, "Full truncated response");
-            }
-        }
-
-        Ok(choice.message.content.clone())
-    } else {
-        Err(anyhow::anyhow!("No response from LLM"))
-    }
-}
 
 
 
 /// Orchestrator Agent - routes the workflow and decides if research is needed
 pub struct OrchestratorAgent {
     api_key: String,
+    #[allow(dead_code)] // Alternative HTTP client for future API integrations
     client: Client,
+    #[allow(dead_code)] // Direct model access for specialized operations
     model: String,
     llm_factory: Option<LlmFactory>,
+    /// Optional dynamic context provider for real-time project updates
+    dynamic_context_provider: Option<Arc<DynamicProjectContextProvider>>,
 }
 
 impl OrchestratorAgent {
@@ -215,11 +104,17 @@ impl OrchestratorAgent {
             client: Client::new(),
             model: "x-ai/grok-4-fast".to_string(),
             llm_factory: None,
+            dynamic_context_provider: None,
         }
     }
 
     pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
         self.llm_factory = llm_factory;
+        self
+    }
+
+    pub fn with_dynamic_context_provider(mut self, provider: Option<Arc<DynamicProjectContextProvider>>) -> Self {
+        self.dynamic_context_provider = provider;
         self
     }
 
@@ -349,14 +244,56 @@ Respond ONLY with the JSON array, no explanations.
             );
             client.generate_response_with_usage(&system_prompt, user_input).await
         } else {
-            // Fallback to OpenRouter call - wrap in LlmResponse
-            let content = call_llm(&self.client, &self.api_key, &self.model, &system_prompt, user_input).await?;
-            Ok(LlmResponse {
-                content,
-                usage: None,
-                tool_calls: None,
-            })
+            // LlmFactory is required for proper operation
+            Err(anyhow::anyhow!("LlmFactory not configured. Please initialize OrchestratorAgent with with_llm_factory()"))
         }
+    }
+
+    /// Get enhanced project context combining static and dynamic context
+    async fn get_enhanced_context(&self, base_context: &str) -> String {
+        // If we have a dynamic context provider, try to get recent updates
+        if let Some(provider) = &self.dynamic_context_provider {
+            if let Ok(dynamic_updates) = provider.get_recent_context_updates(5).await {
+                if !dynamic_updates.is_empty() {
+                    let mut enhanced = base_context.to_string();
+                    enhanced.push_str("\n\n## Recent Project Changes\n");
+
+                    for update in dynamic_updates {
+                        match update.update_type {
+                            crate::dynamic_context_provider::ContextUpdateType::FileChanges => {
+                                for file_path in &update.changed_files {
+                                    enhanced.push_str(&format!("- **Modified**: {} (updated)\n", file_path.display()));
+                                }
+                            }
+                            crate::dynamic_context_provider::ContextUpdateType::Incremental => {
+                                for file_path in &update.changed_files {
+                                    enhanced.push_str(&format!("- **Content Changed**: {} (updated)\n", file_path.display()));
+                                }
+                            }
+                            crate::dynamic_context_provider::ContextUpdateType::Reindex => {
+                                enhanced.push_str("- **Project Structure**: Reindexed\n");
+                            }
+                            crate::dynamic_context_provider::ContextUpdateType::Initial => {
+                                enhanced.push_str("- **Initial Context**: Built\n");
+                            }
+                            crate::dynamic_context_provider::ContextUpdateType::Error { ref message } => {
+                                enhanced.push_str(&format!("- **Error**: {}\n", message));
+                            }
+                        }
+
+                        if let Some(context) = &update.context_content {
+                            let preview = context.chars().take(200).collect::<String>();
+                            enhanced.push_str(&format!("  Preview: {}\n", preview));
+                        }
+                    }
+
+                    return enhanced;
+                }
+            }
+        }
+
+        // Fallback to base context
+        base_context.to_string()
     }
 
     /// Execute with tool calling support - allows the LLM to call MCP tools during decision-making
@@ -380,6 +317,18 @@ Respond ONLY with the JSON array, no explanations.
         } else {
             return Err(anyhow::anyhow!("LLM factory required for tool calling mode"));
         };
+
+        // Get enhanced context with dynamic updates
+        let enhanced_context = self.get_enhanced_context(&context.project_context).await;
+
+        thoughts.push(OrchestratorThought::new(
+            "context_enhancement",
+            format!("Enhanced context with {} recent changes",
+                if enhanced_context.len() > context.project_context.len() {
+                    enhanced_context.len() - context.project_context.len()
+                } else { 0 }),
+            0.9,
+        ));
 
         // Prepare system prompt with comprehensive instructions
         let system_prompt = format!(r#"You are the Orchestrator Agent for a Godot game development assistant with direct access to enhanced MCP tools.
@@ -497,13 +446,13 @@ Return your decision as JSON:
 - **Structured reasoning**: Use sequential thinking for complex problem-solving
 - **Creative exploration**: Brainstorm multiple approaches before implementation
 
-## Project Context
+## Project Context (with Real-time Updates)
 
 {}
 
 ## User Request
 
-{}"#, context.project_context, context.user_input);
+{}"#, enhanced_context, context.user_input);
 
         // Initialize conversation with system message and user input
         let mut messages = vec![
@@ -628,7 +577,9 @@ Return your decision as JSON:
 
         Ok(AgentOutput {
             content: final_response,
-            tokens_used: 0, // TODO: aggregate from all LLM calls
+            // Token tracking: Currently not implemented as LlmClient doesn't return token counts.
+            // To implement: Modify LlmClient to return usage metadata and accumulate here.
+            tokens_used: 0,
             execution_time_ms,
             metadata: serde_json::Map::new(),
             cost_usd: None,
@@ -636,6 +587,329 @@ Return your decision as JSON:
         })
     }
 
+    /// Execute with streaming support - provides real-time updates of thought process and tool execution
+    #[allow(dead_code)] // Streaming infrastructure - enhancement plan Phase 1
+    pub async fn execute_streaming(
+        &self,
+        context: &AgentExecutionContext,
+        chunk_sender: UnboundedSender<StreamingAgentResponse>,
+        session_id: String,
+    ) -> Result<AgentOutput> {
+        let start_time = std::time::Instant::now();
+        let mut streaming_context = StreamingAgentContext::new(context.clone(), session_id.clone());
+        let mut accumulated_content = String::new();
+        let mut chunk_id = 0usize;
+
+        // Send initial state
+        let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+            .with_thought(OrchestratorThought::new(
+                "streaming_init",
+                "Starting streaming execution with real-time updates",
+                0.95,
+            ))
+        );
+        chunk_id += 1;
+
+        // Update state to processing
+        streaming_context.update_state(AgentLoopState::Processing);
+        streaming_context.add_thought(OrchestratorThought::new(
+            "input_analysis",
+            format!("Analyzing user input: '{}'", &context.user_input.chars().take(100).collect::<String>()),
+            0.9,
+        ));
+
+        let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+            .with_thought(streaming_context.accumulated_thoughts.last().unwrap().clone())
+        );
+        chunk_id += 1;
+
+        // Get the LLM client
+        let llm_client = if let Some(factory) = &self.llm_factory {
+            factory.create_client_for_agent(AgentType::Orchestrator)?
+        } else {
+            return Err(anyhow::anyhow!("LLM factory required for streaming mode"));
+        };
+
+        // Get enhanced context with dynamic updates
+        let enhanced_context = self.get_enhanced_context(&context.project_context).await;
+
+        // Prepare system prompt (same as execute_with_tools)
+        let system_prompt = format!(r#"You are the Orchestrator Agent for a Godot game development assistant with direct access to enhanced MCP tools.
+
+## Available MCP Tools (40+ tools across 3 servers)
+
+You have DIRECT access to these tools - use them proactively to gather context and manage files/scripts:
+
+**File Operations (Desktop Commander):**
+- read_file(path, offset?, length?): Read file contents from the project
+- read_multiple_files(paths): Read multiple files simultaneously for efficiency
+- write_file(path, content, mode?): Write content to a file (creates if doesn't exist)
+- edit_block(path, old_string, new_string): Make surgical edits to existing files
+- list_directory(path, depth?): List files and directories with detailed information
+- get_file_info(path): Get file metadata (size, modified time, line count, etc.)
+- move_file(source, destination): Move or rename files
+- create_directory(path): Create new directories (supports nested paths)
+
+**Enhanced Search & Discovery (Desktop Commander + Context7):**
+- start_search(query, path, search_type?, file_pattern?, ignore_case?, max_results?): Streaming search for files or content
+- get_more_search_results(session_id, offset?, length?): Get additional results from ongoing search
+- stop_search(session_id): Stop an ongoing search session
+- fetch_documentation(topic, tokens?): Fetch comprehensive documentation for libraries, frameworks, or topics
+- resolve_library_id(libraryName): Resolve library names to Context7-compatible IDs
+- get_library_docs(context7CompatibleLibraryID, topic?, tokens?): Get detailed library documentation
+
+**Sequential Thinking & Analysis (Sequential Thinking Server):**
+- sequentialthinking(thought, next_thought_needed, thought_number, total_thoughts, ...): Dynamic problem-solving through structured thoughts
+- brainstorm(prompt, methodology?, domain?, constraints?, existing_context?, idea_count?, include_analysis?): Generate ideas with various frameworks (SCAMPER, Design Thinking, lateral thinking)
+- reflect(subject, context?, successes?, challenges?, learnings?, future_actions?): Reflect on actions and improve future approaches
+
+## Your Enhanced Workflow
+
+**STEP 1: GATHER COMPLETE CONTEXT** (CRITICAL - DO THIS FIRST!)
+Before making ANY decisions, you MUST gather comprehensive context:
+1. **Review the project structure** provided below - understand what scenes and scripts already exist
+2. **Use list_directory** to explore relevant directories (e.g., "res://scenes", "res://scripts")
+3. **Use read_file or read_multiple_files** to examine existing scenes/scripts that are related to the task
+4. **Use fetch_documentation** or **get_library_docs** to get comprehensive docs for libraries/frameworks
+5. **Use start_search** for comprehensive code discovery and pattern finding
+6. **Use sequentialthinking** for complex problem decomposition and step-by-step analysis
+
+**STEP 2: THINK & ANALYZE**
+Use the thinking tools for better decision-making:
+- **Use sequentialthinking** to break down complex requirements into manageable steps
+- **Use brainstorm** to explore multiple implementation approaches and creative solutions
+- **Use reflect** to consider potential issues and improvements before implementation
+
+**STEP 3: PROVIDE DECISION**
+Return your decision as JSON:
+{{
+  "research_needed": boolean,
+  "research_queries": string[],
+  "simple_enough": boolean,
+  "initial_plan": {{
+    "reasoning": string,
+    "steps": [{{"step_number": number, "description": string, "commands_needed": [string]}}],
+    "estimated_complexity": "low" | "medium" | "high"
+  }},
+  "direct_commands": []
+}}
+
+## Project Context (with Real-time Updates)
+
+{}
+
+## User Request
+
+{}"#, enhanced_context, context.user_input);
+
+        // Initialize conversation
+        let mut messages = vec![
+            ChatMessageWithTools {
+                role: "system".to_string(),
+                content: system_prompt,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessageWithTools {
+                role: "user".to_string(),
+                content: format!(
+                    "{}\n\nREMINDER: Start by using MCP tools to gather context. Use list_directory, read_file, and fetch_documentation to understand the project before making decisions.",
+                    context.user_input
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        // Get tool definitions
+        let tool_executor = ToolExecutor::new(self.api_key.clone());
+        let tools = tool_executor.get_tools_for_agent(ToolAgentType::Orchestrator);
+
+        // Agent loop with streaming updates
+        let mut final_response = String::new();
+
+        while streaming_context.should_continue_loop() {
+            streaming_context.increment_iteration();
+
+            // Update state and send progress
+            streaming_context.update_state(AgentLoopState::Processing);
+            let thought = OrchestratorThought::new(
+                "agent_loop_iteration",
+                format!("Agent loop iteration {}/{} - Analyzing and reasoning",
+                    streaming_context.iteration_count, streaming_context.max_iterations),
+                0.85,
+            );
+            streaming_context.add_thought(thought.clone());
+
+            let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+                .with_thought(thought)
+                .with_accumulated(accumulated_content.clone())
+            );
+            chunk_id += 1;
+
+            // Call LLM with tools
+            let response = llm_client
+                .generate_response_with_tools(messages.clone(), Some(tools.clone()))
+                .await?;
+
+            // Check if LLM wants to call tools
+            if let Some(tool_calls) = &response.tool_calls {
+                let tool_names: Vec<String> = tool_calls.iter()
+                    .map(|tc| tc.function.name.clone())
+                    .collect();
+
+                // Update state for tool execution
+                streaming_context.update_state(AgentLoopState::ExecutingTools);
+                let tool_thought = OrchestratorThought::new(
+                    "tool_calls_requested",
+                    format!("LLM requested {} tool calls: {}", tool_calls.len(), tool_names.join(", ")),
+                    0.85,
+                );
+                streaming_context.add_thought(tool_thought.clone());
+
+                let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+                    .with_thought(tool_thought)
+                    .with_tool_result(ToolExecutionResult::new(format!("{} tools", tool_calls.len()))
+                        .with_status(ToolExecutionStatus::Executing)
+                        .with_message("Executing tools...")
+                        .with_progress(0.1))
+                    .with_accumulated(accumulated_content.clone())
+                );
+                chunk_id += 1;
+
+                // Add assistant message with tool calls to conversation
+                messages.push(ChatMessageWithTools {
+                    role: "assistant".to_string(),
+                    content: response.content.clone(),
+                    tool_calls: Some(tool_calls.clone()),
+                    tool_call_id: None,
+                });
+
+                // Execute tools with streaming progress updates
+                for (i, tool_call) in tool_calls.iter().enumerate() {
+                    let tool_name = &tool_call.function.name;
+                    streaming_context.executed_tools.push(tool_name.clone());
+
+                    // Send tool start notification
+                    let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+                        .with_tool_result(ToolExecutionResult::new(tool_name)
+                            .with_status(ToolExecutionStatus::Executing)
+                            .with_message(format!("Executing tool: {}", tool_name))
+                            .with_progress(0.3))
+                        .with_accumulated(accumulated_content.clone())
+                    );
+                    chunk_id += 1;
+
+                    // Here we would execute the tool
+                    // For now, simulate tool execution
+                    let progress = 0.3 + (i as f32 / tool_calls.len() as f32) * 0.6;
+                    let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+                        .with_tool_result(ToolExecutionResult::new(tool_name)
+                            .with_status(ToolExecutionStatus::Processing)
+                            .with_message(format!("Processing results from: {}", tool_name))
+                            .with_progress(progress))
+                        .with_accumulated(accumulated_content.clone())
+                    );
+                    chunk_id += 1;
+                }
+
+                // Execute tools in parallel (simplified for streaming)
+                let mut mcp_client = None; // Would be passed in
+                let results = tool_executor
+                    .execute_tools_parallel(tool_calls, &mut mcp_client, Some(ToolAgentType::Orchestrator))
+                    .await;
+
+                // Process results
+                for (i, (_tool_call_id, result)) in results.iter().enumerate() {
+                    let tool_name = &tool_calls[i].function.name;
+                    let tool_result = if result.is_ok() {
+                        ToolExecutionResult::new(tool_name)
+                            .with_status(ToolExecutionStatus::Completed)
+                            .with_message("Tool executed successfully")
+                            .with_progress(1.0)
+                    } else {
+                        ToolExecutionResult::new(tool_name)
+                            .with_status(ToolExecutionStatus::Failed)
+                            .with_error(result.as_ref().unwrap_err().to_string())
+                            .with_progress(1.0)
+                    };
+
+                    let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+                        .with_tool_result(tool_result)
+                        .with_accumulated(accumulated_content.clone())
+                    );
+                    chunk_id += 1;
+                }
+
+                // Add tool results to conversation
+                let tool_messages = format_tool_results_as_messages(results);
+                messages.extend(tool_messages);
+
+                // Continue to next iteration
+                streaming_context.update_state(AgentLoopState::Reasoning);
+            } else {
+                // No tool calls - this is the final response
+                final_response = response.content.clone();
+                accumulated_content = final_response.clone();
+
+                streaming_context.update_state(AgentLoopState::Responding);
+                let final_thought = OrchestratorThought::new(
+                    "final_response",
+                    "Generated final response without additional tool calls",
+                    0.95,
+                );
+                streaming_context.add_thought(final_thought.clone());
+
+                let _ = chunk_sender.send(StreamingAgentResponse::new(session_id.clone(), chunk_id)
+                    .with_content(final_response.clone())
+                    .with_thought(final_thought)
+                    .with_accumulated(accumulated_content.clone())
+                );
+                chunk_id += 1;
+
+                break;
+            }
+        }
+
+        // Complete execution
+        streaming_context.update_state(AgentLoopState::Complete);
+        let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+        let agent_output = AgentOutput {
+            content: final_response,
+            // Token tracking: Currently not implemented as LlmClient doesn't return token counts.
+            // To implement: Modify LlmClient to return usage metadata and accumulate here.
+            tokens_used: 0,
+            execution_time_ms,
+            metadata: serde_json::Map::new(),
+            cost_usd: None,
+            thoughts: streaming_context.accumulated_thoughts,
+        };
+
+        // Send final completion message
+        let _ = chunk_sender.send(StreamingAgentResponse::new(session_id, chunk_id)
+            .as_complete(agent_output.clone())
+            .with_accumulated(accumulated_content)
+        );
+
+        Ok(agent_output)
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamingStrandsAgent for OrchestratorAgent {
+    async fn execute_streaming(
+        &self,
+        context: &AgentExecutionContext,
+        chunk_sender: UnboundedSender<StreamingAgentResponse>,
+        session_id: String,
+    ) -> Result<AgentOutput> {
+        self.execute_streaming(context, chunk_sender, session_id).await
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait::async_trait]
@@ -832,29 +1106,30 @@ Rules:
 
 }
 
-/// Research Agent - aggregates KB findings and optional web search
-pub struct ResearchAgent {
-    #[allow(dead_code)]
+/// Planning Agent - creates hierarchical execution plans using project context and official documentation
+pub struct PlanningAgent {
     api_key: String,
-    #[allow(dead_code)]
-    client: Client,
-    #[allow(dead_code)]
-    model: String,
     llm_factory: Option<LlmFactory>,
+    /// Optional dynamic context provider for real-time project updates
+    dynamic_context_provider: Option<Arc<DynamicProjectContextProvider>>,
 }
 
-impl ResearchAgent {
+impl PlanningAgent {
     pub fn new(api_key: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
-            client: Client::new(),
-            model: "deepseek/deepseek-v3.2-exp".to_string(),
             llm_factory: None,
+            dynamic_context_provider: None,
         }
     }
 
     pub fn with_llm_factory(mut self, llm_factory: Option<LlmFactory>) -> Self {
         self.llm_factory = llm_factory;
+        self
+    }
+
+    pub fn with_dynamic_context_provider(mut self, provider: Option<Arc<DynamicProjectContextProvider>>) -> Self {
+        self.dynamic_context_provider = provider;
         self
     }
 
@@ -868,30 +1143,30 @@ impl ResearchAgent {
         let mut thoughts = Vec::new();
 
         thoughts.push(OrchestratorThought::new(
-            "research_tool_mode",
-            "Research Agent using selective MCP tools for data gathering and analysis",
+            "planning_tool_mode",
+            "Planning Agent using selective MCP tools for plan creation and analysis",
             0.95,
         ));
 
         // Get the LLM client
         let llm_client = if let Some(factory) = &self.llm_factory {
-            factory.create_client_for_agent(AgentType::Researcher)?
+            factory.create_client_for_agent(AgentType::Planning)?
         } else {
-            return Err(anyhow::anyhow!("LLM factory required for research tool mode"));
+            return Err(anyhow::anyhow!("LLM factory required for planning tool mode"));
         };
 
-        // Get tool definitions for Research agent (read-only access)
+        // Get tool definitions for Planning agent (read-only + documentation access)
         let tool_executor = ToolExecutor::new(self.api_key.clone());
-        let tools = tool_executor.get_tools_for_agent(ToolAgentType::Research);
+        let tools = tool_executor.get_tools_for_agent(ToolAgentType::Planning);
 
         thoughts.push(OrchestratorThought::new(
             "available_tools",
-            format!("Research Agent has access to {} read-only tools", tools.len()),
+            format!("Planning Agent has access to {} read-only and documentation tools", tools.len()),
             0.9,
         ));
 
-        // Prepare system prompt for research-focused tool usage
-        let system_prompt = format!(r#"You are the Research Agent for a Godot game development assistant with selective access to MCP tools for research and analysis.
+        // Prepare system prompt for planning-focused tool usage
+        let system_prompt = format!(r#"You are the Planning Agent for a Godot game development assistant with selective access to MCP tools for creating hierarchical execution plans.
 
 ## Available Research Tools (Read-Only Access)
 
@@ -1011,12 +1286,12 @@ Return your research findings as JSON:
                     tool_call_id: None,
                 });
 
-                // Execute research tools with Research agent filtering
+                // Execute planning tools with Planning agent filtering
                 let results = tool_executor
-                    .execute_tools_parallel(tool_calls, mcp_client, Some(ToolAgentType::Research))
+                    .execute_tools_parallel(tool_calls, mcp_client, Some(ToolAgentType::Planning))
                     .await;
 
-                // Log research tool results
+                // Log planning tool results
                 for (i, (tool_call_id, result)) in results.iter().enumerate() {
                     let tool_name = &tool_calls[i].function.name;
                     let status = if result.is_ok() { "success" } else { "error" };
@@ -1063,7 +1338,9 @@ Return your research findings as JSON:
 
         Ok(AgentOutput {
             content: final_response,
-            tokens_used: 0, // TODO: aggregate from research calls
+            // Token tracking: Currently not implemented as LlmClient doesn't return token counts.
+            // To implement: Modify LlmClient to return usage metadata and accumulate here.
+            tokens_used: 0,
             execution_time_ms,
             metadata: serde_json::Map::new(),
             cost_usd: None,
@@ -1073,7 +1350,7 @@ Return your research findings as JSON:
 }
 
 #[async_trait::async_trait]
-impl StrandsAgent for ResearchAgent {
+impl StrandsAgent for PlanningAgent {
     async fn execute(&self, context: &AgentExecutionContext) -> Result<AgentOutput> {
         let start_time = std::time::Instant::now();
         let mut thoughts = Vec::new();
@@ -1134,11 +1411,11 @@ Guidelines:
         );
 
         let (content, cost_usd) = if let Some(factory) = &self.llm_factory {
-            let client = factory.create_client_for_agent(AgentType::Researcher)?;
+            let client = factory.create_client_for_agent(AgentType::Planning)?;
             let sys_prev = system_prompt.chars().take(200).collect::<String>();
             let user_prev = user_msg.chars().take(200).collect::<String>();
             tracing::debug!(
-                agent = "ResearchAgent",
+                agent = "PlanningAgent",
                 model = %client.model_identifier(),
                 endpoint = %client.endpoint(),
                 system_prompt_preview = %sys_prev,

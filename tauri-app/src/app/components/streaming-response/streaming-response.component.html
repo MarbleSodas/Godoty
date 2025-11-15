@@ -1,0 +1,126 @@
+<div class="streaming-response-container">
+  <!-- Header -->
+  <div class="stream-header">
+    <h3 class="m-0">
+      <i class="pi pi-spin pi-cog" *ngIf="isStreaming"></i>
+      <i class="pi pi-check-circle" *ngIf="isComplete && !hasError"></i>
+      <i class="pi pi-exclamation-circle" *ngIf="hasError"></i>
+      Agent Response
+    </h3>
+    <div class="header-actions">
+      <p-badge [value]="formatExecutionTime(executionTime)" *ngIf="executionTime > 0" severity="info"></p-badge>
+      <p-badge [value]="formatTokens(tokensUsed)" *ngIf="tokensUsed > 0" severity="secondary"></p-badge>
+    </div>
+  </div>
+
+  <!-- Error State -->
+  <p-message *ngIf="hasError" severity="error" text="Streaming failed. Please try again." class="w-full"></p-message>
+
+  <!-- Thought Process Section -->
+  <div class="thought-section" *ngIf="currentThought || thoughts.length > 0">
+    <p-card header="Agent Thought Process" class="thought-card">
+      <div *ngIf="currentThought" class="current-thought">
+        <div class="thought-header">
+          <p-badge [value]="currentThought.phase" [severity]="getPhaseBadgeSeverity(currentThought.phase)"></p-badge>
+          <span class="confidence">{{ formatConfidence(currentThought.confidence) }} confidence</span>
+        </div>
+        <p class="thought-insight">{{ currentThought.insight }}</p>
+        <p-progressBar [value]="currentThought.confidence * 100" class="thought-progress"></p-progressBar>
+      </div>
+
+      <!-- Thought History -->
+      <div class="thought-history" *ngIf="thoughts.length > 1">
+        <p-scrollPanel [style]="{ height: '150px' }">
+          <div class="thought-list">
+            <div *ngFor="let thought of thoughts; let i = index" class="thought-item" [class.active]="thought === currentThought">
+              <div class="thought-item-header">
+                <small class="text-muted">Step {{ i + 1 }}</small>
+                <p-badge [value]="thought.phase" [severity]="getPhaseBadgeSeverity(thought.phase)" size="small"></p-badge>
+              </div>
+              <p class="m-0">{{ thought.insight }}</p>
+            </div>
+          </div>
+        </p-scrollPanel>
+      </div>
+    </p-card>
+  </div>
+
+  <!-- Tool Execution Section -->
+  <div class="tool-section" *ngIf="currentTool || isStreaming">
+    <p-card header="Tool Execution" class="tool-card" *ngIf="currentTool">
+      <div class="tool-info">
+        <div class="tool-header">
+          <h4 class="m-0">{{ currentTool.tool_name }}</h4>
+          <p-badge [value]="currentTool.status" [severity]="getToolStatusSeverity(currentTool.status)"></p-badge>
+        </div>
+        <p class="tool-message">{{ currentTool.message }}</p>
+        <div class="tool-progress" *ngIf="currentTool.status !== 'Completed' && currentTool.status !== 'Failed'">
+          <p-progressBar [value]="currentTool.progress * 100"></p-progressBar>
+          <span class="progress-text">{{ Math.round(currentTool.progress * 100) }}%</span>
+        </div>
+        <div *ngIf="currentTool.error" class="tool-error">
+          <p-message severity="error" [text]="currentTool.error"></p-message>
+        </div>
+      </div>
+    </p-card>
+
+    <!-- Generic loading when streaming but no specific tool -->
+    <p-card header="Processing" class="tool-card" *ngIf="isStreaming && !currentTool">
+      <div class="loading-indicator">
+        <i class="pi pi-spin pi-spinner"></i>
+        <span>Agent is thinking...</span>
+      </div>
+    </p-card>
+  </div>
+
+  <!-- Response Content Section -->
+  <div class="response-section" *ngIf="accumulatedResponse || isStreaming">
+    <p-card header="Response" class="response-card">
+      <div class="response-content" [innerHTML]="formatResponseContent(accumulatedResponse)"></div>
+
+      <!-- Streaming indicator -->
+      <div class="streaming-indicator" *ngIf="isStreaming">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+    </p-card>
+  </div>
+
+  <!-- Completion Actions -->
+  <div class="completion-actions" *ngIf="isComplete && finalResponse">
+    <div class="actions-card">
+      <div class="stats-row">
+        <div class="stat-item">
+          <span class="stat-label">Commands Generated:</span>
+          <span class="stat-value">{{ commandsCount }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Execution Time:</span>
+          <span class="stat-value">{{ formatExecutionTime(executionTime) }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Tokens Used:</span>
+          <span class="stat-value">{{ formatTokens(tokensUsed) }}</span>
+        </div>
+      </div>
+
+      <div class="action-buttons">
+        <p-button
+          label="Execute Commands"
+          icon="pi pi-play"
+          [disabled]="commandsCount === 0"
+          (click)="onExecuteCommands()"
+          pTooltip="Execute the generated commands in Godot">
+        </p-button>
+        <p-button
+          label="Retry"
+          icon="pi pi-refresh"
+          severity="secondary"
+          (click)="onRetry()"
+          pTooltip="Retry with the same input">
+        </p-button>
+      </div>
+    </div>
+  </div>
+</div>

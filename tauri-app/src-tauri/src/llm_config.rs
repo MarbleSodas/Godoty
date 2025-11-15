@@ -11,7 +11,7 @@ pub enum LlmProvider {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AgentType {
     Orchestrator,
-    Researcher,
+    Planning,
 }
 
 /// Model selection for a specific agent
@@ -39,15 +39,15 @@ impl Default for AgentLlmConfig {
             AgentType::Orchestrator,
             ModelSelection {
                 provider: LlmProvider::OpenRouter,
-                model_name: "openai/gpt-5.1".to_string(),
+                model_name: "minimax/minimax-m2".to_string(),
             },
         );
 
         agents.insert(
-            AgentType::Researcher,
+            AgentType::Planning,
             ModelSelection {
                 provider: LlmProvider::OpenRouter,
-                model_name: "deepseek/deepseek-v3.2-exp".to_string(),
+                model_name: "openai/gpt-5.1-codex".to_string(),
             },
         );
 
@@ -94,7 +94,8 @@ pub fn get_available_models() -> HashMap<LlmProvider, Vec<String>> {
         vec![
             "x-ai/grok-4-fast".to_string(),
             "deepseek/deepseek-v3.2-exp".to_string(),
-            "openai/gpt-5.1".to_string(),
+            "openai/gpt-5.1-codex".to_string(),
+            "minimax/minimax-m2".to_string(),
         ],
     );
 

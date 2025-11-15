@@ -431,7 +431,7 @@ impl LlmClient for OpenRouterClient {
 }
 
 /// Factory for creating LLM clients based on configuration
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LlmFactory {
     config: AgentLlmConfig,
     api_keys: ApiKeyStore,

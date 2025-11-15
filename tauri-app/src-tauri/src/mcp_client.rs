@@ -15,6 +15,10 @@ pub struct McpServerConfig {
     #[allow(dead_code)] // Description used for logging and debugging
     pub description: String,
     pub enabled: bool,
+    /// Use bundled binary instead of external command
+    pub use_bundled: bool,
+    /// Optional custom path to bundled binary
+    pub binary_path: Option<std::path::PathBuf>,
 }
 
 impl Default for McpServerConfig {
@@ -25,6 +29,8 @@ impl Default for McpServerConfig {
             args: vec!["-y".to_string(), "@wonderwhy-er/desktop-commander@latest".to_string()],
             description: "Desktop file system and process management".to_string(),
             enabled: true,
+            use_bundled: false,
+            binary_path: None,
         }
     }
 }
@@ -41,23 +47,86 @@ pub struct McpServerConnection {
 
 impl McpServerConnection {
     pub async fn new(config: McpServerConfig, project_root: &Path) -> Result<Self> {
-        info!(
-            server_id = %config.server_id,
-            command = %config.command,
-            "Starting MCP server"
-        );
+        let (command, args, command_type) = {
+            // Try custom binary path first, then auto-discovered bundled binary
+            if let Some(custom_binary_path) = &config.binary_path {
+                if custom_binary_path.exists() {
+                    info!(
+                        server_id = %config.server_id,
+                        binary_path = %custom_binary_path.display(),
+                        "Starting MCP server with custom bundled binary"
+                    );
+                    (custom_binary_path.to_string_lossy().to_string(), vec![], "bundled")
+                } else {
+                    warn!(
+                        server_id = %config.server_id,
+                        binary_path = %custom_binary_path.display(),
+                        "Custom bundled binary not found, falling back to auto-discovery"
+                    );
+                    // Try auto-discovered bundled binary
+                    if let Some(binary_path) = get_bundled_binary_path(&config.server_id) {
+                        info!(
+                            server_id = %config.server_id,
+                            binary_path = %binary_path.display(),
+                            "Starting MCP server with auto-discovered bundled binary"
+                        );
+                        (binary_path.to_string_lossy().to_string(), vec![], "bundled")
+                    } else {
+                        // No bundled binary available, fall back to npx
+                        warn!(
+                            server_id = %config.server_id,
+                            "No bundled binary available, falling back to npx"
+                        );
+                        let package_name = get_package_name_for_server(&config.server_id);
+                        (get_npx_command(), vec!["-y".to_string(), package_name], "fallback")
+                    }
+                }
+            } else if let Some(binary_path) = get_bundled_binary_path(&config.server_id) {
+                info!(
+                    server_id = %config.server_id,
+                    binary_path = %binary_path.display(),
+                    "Starting MCP server with auto-discovered bundled binary"
+                );
+                (binary_path.to_string_lossy().to_string(), vec![], "bundled")
+            } else {
+                // No bundled binary available, use configured command (npx or fallback)
+                if config.use_bundled {
+                    warn!(
+                        server_id = %config.server_id,
+                        "Bundled binary not found, falling back to npx"
+                    );
+                    // We wanted to use bundled but it's not available, fall back to npx
+                    let package_name = get_package_name_for_server(&config.server_id);
+                    (get_npx_command(), vec!["-y".to_string(), package_name], "fallback")
+                } else {
+                    info!(
+                        server_id = %config.server_id,
+                        command = %config.command,
+                        "Starting MCP server with external command"
+                    );
+                    // Use the configured external command, but replace "npx" with full path if needed
+                    let command = if config.command == "npx" {
+                        get_npx_command()
+                    } else {
+                        config.command.clone()
+                    };
+                    (command, config.args.clone(), "external")
+                }
+            }
+        };
 
-        let mut cmd = Command::new(&config.command);
-        cmd.args(&config.args)
+        let mut cmd = Command::new(&command);
+        cmd.args(&args)
             .current_dir(project_root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit());
 
         let mut child = cmd.spawn().map_err(|e| anyhow!(
-            "Failed to spawn MCP server '{}' (command: {}): {}",
+            "Failed to spawn MCP server '{}' (command: {}, type: {}): {}",
             config.server_id,
-            config.command,
+            command,
+            command_type,
             e
         ))?;
 
@@ -241,6 +310,8 @@ impl McpClientManager {
                 ],
                 description: "Desktop file system, search, and process management".to_string(),
                 enabled: true,
+                use_bundled: false, // Will be enabled after build system integration
+                binary_path: None,
             },
             // Sequential Thinking - Enhanced reasoning capabilities
             McpServerConfig {
@@ -252,6 +323,8 @@ impl McpClientManager {
                 ],
                 description: "Sequential thinking and reasoning tools".to_string(),
                 enabled: true,
+                use_bundled: false, // Will be enabled after build system integration
+                binary_path: None,
             },
             // Context7 - Enhanced documentation and library access
             McpServerConfig {
@@ -259,10 +332,12 @@ impl McpClientManager {
                 command: "npx".to_string(),
                 args: vec![
                     "-y".to_string(),
-                    "@context7/server@latest".to_string()
+                    "@upstash/context7-mcp@latest".to_string()
                 ],
                 description: "Enhanced documentation and library access".to_string(),
                 enabled: true,
+                use_bundled: false, // Will be enabled after build system integration
+                binary_path: None,
             },
         ]
     }
@@ -445,6 +520,69 @@ impl McpClientManager {
         }
         Ok(())
     }
+}
+
+/// Get the path to the bundled binary for a server
+fn get_bundled_binary_path(server_id: &str) -> Option<std::path::PathBuf> {
+    let platform_dir = match std::env::consts::OS {
+        "windows" => "windows",
+        "macos" => "macos",
+        "linux" => "linux",
+        _ => return None,
+    };
+
+    // Map server IDs to binary names
+    let binary_name = match server_id {
+        "desktop-commander" => "desktop-commander",
+        "sequential-thinking" => "sequential-thinking",
+        "context7" => "context7",
+        _ => return None,
+    };
+
+    let mut binary_path = std::path::PathBuf::from("resources/mcp")
+        .join(platform_dir)
+        .join(binary_name);
+
+    if std::env::consts::OS == "windows" {
+        binary_path.set_extension("exe");
+    }
+
+    // Check if the binary exists
+    if binary_path.exists() {
+        Some(binary_path)
+    } else {
+        None
+    }
+}
+
+/// Get the package name for a given server ID
+fn get_package_name_for_server(server_id: &str) -> String {
+    match server_id {
+        "desktop-commander" => "@wonderwhy-er/desktop-commander@latest".to_string(),
+        "sequential-thinking" => "@modelcontextprotocol/server-sequential-thinking@latest".to_string(),
+        "context7" => "@upstash/context7-mcp@latest".to_string(),
+        _ => format!("Unknown server: {}", server_id),
+    }
+}
+
+// Get the npx command with full path to resolve PATH issues
+fn get_npx_command() -> String {
+    if cfg!(target_os = "windows") {
+        // Try common Windows locations for npx
+        let common_paths = vec![
+            r"C:\Program Files\nodejs\npx.cmd",
+            r"C:\Program Files (x86)\nodejs\npx.cmd",
+        ];
+
+        for path in common_paths {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
+        }
+    }
+
+    // Fallback to just "npx" and hope it's in PATH
+    "npx".to_string()
 }
 
 // Legacy compatibility type alias

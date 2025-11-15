@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "WebFetch(domain:strandsagents.com)",
+      "WebSearch",
+      "Bash(cargo check:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "WebFetch(domain:docs.godotengine.org)",
+      "Bash(bun run tauri:*)",
+      "Bash(where npx:*)",
+      "Bash(findstr:*)",
+      "Bash(dir /s /b *.node 2)",
+      "Bash(nul)",
+      "Bash(if exist resources dir resources /b)",
+      "Bash(bun install:*)",
+      "Bash(cargo fix:*)",
+      "Bash(node:*)",
+      "Bash(npm --version:*)",
+      "Bash(npx --version:*)",
+      "Bash(cargo run:*)",
+      "Bash(npx -y @wonderwhy-er/desktop-commander@latest:*)",
+      "Bash(npx:*)",
+      "Bash(echo:*)",
+      "Bash(cargo:*)",
+      "Bash(cmd //c \"echo %PATH%\")",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(npm search:*)",
+      "Bash(BUILD_MCP_DEBUG=1 cargo build:*)",
+      "Bash(tasklist:*)",
+      "Bash(Select-String \"error\\[\")",
+      "Bash(Measure-Object)",
+      "Bash(Select-Object -ExpandProperty Count)",
+      "Bash(1)",
+      "Bash(Select-String \"error\\[E\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

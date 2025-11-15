@@ -74,16 +74,20 @@ impl Default for GuardrailConfig {
 /// Guardrail enforcement system
 #[derive(Clone)]
 pub struct Guardrails {
+    #[allow(dead_code)] // Enhancement plan Phase 2: Safety configuration
     pub config: GuardrailConfig,
+    #[allow(dead_code)] // Future feature: Request tracking and analysis
     request_history: Arc<RwLock<Vec<RequestRecord>>>,
 }
 
 #[derive(Debug, Clone)]
 struct RequestRecord {
+    #[allow(dead_code)] // Request timestamp for rate limiting analysis
     timestamp: SystemTime,
     _tokens_used: u32,
 }
 
+#[allow(dead_code)] // Enhancement plan Phase 2: Safety and monitoring methods
 impl Guardrails {
     pub fn new(config: GuardrailConfig) -> Self {
         Self {
@@ -386,6 +390,7 @@ impl Guardrails {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)] // Enhancement plan Phase 2: Command validation results
 pub struct ValidationResult {
     pub valid: bool,
     pub errors: Vec<String>,

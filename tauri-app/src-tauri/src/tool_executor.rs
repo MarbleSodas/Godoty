@@ -14,15 +14,15 @@ pub struct ToolExecutor {
 #[derive(Debug, Clone)]
 pub enum AgentType {
     Orchestrator,
-    #[allow(dead_code)] // Used by ResearchAgent for tool filtering
-    Research,
+    #[allow(dead_code)] // Used by PlanningAgent for tool filtering
+    Planning,
 }
 
 impl AgentType {
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentType::Orchestrator => "orchestrator",
-            AgentType::Research => "research",
+            AgentType::Planning => "planning",
         }
     }
 }

@@ -25,6 +25,27 @@ mod mcp_client;
 mod mcp_tools;
 mod mcp_config;
 mod tool_executor;
+mod streaming_agent;
+mod streaming_handler;
+mod agent_loop;
+mod session_manager;
+mod session_manager_commands;
+mod dynamic_context_provider;
+mod dynamic_context_commands;
+mod agent_factory;
+
+// New architecture modules
+mod unified_context;
+mod context_manager;
+mod tool_registry;
+mod tool_facade;
+mod execution_engine;
+mod research_agent;
+mod orchestrator_agent;
+mod workflow_engine;
+
+// Migration adapter for backward compatibility
+mod migration_adapter;
 
 use crate::llm_client::set_tool_event_context;
 use agent::AgenticWorkflow;
@@ -33,6 +54,7 @@ use chat_session::{ChatMessage, ChatSessionManager, ContextSnapshot, MessageRole
 use context_engine::ContextEngine;
 use llm_config::{AgentLlmConfig, ApiKeyStore, LlmProvider};
 use crate::rag_sidecar::RagSidecarState;
+use streaming_handler::StreamingSessionManager;
 
 use metrics::MetricsStore;
 
@@ -63,7 +85,13 @@ struct AppState {
     // Enhanced MCP client manager with multi-server support
     mcp_client: Arc<Mutex<Option<McpClientManager>>>,
     // MCP configuration manager
+    #[allow(dead_code)] // Part of enhancement plan: MCP configuration management
     mcp_config: Arc<Mutex<Option<McpConfigManager>>>,
+    // Streaming session manager
+    #[allow(dead_code)] // Part of enhancement plan: Streaming infrastructure
+    streaming_session_manager: Arc<StreamingSessionManager>,
+    // File session manager
+    file_session_manager: Arc<Mutex<Option<Arc<crate::session_manager::FileSessionManager>>>>,
 }
 
 impl Default for AppState {
@@ -123,6 +151,8 @@ impl Default for AppState {
             rag_state: Arc::new(Mutex::new(RagSidecarState::default())),
             mcp_client: Arc::new(Mutex::new(None)),
             mcp_config: Arc::new(Mutex::new(mcp_config)),
+            streaming_session_manager: Arc::new(StreamingSessionManager::new()),
+            file_session_manager: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -3217,7 +3247,31 @@ pub fn run() {
             stop_rag_sidecar,
             get_rag_status,
             rag_index_current_project,
-            rag_search_current_project
+            rag_search_current_project,
+
+            // Streaming agent controls
+            streaming_handler::start_agent_streaming,
+            streaming_handler::get_streaming_endpoint,
+
+            // File session manager controls
+            session_manager_commands::create_file_session,
+            session_manager_commands::get_file_session,
+            session_manager_commands::update_file_session,
+            session_manager_commands::add_session_message,
+            session_manager_commands::get_conversation_context,
+            session_manager_commands::list_file_sessions,
+            session_manager_commands::delete_file_session,
+            session_manager_commands::archive_file_session,
+            session_manager_commands::cleanup_old_sessions,
+            session_manager_commands::initialize_session_manager,
+
+            // Dynamic context provider controls
+            dynamic_context_commands::initialize_dynamic_context,
+            dynamic_context_commands::get_dynamic_context,
+            dynamic_context_commands::refresh_project_context,
+            dynamic_context_commands::get_recent_context_updates,
+            dynamic_context_commands::configure_file_watcher,
+            dynamic_context_commands::get_file_watcher_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

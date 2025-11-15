@@ -1,0 +1,331 @@
+.streaming-response-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  background-color: var(--surface-card);
+  border-radius: 8px;
+  min-height: 400px;
+}
+
+.stream-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--surface-border);
+
+  h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-color);
+    font-size: 1.25rem;
+    font-weight: 600;
+
+    i {
+      font-size: 1.5rem;
+    }
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+}
+
+// Thought Process Section
+.thought-section {
+  .thought-card {
+    .current-thought {
+      margin-bottom: 1rem;
+
+      .thought-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+
+        .confidence {
+          font-size: 0.875rem;
+          color: var(--text-color-secondary);
+        }
+      }
+
+      .thought-insight {
+        margin: 0.5rem 0;
+        color: var(--text-color);
+        line-height: 1.5;
+      }
+
+      .thought-progress {
+        height: 4px;
+        margin-top: 0.5rem;
+      }
+    }
+
+    .thought-history {
+      margin-top: 1rem;
+      border-top: 1px solid var(--surface-border);
+      padding-top: 1rem;
+
+      .thought-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+
+        .thought-item {
+          padding: 0.75rem;
+          border-radius: 6px;
+          background-color: var(--surface-100);
+          border-left: 3px solid var(--primary-color);
+          transition: all 0.2s ease;
+
+          &.active {
+            background-color: var(--primary-color);
+            color: white;
+            border-left-color: var(--primary-700);
+
+            .text-muted {
+              color: rgba(255, 255, 255, 0.8) !important;
+            }
+          }
+
+          &:not(.active):hover {
+            background-color: var(--surface-200);
+          }
+
+          .thought-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+
+            small {
+              color: var(--text-color-secondary);
+            }
+          }
+
+          p {
+            font-size: 0.875rem;
+            line-height: 1.4;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Tool Execution Section
+.tool-section {
+  .tool-card {
+    .tool-info {
+      .tool-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+
+        h4 {
+          color: var(--text-color);
+          font-size: 1.1rem;
+        }
+      }
+
+      .tool-message {
+        color: var(--text-color-secondary);
+        margin-bottom: 1rem;
+        font-style: italic;
+      }
+
+      .tool-progress {
+        position: relative;
+        margin-bottom: 0.5rem;
+
+        .progress-text {
+          position: absolute;
+          right: 10px;
+          top: 50%;
+          transform: translateY(-50%);
+          font-size: 0.75rem;
+          font-weight: bold;
+          color: var(--text-color);
+        }
+      }
+
+      .tool-error {
+        margin-top: 1rem;
+      }
+    }
+
+    .loading-indicator {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      padding: 2rem;
+      color: var(--text-color-secondary);
+
+      i {
+        font-size: 1.5rem;
+      }
+
+      span {
+        font-size: 1rem;
+      }
+    }
+  }
+}
+
+// Response Content Section
+.response-section {
+  .response-card {
+    position: relative;
+
+    .response-content {
+      color: var(--text-color);
+      line-height: 1.6;
+      white-space: pre-wrap;
+
+      // Code blocks
+      ::ng-deep pre {
+        background-color: var(--surface-900);
+        color: var(--text-color);
+        padding: 1rem;
+        border-radius: 6px;
+        overflow-x: auto;
+        margin: 1rem 0;
+      }
+
+      // JSON formatting
+      ::ng-deep code {
+        background-color: var(--surface-100);
+        color: var(--text-color);
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-family: 'Courier New', monospace;
+        font-size: 0.875rem;
+      }
+    }
+
+    .streaming-indicator {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 1rem;
+      padding-top: 1rem;
+
+      span {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: var(--primary-color);
+        animation: pulse 1.4s ease-in-out infinite both;
+
+        &:nth-child(1) {
+          animation-delay: -0.32s;
+        }
+
+        &:nth-child(2) {
+          animation-delay: -0.16s;
+        }
+      }
+    }
+  }
+}
+
+// Completion Actions
+.completion-actions {
+  .actions-card {
+    padding: 1rem;
+    background-color: var(--surface-0);
+    border-radius: 8px;
+    border: 1px solid var(--surface-border);
+
+    .stats-row {
+      display: flex;
+      justify-content: space-around;
+      margin-bottom: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--surface-border);
+
+      .stat-item {
+        text-align: center;
+
+        .stat-label {
+          display: block;
+          font-size: 0.875rem;
+          color: var(--text-color-secondary);
+          margin-bottom: 0.25rem;
+        }
+
+        .stat-value {
+          display: block;
+          font-size: 1.25rem;
+          font-weight: 600;
+          color: var(--primary-color);
+        }
+      }
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+    }
+  }
+}
+
+// Animations
+@keyframes pulse {
+  0%, 80%, 100% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+// Responsive Design
+@media (max-width: 768px) {
+  .streaming-response-container {
+    padding: 0.75rem;
+  }
+
+  .stats-row {
+    flex-direction: column;
+    gap: 0.75rem;
+
+    .stat-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      text-align: left;
+    }
+  }
+
+  .action-buttons {
+    flex-direction: column;
+
+    button {
+      width: 100%;
+    }
+  }
+}
+
+// Dark mode adjustments
+@media (prefers-color-scheme: dark) {
+  .streaming-response-container {
+    background-color: var(--surface-card);
+  }
+
+  .thought-item {
+    background-color: var(--surface-100);
+
+    &:hover {
+      background-color: var(--surface-200);
+    }
+  }
+}

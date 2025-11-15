@@ -32,7 +32,7 @@ pub struct FunctionCall {
 }
 
 /// Tool categories for organization and filtering
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolCategory {
     FileSystem,
     Search,
@@ -46,6 +46,7 @@ pub enum ToolCategory {
 }
 
 impl ToolCategory {
+    #[allow(dead_code)] // Helper for debugging and logging MCP tools
     pub fn as_str(&self) -> &'static str {
         match self {
             ToolCategory::FileSystem => "file_system",
@@ -80,7 +81,7 @@ pub fn get_enhanced_mcp_tool_definitions() -> Vec<EnhancedToolDefinition> {
         definition: create_read_file_tool(),
         category: ToolCategory::FileSystem,
         server_id: "desktop-commander".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
@@ -101,7 +102,7 @@ pub fn get_enhanced_mcp_tool_definitions() -> Vec<EnhancedToolDefinition> {
         definition: create_list_directory_tool(),
         category: ToolCategory::FileSystem,
         server_id: "desktop-commander".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
@@ -122,14 +123,14 @@ pub fn get_enhanced_mcp_tool_definitions() -> Vec<EnhancedToolDefinition> {
         definition: create_get_file_info_tool(),
         category: ToolCategory::FileSystem,
         server_id: "desktop-commander".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
         definition: create_read_multiple_files_tool(),
         category: ToolCategory::FileSystem,
         server_id: "desktop-commander".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     // Desktop Commander - Search Operations
@@ -137,21 +138,21 @@ pub fn get_enhanced_mcp_tool_definitions() -> Vec<EnhancedToolDefinition> {
         definition: create_start_search_tool(),
         category: ToolCategory::Search,
         server_id: "desktop-commander".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
         definition: create_get_more_search_results_tool(),
         category: ToolCategory::Search,
         server_id: "desktop-commander".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
         definition: create_stop_search_tool(),
         category: ToolCategory::Search,
         server_id: "desktop-commander".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     // Desktop Commander - Process Management
@@ -195,21 +196,21 @@ pub fn get_enhanced_mcp_tool_definitions() -> Vec<EnhancedToolDefinition> {
         definition: create_sequential_thinking_tool(),
         category: ToolCategory::SequentialThinking,
         server_id: "sequential-thinking".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
         definition: create_brainstorm_tool(),
         category: ToolCategory::SequentialThinking,
         server_id: "sequential-thinking".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
         definition: create_reflect_tool(),
         category: ToolCategory::SequentialThinking,
         server_id: "sequential-thinking".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     // Context7 Enhanced Documentation Tools
@@ -217,14 +218,14 @@ pub fn get_enhanced_mcp_tool_definitions() -> Vec<EnhancedToolDefinition> {
         definition: create_resolve_library_id_tool(),
         category: ToolCategory::Documentation,
         server_id: "context7".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools.push(EnhancedToolDefinition {
         definition: create_get_library_docs_tool(),
         category: ToolCategory::Documentation,
         server_id: "context7".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     // Enhanced legacy documentation tool (now uses context7)
@@ -232,7 +233,7 @@ pub fn get_enhanced_mcp_tool_definitions() -> Vec<EnhancedToolDefinition> {
         definition: create_fetch_documentation_tool(),
         category: ToolCategory::Documentation,
         server_id: "context7".to_string(),
-        allowed_agents: vec!["orchestrator".to_string(), "research".to_string()],
+        allowed_agents: vec!["orchestrator".to_string(), "planning".to_string()],
     });
 
     tools

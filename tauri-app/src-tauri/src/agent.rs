@@ -7,7 +7,7 @@ use crate::project_indexer::ProjectIndex;
 use crate::context_engine::ContextEngine;
 use crate::strands_agent::{
     AgentExecutionContext, AgentOutput, StrandsAgent,
-    OrchestratorAgent, ResearchAgent,
+    OrchestratorAgent, PlanningAgent,
 };
 use anyhow::Result;
 use reqwest::Client;
@@ -26,8 +26,7 @@ pub struct AgentThought {
 /// Visual context data for debug/game tasks
 #[derive(Clone, Debug, Default)]
 pub struct VisualContext {
-    #[allow(dead_code)]
-    pub game_screenshot_base64: Option<String>,
+    #[allow(dead_code)] // Future feature: Game screenshot analysis
     pub game_screenshot_metadata: Option<Value>,
     pub game_screenshot_path: Option<String>,
 }
@@ -37,6 +36,7 @@ pub struct VisualContext {
 pub struct AgentContext {
     pub user_input: String,
     pub project_index: ProjectIndex,
+    #[allow(dead_code)] // Legacy field - preserved for compatibility
     pub chat_history: String,
     pub visual_context: VisualContext,
 }
@@ -46,6 +46,7 @@ pub struct AgentContext {
 pub struct AgenticWorkflow {
     api_key: String,
     client: Client,
+    #[allow(dead_code)] // Enhancement plan Phase 2: Safety guardrails
     guardrails: Guardrails,
     metrics_store: Option<MetricsStore>,
     llm_factory: Option<LlmFactory>,
@@ -73,81 +74,9 @@ impl AgenticWorkflow {
         self
     }
 
-    /// Detect if the user input involves UI/scene modifications
-    #[allow(dead_code)]
-    pub fn is_ui_task(user_input: &str) -> bool {
-        let input_lower = user_input.to_lowercase();
-
-        // UI-related keywords
-        let ui_keywords = [
-            "ui",
-            "button",
-            "label",
-            "panel",
-            "control",
-            "layout",
-            "scene",
-            "node",
-            "canvas",
-            "viewport",
-            "container",
-            "edit ui",
-            "modify ui",
-            "change ui",
-            "update ui",
-            "edit scene",
-            "modify scene",
-            "change scene",
-            "update scene",
-            "edit button",
-            "modify button",
-            "change button",
-            "update button",
-            "edit layout",
-            "modify layout",
-            "change layout",
-            "update layout",
-            "add button",
-            "add label",
-            "add panel",
-            "add control",
-            "create button",
-            "create label",
-            "create panel",
-            "create control",
-            "remove button",
-            "remove label",
-            "remove panel",
-            "remove control",
-            "delete button",
-            "delete label",
-            "delete panel",
-            "delete control",
-            "position",
-            "size",
-            "anchor",
-            "margin",
-            "theme",
-            "sprite",
-            "texture",
-            "image",
-            "visual",
-        ];
-
-        ui_keywords
-            .iter()
-            .any(|keyword| input_lower.contains(keyword))
-    }
-
-    /// Execute the agentic workflow with Strands agents
-    #[allow(dead_code)]
-    #[tracing::instrument(skip(self, context))]
-    pub async fn execute(&self, context: &AgentContext) -> Result<AgentResponse> {
-        self.execute_with_mcp(context, &mut None, None).await
-    }
-
     /// Execute with optional MCP client and config for tool calling support
     #[tracing::instrument(skip(self, context, mcp_client, config))]
+    #[allow(dead_code)] // Alternative execution method for MCP integration
     pub async fn execute_with_mcp(
         &self,
         context: &AgentContext,
@@ -201,6 +130,7 @@ impl AgenticWorkflow {
     }
 
     /// Internal execution logic (separated to ensure metrics are always saved)
+    #[allow(dead_code)] // Internal method for execute_with_mcp
     async fn execute_internal(
         &self,
         context: &AgentContext,
@@ -223,7 +153,7 @@ impl AgenticWorkflow {
 
         // Prepare visual context string for agents (game screenshots only)
         let local_visual = context.visual_context.clone();
-        let visual_context_str = if let Some(ref game_path) = local_visual.game_screenshot_path {
+        let _visual_context_str = if let Some(ref game_path) = local_visual.game_screenshot_path {
             let mut context_parts = vec![
                 format!("Game Debug Screenshot: {}", game_path),
                 "This shows the current visual state of the running game.".to_string(),
@@ -265,11 +195,10 @@ impl AgenticWorkflow {
         let orchestrator = OrchestratorAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
         let orch_context = AgentExecutionContext {
             user_input: context.user_input.clone(),
-            _chat_history: context.chat_history.clone(),
             project_context: formatted_context_for_ai.clone(),
-            execution_plan: None,
             previous_output: None,
-            visual_context: visual_context_str.clone(),
+            dynamic_context_provider: None,
+            project_path: None,
         };
 
         // Use tool calling mode if enabled in config
@@ -336,39 +265,39 @@ impl AgenticWorkflow {
             }
         }
 
-        // Conditional Research step -> produces a full plan for larger changes
-        let mut research_summary = String::new();
+        // Conditional Planning step -> produces a full plan for larger changes
+        let mut planning_summary = String::new();
         if research_needed {
-            let research_agent = ResearchAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
-            let research_ctx = AgentExecutionContext { previous_output: Some(orch_output.content.clone()), ..orch_context.clone() };
+            let planning_agent = PlanningAgent::new(&self.api_key).with_llm_factory(self.llm_factory.clone());
+            let planning_ctx = AgentExecutionContext { previous_output: Some(orch_output.content.clone()), ..orch_context.clone() };
 
-            // Use tool calling mode for research agent if enabled and MCP client is available
+            // Use tool calling mode for planning agent if enabled and MCP client is available
             let use_tool_calling = config.map(|c| c.enable_tool_calling).unwrap_or(true);
             let res = if use_tool_calling && mcp_client.is_some() {
-                research_agent.execute_with_tools(&research_ctx, mcp_client).await?
+                planning_agent.execute_with_tools(&planning_ctx, mcp_client).await?
             } else {
-                research_agent.execute(&research_ctx).await?
+                planning_agent.execute(&planning_ctx).await?
             };
 
-            // Track research cost in planning metrics
+            // Track planning cost in planning metrics
             if let Some(cost) = res.cost_usd {
                 metrics.planning_cost_usd += cost;
             }
 
-            // Convert research agent thoughts to agent thoughts
-            for research_thought in res.thoughts.iter() {
+            // Convert planning agent thoughts to agent thoughts
+            for planning_thought in res.thoughts.iter() {
                 thoughts.push(AgentThought {
                     step: thoughts.len() + 1,
-                    thought: format!("[{}] {}", research_thought.phase, research_thought.insight),
-                    action: Some("research".to_string()),
-                    observation: Some(format!("Confidence: {:.0}%", research_thought.confidence * 100.0)),
+                    thought: format!("[{}] {}", planning_thought.phase, planning_thought.insight),
+                    action: Some("planning".to_string()),
+                    observation: Some(format!("Confidence: {:.0}%", planning_thought.confidence * 100.0)),
                 });
             }
 
-            // Try to parse a plan from research content
+            // Try to parse a plan from planning content
             match serde_json::from_str::<ExecutionPlan>(&Self::extract_json(&res.content)?) {
                 Ok(p) => plan_opt = Some(p),
-                Err(_) => research_summary = res.content,
+                Err(_) => planning_summary = res.content,
             }
         }
 
@@ -379,9 +308,9 @@ impl AgenticWorkflow {
             s.push_str(&formatted_context_for_ai);
             s.push_str("\n\n# Orchestrator Decision\n");
             s.push_str(&orch_output.content);
-            if !research_summary.is_empty() {
-                s.push_str("\n\n# Research Summary\n");
-                s.push_str(&research_summary);
+            if !planning_summary.is_empty() {
+                s.push_str("\n\n# Planning Summary\n");
+                s.push_str(&planning_summary);
             }
 
             s
@@ -390,15 +319,34 @@ impl AgenticWorkflow {
         let plan: ExecutionPlan = if let Some(p) = plan_opt {
             p
         } else {
-            // Minimal fallback plan when no explicit plan was provided by Orchestrator/Research
+            // Minimal fallback plan when no explicit plan was provided by Orchestrator/Planning
             ExecutionPlan {
                 reasoning: "Derived minimal plan from context (no explicit plan provided)".to_string(),
+                metadata: None,
+                phases: vec![],
                 steps: vec![PlanStep {
                     step_number: 1,
                     description: "Apply the requested change using available tools".to_string(),
                     commands_needed: vec![],
+                    step_id: String::new(),
+                    explanation: String::new(),
+                    required_tools: vec![],
+                    expected_outcome: String::new(),
+                    success_criteria: vec![],
+                    dependencies: vec![],
+                    error_recovery: vec![],
+                    estimated_time_minutes: 0,
+                    safety_considerations: vec![],
                 }],
                 estimated_complexity: "low".to_string(),
+                overall_goal: String::new(),
+                success_criteria: vec![],
+                estimated_duration: None,
+                complexity: None,
+                preconditions: vec![],
+                post_conditions: vec![],
+                fallback_strategies: vec![],
+                plan_id: String::new(),
             }
         };
 
@@ -936,6 +884,7 @@ Do NOT add extra closing braces - each object should have exactly one closing br
 
     /// Trim to the first balanced JSON object or array within the given string.
     /// Returns Some(json_substring) if a balanced block is found; otherwise None.
+    #[allow(dead_code)] // JSON parsing utility for future enhancement
     fn trim_to_balanced_json_block(s: &str) -> Option<String> {
         let bytes = s.as_bytes();
 
@@ -1027,7 +976,7 @@ Do NOT add extra closing braces - each object should have exactly one closing br
         let formatted_context_for_ai = ctx_engine.format_context_for_ai(&comp_ctx);
 
         // Prepare visual context string
-        let visual_context_str = context.visual_context.game_screenshot_path.as_ref()
+        let _visual_context_str = context.visual_context.game_screenshot_path.as_ref()
             .map(|game_path| format!("Game Debug Screenshot: {}", game_path));
 
         // Use orchestrator to create initial plan
@@ -1035,11 +984,10 @@ Do NOT add extra closing braces - each object should have exactly one closing br
             .with_llm_factory(self.llm_factory.clone());
         let orch_context = AgentExecutionContext {
             user_input: context.user_input.clone(),
-            _chat_history: context.chat_history.clone(),
             project_context: formatted_context_for_ai.clone(),
-            execution_plan: None,
             previous_output: None,
-            visual_context: visual_context_str.clone(),
+            dynamic_context_provider: None,
+            project_path: None,
         };
 
         // Use tool calling mode if enabled in config (default is true)
@@ -1065,12 +1013,31 @@ Do NOT add extra closing braces - each object should have exactly one closing br
         // Create plan or use fallback
         let plan = plan_opt.unwrap_or_else(|| ExecutionPlan {
             reasoning: "Iterative execution plan".to_string(),
+            metadata: None,
+            phases: vec![],
             steps: vec![PlanStep {
                 step_number: 1,
                 description: "Execute commands iteratively based on feedback".to_string(),
                 commands_needed: vec![],
+                step_id: String::new(),
+                explanation: String::new(),
+                required_tools: vec![],
+                expected_outcome: String::new(),
+                success_criteria: vec![],
+                dependencies: vec![],
+                error_recovery: vec![],
+                estimated_time_minutes: 0,
+                safety_considerations: vec![],
             }],
             estimated_complexity: "medium".to_string(),
+            overall_goal: String::new(),
+            success_criteria: vec![],
+            estimated_duration: None,
+            complexity: None,
+            preconditions: vec![],
+            post_conditions: vec![],
+            fallback_strategies: vec![],
+            plan_id: String::new(),
         });
 
         // Convert orchestrator thoughts
@@ -1434,25 +1401,317 @@ fn sanitize_json_control_chars(s: &str) -> String {
     out
 }
 
-/// Execution plan created by the planner agent
+/// Execution plan created by the planner agent (Enhanced for new architecture)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionPlan {
+    /// Legacy reasoning field for backward compatibility
     #[serde(deserialize_with = "string_or_value")]
     pub reasoning: String,
+
+    /// Enhanced plan metadata (new field)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<PlanMetadata>,
+
+    /// Hierarchical execution phases (new architecture)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<ExecutionPhase>,
+
+    /// Plan steps (legacy field for backward compatibility)
     #[serde(deserialize_with = "one_or_many")]
     pub steps: Vec<PlanStep>,
+
+    /// Legacy complexity field (for backward compatibility)
     #[serde(deserialize_with = "string_or_value")]
     pub estimated_complexity: String,
+
+    /// Overall goal of the plan (new field)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub overall_goal: String,
+
+    /// Success criteria for the entire plan (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub success_criteria: Vec<String>,
+
+    /// Estimated duration for plan completion (new field)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_duration: Option<String>,
+
+    /// Complexity assessment (new field)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<String>,
+
+    /// Pre-conditions that must be met (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preconditions: Vec<Precondition>,
+
+    /// Post-conditions for validation (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_conditions: Vec<PostCondition>,
+
+    /// Fallback strategies (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_strategies: Vec<FallbackStrategy>,
+
+    /// Plan identifier (new field)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub plan_id: String,
 }
 
+/// Enhanced plan step for new architecture (backward compatible)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
+    /// Step number (legacy field)
     #[serde(deserialize_with = "usize_or_string")]
     pub step_number: usize,
+
+    /// Step description (legacy field)
     #[serde(deserialize_with = "string_or_value")]
     pub description: String,
+
+    /// Commands needed (legacy field)
     #[serde(deserialize_with = "string_or_vec")]
     pub commands_needed: Vec<String>,
+
+    /// Step identifier (new field)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub step_id: String,
+
+    /// Detailed explanation (new field)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub explanation: String,
+
+    /// Tools required for this step (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tools: Vec<String>,
+
+    /// Expected outcome (new field)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub expected_outcome: String,
+
+    /// Success criteria (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub success_criteria: Vec<String>,
+
+    /// Dependencies on other steps (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+
+    /// Error recovery strategies (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_recovery: Vec<String>,
+
+    /// Estimated time for this step in minutes (new field)
+    #[serde(default)]
+    pub estimated_time_minutes: u32,
+
+    /// Safety considerations (new field)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safety_considerations: Vec<String>,
+}
+
+/// Plan metadata (new structure)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanMetadata {
+    /// Plan title
+    pub title: String,
+
+    /// Plan description
+    pub description: String,
+
+    /// Estimated complexity
+    pub complexity: String,
+
+    /// Estimated time to complete in minutes
+    pub estimated_time_minutes: u32,
+
+    /// Required tools
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tools: Vec<String>,
+
+    /// Risk assessment
+    #[serde(default)]
+    pub risk_level: String,
+}
+
+/// Pre-conditions for plan execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Precondition {
+    /// Condition description
+    pub description: String,
+
+    /// How to verify the condition
+    pub verification_method: String,
+
+    /// Whether condition is mandatory
+    #[serde(default)]
+    pub mandatory: bool,
+}
+
+/// Post-conditions for plan validation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostCondition {
+    /// Condition description
+    pub description: String,
+
+    /// How to verify the condition
+    pub verification_method: String,
+
+    /// Success criteria
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub success_criteria: Vec<String>,
+}
+
+/// Fallback strategy for plan execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackStrategy {
+    /// Strategy name
+    pub name: String,
+
+    /// When to use this strategy
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trigger_conditions: Vec<String>,
+
+    /// Alternative steps
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternative_steps: Vec<String>,
+
+    /// Expected success rate
+    #[serde(default)]
+    pub expected_success_rate: f32,
+}
+
+/// Hierarchical execution phase containing multiple tasks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionPhase {
+    /// Phase identifier
+    pub id: String,
+
+    /// Phase name
+    pub name: String,
+
+    /// Phase description
+    pub description: String,
+
+    /// Tasks within this phase
+    pub tasks: Vec<PlanTask>,
+
+    /// Dependencies on other phases (phase IDs)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+
+    /// Validation criteria for phase completion
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validation_criteria: Vec<String>,
+
+    /// Phase status
+    #[serde(default)]
+    pub status: PhaseStatus,
+}
+
+/// Individual task within a phase
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanTask {
+    /// Task identifier
+    pub id: String,
+
+    /// Task name
+    pub name: String,
+
+    /// Task description
+    pub description: String,
+
+    /// Tools required for this task
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tools: Vec<String>,
+
+    /// Task dependencies
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<TaskDependency>,
+
+    /// Acceptance criteria for task completion
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance_criteria: Vec<String>,
+
+    /// Preconditions that must be met
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preconditions: Vec<String>,
+
+    /// Post-conditions after task completion
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_conditions: Vec<String>,
+
+    /// Estimated number of steps
+    #[serde(default)]
+    pub estimated_steps: u32,
+
+    /// Task status
+    #[serde(default)]
+    pub status: TaskStatus,
+}
+
+/// Task dependency relationship
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDependency {
+    /// ID of the task this depends on
+    pub task_id: String,
+
+    /// Type of dependency
+    pub dependency_type: DependencyType,
+
+    /// Optional description of the dependency
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// Type of dependency between tasks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DependencyType {
+    /// Must complete before this task starts
+    Sequential,
+
+    /// Can run in parallel
+    Parallel,
+
+    /// Conditionally required
+    Conditional,
+}
+
+impl Default for DependencyType {
+    fn default() -> Self {
+        DependencyType::Sequential
+    }
+}
+
+/// Phase execution status
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PhaseStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+impl Default for PhaseStatus {
+    fn default() -> Self {
+        PhaseStatus::Pending
+    }
+}
+
+/// Task execution status
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+impl Default for TaskStatus {
+    fn default() -> Self {
+        TaskStatus::Pending
+    }
 }
 
 /// Response from the agentic workflow

@@ -741,6 +741,7 @@ Output: jump, physics, velocity, CharacterBody2D, Input, gravity"#;
 }
 
 /// Comprehensive context structure
+#[derive(Clone, serde::Serialize)]
 pub struct ComprehensiveContext {
     pub godot_docs: String,
     pub project_context: String,
