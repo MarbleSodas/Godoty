@@ -1,0 +1,62 @@
+# Test requirements for Godot Agent Integration Tools
+
+# Core testing framework
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.10.0
+
+# Coverage reporting
+pytest-cov>=4.0.0
+coverage>=7.0.0
+
+# Performance testing
+pytest-benchmark>=4.0.0
+pytest-xdist>=3.0.0  # Parallel test execution
+
+# Async testing support
+asyncio>=3.4.3
+aiofiles>=22.1.0
+
+# Mock and testing utilities
+responses>=0.23.0
+faker>=18.0.0
+freezegun>=1.2.2  # Time mocking
+
+# WebSocket testing
+websockets>=11.0.0
+pytest-websockets>=0.2.0
+
+# Type checking and linting
+mypy>=1.0.0
+flake8>=6.0.0
+black>=23.0.0
+isort>=5.12.0
+
+# Security testing
+bandit>=1.7.0
+
+# Documentation testing
+pytest-docs>=0.3.0
+
+# Development and debugging
+ipython>=8.10.0
+pdb++>=0.10.0
+pytest-pdb>=0.2.0
+
+# Performance profiling
+pytest-profiling>=1.7.0
+memory-profiler>=0.60.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# JSON schema validation for test data
+jsonschema>=4.17.0
+
+# HTTP testing (if any web interactions)
+httpx>=0.24.0
+pytest-httpx>=0.21.0
+
+# File system testing
+pytest-tmpdir>=3.0.0
+pathlib2>=2.3.7  # For older Python versions

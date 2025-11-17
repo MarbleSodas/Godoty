@@ -62,8 +62,8 @@ class MCPToolManager:
             servers: Dictionary of server configurations. If None, uses default config.
                     Format: {
                         "server_name": {
-                            "command": "uvx",
-                            "args": ["package@latest"],
+                            "command": "npx",
+                            "args": ["-y", "@package"],
                             "prefix": "mcp__server_name__"
                         }
                     }
@@ -85,19 +85,26 @@ class MCPToolManager:
             try:
                 logger.info(f"Initializing MCP server: {server_name}")
 
-                # Create MCP client
-                client = MCPClient(
-                    lambda cmd=config["command"], args=config["args"]: stdio_client(
+                # Create transport function for stdio client
+                def create_transport():
+                    return stdio_client(
                         StdioServerParameters(
-                            command=cmd,
-                            args=args
+                            command=config["command"],
+                            args=config["args"]
                         )
                     )
-                )
 
-                # Connect and list tools
+                # Create MCP client with transport
+                client = MCPClient(create_transport)
+
+                # Start the client (this establishes connection)
                 client.start()
+
+                # List available tools
                 tools = client.list_tools_sync()
+
+                if not tools:
+                    logger.warning(f"No tools available from {server_name}")
 
                 # Store client and tools
                 self._clients[server_name] = client

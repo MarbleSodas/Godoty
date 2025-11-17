@@ -5,6 +5,7 @@ Handles loading environment variables and providing agent configuration.
 """
 
 import os
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -45,6 +46,16 @@ class AgentConfig:
     CONTEXT7_COMMAND = os.getenv("CONTEXT7_COMMAND", "npx")
     CONTEXT7_ARGS = os.getenv("CONTEXT7_ARGS", "-y,@upstash/context7-mcp").split(",")
 
+    # Godot Integration Configuration
+    ENABLE_GODOT_TOOLS = os.getenv("ENABLE_GODOT_TOOLS", "true").lower() == "true"
+    GODOT_BRIDGE_HOST = os.getenv("GODOT_BRIDGE_HOST", "localhost")
+    GODOT_BRIDGE_PORT = int(os.getenv("GODOT_BRIDGE_PORT", "9001"))
+    GODOT_CONNECTION_TIMEOUT = float(os.getenv("GODOT_CONNECTION_TIMEOUT", "10.0"))
+    GODOT_MAX_RETRIES = int(os.getenv("GODOT_MAX_RETRIES", "3"))
+    GODOT_RETRY_DELAY = float(os.getenv("GODOT_RETRY_DELAY", "2.0"))
+    GODOT_COMMAND_TIMEOUT = float(os.getenv("GODOT_COMMAND_TIMEOUT", "30.0"))
+    GODOT_SCREENSHOT_DIR = os.getenv("GODOT_SCREENSHOT_DIR", ".godoty/screenshots")
+
     # System Prompt for Planning Agent
     PLANNING_AGENT_SYSTEM_PROMPT = """You are a specialized planning agent designed to create detailed execution plans for other agents.
 
@@ -74,6 +85,11 @@ Use the available tools to:
 - Search the codebase for patterns and implementations
 - Fetch documentation and reference materials
 - Research best practices and solutions
+- Interact with Godot projects (if available):
+  * Analyze scene structure and node hierarchy
+  * Capture visual context and screenshots
+  * Get project overview and statistics
+  * Search for specific nodes by type, name, or properties
 
 **Advanced Reasoning with Sequential Thinking:**
 When facing complex, multi-step problems that require deep analysis, use the sequential-thinking tool:
@@ -94,18 +110,91 @@ When you need up-to-date documentation for libraries and frameworks:
 Be thorough, precise, and actionable. Your plans should enable another agent or developer to execute the task successfully without ambiguity."""
 
     @classmethod
-    def validate(cls) -> bool:
+    def validate(cls) -> dict:
         """
-        Validate that required configuration is present.
+        Validate that required configuration is present and valid.
 
         Returns:
-            True if configuration is valid, False otherwise
+            Dict with validation results:
+            - 'valid': bool indicating overall validity
+            - 'warnings': list of warning messages
+            - 'errors': list of error messages
+            - 'godot_available': bool indicating if Godot tools can be used
+            - 'mcp_available': bool indicating if MCP tools can be used
         """
-        if not cls.OPENROUTER_API_KEY:
-            print("Warning: OPENROUTER_API_KEY is not set. Please set it in .env file.")
-            return False
+        logger = logging.getLogger(__name__)
+        warnings = []
+        errors = []
 
-        return True
+        # Check OpenRouter API Key
+        if not cls.OPENROUTER_API_KEY:
+            errors.append("OPENROUTER_API_KEY is not set. Please set it in .env file.")
+        elif not cls.OPENROUTER_API_KEY.startswith("sk-or-v1-"):
+            warnings.append("OPENROUTER_API_KEY format looks incorrect. Should start with 'sk-or-v1-'.")
+
+        # Validate model configuration
+        if cls.AGENT_TEMPERATURE < 0 or cls.AGENT_TEMPERATURE > 2:
+            warnings.append(f"AGENT_TEMPERATURE ({cls.AGENT_TEMPERATURE}) should be between 0 and 2.")
+
+        if cls.AGENT_MAX_TOKENS < 100 or cls.AGENT_MAX_TOKENS > 32000:
+            warnings.append(f"AGENT_MAX_TOKENS ({cls.AGENT_MAX_TOKENS}) should be between 100 and 32000.")
+
+        # Validate Godot configuration
+        godot_available = True
+        if cls.ENABLE_GODOT_TOOLS:
+            if cls.GODOT_BRIDGE_PORT < 1 or cls.GODOT_BRIDGE_PORT > 65535:
+                errors.append(f"GODOT_BRIDGE_PORT ({cls.GODOT_BRIDGE_PORT}) must be between 1 and 65535.")
+                godot_available = False
+
+            if cls.GODOT_CONNECTION_TIMEOUT <= 0:
+                warnings.append(f"GODOT_CONNECTION_TIMEOUT ({cls.GODOT_CONNECTION_TIMEOUT}) should be positive.")
+
+            if cls.GODOT_MAX_RETRIES < 0:
+                warnings.append(f"GODOT_MAX_RETRIES ({cls.GODOT_MAX_RETRIES}) should be non-negative.")
+
+        # Validate MCP configuration
+        mcp_available = False
+        if cls.ENABLE_MCP_TOOLS:
+            if cls.ENABLE_SEQUENTIAL_THINKING or cls.ENABLE_CONTEXT7:
+                mcp_available = True
+
+                # Check if npx command is available (basic check)
+                import shutil
+                if not shutil.which("npx"):
+                    warnings.append("npx command not found. MCP tools may not work properly.")
+                    mcp_available = False
+            else:
+                warnings.append("MCP tools are enabled but no specific MCP servers are enabled.")
+
+        # Check if screenshot directory is accessible
+        if cls.ENABLE_GODOT_TOOLS:
+            try:
+                screenshot_path = Path(cls.GODOT_SCREENSHOT_DIR)
+                screenshot_path.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                warnings.append(f"Cannot create screenshot directory '{cls.GODOT_SCREENSHOT_DIR}': {e}")
+
+        # Log validation results
+        if errors:
+            logger.error(f"Configuration validation failed with {len(errors)} error(s)")
+            for error in errors:
+                logger.error(f"  - {error}")
+
+        if warnings:
+            logger.warning(f"Configuration validation found {len(warnings)} warning(s)")
+            for warning in warnings:
+                logger.warning(f"  - {warning}")
+
+        if not errors and not warnings:
+            logger.info("Configuration validation passed successfully")
+
+        return {
+            'valid': len(errors) == 0,
+            'warnings': warnings,
+            'errors': errors,
+            'godot_available': cls.ENABLE_GODOT_TOOLS and godot_available,
+            'mcp_available': cls.ENABLE_MCP_TOOLS and mcp_available
+        }
 
     @classmethod
     def get_model_config(cls) -> dict:
@@ -174,7 +263,47 @@ Be thorough, precise, and actionable. Your plans should enable another agent or 
             cls.ENABLE_SEQUENTIAL_THINKING or cls.ENABLE_CONTEXT7
         )
 
+    @classmethod
+    def is_godot_enabled(cls) -> bool:
+        """
+        Check if Godot tools are enabled.
+
+        Returns:
+            bool: True if Godot tools should be loaded
+        """
+        return cls.ENABLE_GODOT_TOOLS
+
+    @classmethod
+    def get_godot_config(cls) -> dict:
+        """
+        Get Godot bridge configuration.
+
+        Returns:
+            Dictionary of Godot configuration parameters
+        """
+        return {
+            "host": cls.GODOT_BRIDGE_HOST,
+            "port": cls.GODOT_BRIDGE_PORT,
+            "timeout": cls.GODOT_CONNECTION_TIMEOUT,
+            "max_retries": cls.GODOT_MAX_RETRIES,
+            "retry_delay": cls.GODOT_RETRY_DELAY,
+            "command_timeout": cls.GODOT_COMMAND_TIMEOUT,
+            "screenshot_dir": cls.GODOT_SCREENSHOT_DIR
+        }
+
 
 # Validate configuration on module import
-if not AgentConfig.validate():
-    print("Agent configuration validation failed. Some features may not work.")
+validation_result = AgentConfig.validate()
+if not validation_result['valid']:
+    print("Agent configuration validation failed with errors:")
+    for error in validation_result['errors']:
+        print(f"  ERROR: {error}")
+
+if validation_result['warnings']:
+    print("Agent configuration validation warnings:")
+    for warning in validation_result['warnings']:
+        print(f"  WARNING: {warning}")
+
+# Log availability status
+print(f"Godot tools available: {validation_result['godot_available']}")
+print(f"MCP tools available: {validation_result['mcp_available']}")

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:strandsagents.com)",
+      "Bash(where npx)",
+      "Bash(where:*)",
+      "Bash(npx:*)",
+      "WebSearch",
+      "Bash(node:*)",
+      "Bash(npm --version:*)",
+      "Bash(python:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(curl:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(tasklist:*)",
+      "Bash(timeout:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

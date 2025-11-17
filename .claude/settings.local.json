@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(curl:*)",
+      "mcp__desktop-commander__start_process",
+      "WebSearch",
+      "Bash(dir:*)",
+      "Bash(where npx)",
+      "Bash(npx:*)",
+      "Bash(uvx:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

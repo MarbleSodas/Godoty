@@ -1,4 +1,5 @@
 import multiprocessing
+import signal
 import uvicorn
 import webview
 from fastapi import FastAPI
@@ -7,6 +8,22 @@ from fastapi.responses import FileResponse
 import os
 import time
 import platform
+import sys
+
+# Global shutdown flag
+shutdown_requested = False
+
+def signal_handler(signum, frame):
+    """Handle system signals for graceful shutdown."""
+    global shutdown_requested
+    print(f"\nReceived signal {signum}, initiating graceful shutdown...")
+    shutdown_requested = True
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+if hasattr(signal, 'SIGBREAK'):
+    signal.signal(signal.SIGBREAK, signal_handler)
 
 
 def create_app():
@@ -16,6 +33,7 @@ def create_app():
     """
     from fastapi.middleware.cors import CORSMiddleware
     from api import agent_router
+    from api.health_routes import router as health_router
 
     app = FastAPI(title="PyWebView Desktop App", version="1.0.0")
 
@@ -30,6 +48,9 @@ def create_app():
 
     # Include agent routes
     app.include_router(agent_router)
+
+    # Include health check routes
+    app.include_router(health_router)
 
     # FastAPI API Routes (must be defined before mounting static files)
     @app.get("/api/health")
@@ -113,22 +134,38 @@ class UvicornServer(multiprocessing.Process):
         super().__init__()
         self.host = host
         self.port = port
+        self._shutdown_event = None
 
     def stop(self):
-        """Stop the server process"""
-        self.terminate()
+        """Stop the server process gracefully"""
+        if self.is_alive():
+            # Try graceful shutdown first
+            self.terminate()
+            # Wait a bit for graceful shutdown
+            self.join(timeout=3)
+            # Force kill if still alive
+            if self.is_alive():
+                self.kill()
+                self.join(timeout=2)
 
     def run(self):
         """Run the uvicorn server"""
-        app = create_app()
-        config = uvicorn.Config(
-            app,
-            host=self.host,
-            port=self.port,
-            log_level="info"
-        )
-        server = uvicorn.Server(config=config)
-        server.run()
+        try:
+            app = create_app()
+            config = uvicorn.Config(
+                app,
+                host=self.host,
+                port=self.port,
+                log_level="info"
+            )
+            server = uvicorn.Server(config=config)
+            server.run()
+        except Exception as e:
+            print(f"Server error: {e}")
+        finally:
+            # Ensure clean exit
+            import sys
+            sys.exit(0)
 
 
 def start_window(conn_send, url):
@@ -193,19 +230,59 @@ def main():
     # Wait for window to close
     print("Application running. Close the window to exit.")
     window_status = ''
-    while 'closed' not in window_status:
-        try:
-            window_status = conn_recv.recv()
-        except KeyboardInterrupt:
-            print("\nReceived keyboard interrupt, shutting down...")
-            break
+
+    try:
+        while 'closed' not in window_status and not shutdown_requested:
+            try:
+                # Use non-blocking recv with timeout
+                if conn_recv.poll(timeout=1):
+                    window_status = conn_recv.recv()
+                else:
+                    # Check if processes are still alive
+                    if not server.is_alive():
+                        print("Server process died unexpectedly.")
+                        break
+                    if not window_process.is_alive():
+                        print("Window process died unexpectedly.")
+                        break
+            except KeyboardInterrupt:
+                print("\nReceived keyboard interrupt, shutting down...")
+                break
+            except (EOFError, OSError):
+                # Connection closed unexpectedly
+                print("Connection to window process lost.")
+                break
+    except Exception as e:
+        print(f"Error in main loop: {e}")
 
     # Cleanup
     print("Shutting down...")
-    server.stop()
-    window_process.join(timeout=5)
-    if window_process.is_alive():
-        window_process.terminate()
+
+    try:
+        # Stop window process first
+        if window_process.is_alive():
+            window_process.terminate()
+            window_process.join(timeout=3)
+            if window_process.is_alive():
+                print("Force killing window process...")
+                window_process.kill()
+                window_process.join(timeout=2)
+    except Exception as e:
+        print(f"Error stopping window process: {e}")
+
+    try:
+        # Stop server process
+        server.stop()
+    except Exception as e:
+        print(f"Error stopping server: {e}")
+
+    # Close pipe connections
+    try:
+        conn_recv.close()
+        conn_send.close()
+    except:
+        pass
+
     print("Application closed.")
 
 

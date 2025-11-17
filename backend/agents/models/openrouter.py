@@ -477,3 +477,147 @@ class OpenRouterModel(Model):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         await self.close()
+
+    async def complete(
+        self,
+        messages: Messages,
+        tool_specs: Optional[list[ToolSpec]] = None,
+        system_prompt: Optional[str] = None,
+        *,
+        tool_choice: Optional[str] = None,
+        system_prompt_content: Optional[list[SystemContentBlock]] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
+        """
+        Get a complete (non-streaming) chat completion from OpenRouter API.
+
+        This method bypasses the streaming functionality to avoid the toolUseId error
+        in the Strands framework streaming handler.
+
+        Args:
+            messages: Conversation messages
+            tool_specs: Optional tool specifications
+            system_prompt: Optional system prompt
+            tool_choice: Optional tool choice strategy ('auto', 'none', or specific function)
+            system_prompt_content: Optional system prompt content blocks
+            **kwargs: Additional parameters
+
+        Returns:
+            Complete response dictionary with content and tool calls
+        """
+        try:
+            # Convert messages to OpenAI format
+            openai_messages = self._convert_messages_to_openai_format(messages)
+
+            # Add system prompt if provided
+            if system_prompt:
+                openai_messages.insert(0, {
+                    "role": "system",
+                    "content": system_prompt
+                })
+
+            # Prepare request payload (non-streaming)
+            payload = {
+                "model": self._config.get("model_id", "openai/gpt-4-turbo"),
+                "messages": openai_messages,
+                "stream": False,  # Non-streaming request
+                "temperature": self._config.get("temperature", 0.7),
+                "max_tokens": self._config.get("max_tokens", 4000)
+            }
+
+            # Add tools if provided
+            if tool_specs:
+                payload["tools"] = [
+                    self._convert_tool_to_openai_format(spec)
+                    for spec in tool_specs
+                ]
+                # Use provided tool_choice or default to "auto"
+                payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
+
+            # Make non-streaming request
+            response = await self._client.post(
+                f"{self.BASE_URL}/chat/completions",
+                json=payload
+            )
+            response.raise_for_status()
+
+            result = response.json()
+
+            # Convert OpenAI response format to Strands-compatible format
+            return self._convert_openai_response_to_strands(result)
+
+        except httpx.HTTPStatusError as e:
+            # Handle rate limiting
+            if e.response.status_code == 429:
+                logger.error("OpenRouter rate limit exceeded")
+                raise ModelThrottledException("Rate limit exceeded")
+
+            logger.error(f"OpenRouter API error: {e}")
+            raise Exception(f"OpenRouter API error: {e}")
+        except httpx.HTTPError as e:
+            logger.error(f"OpenRouter HTTP error: {e}")
+            raise Exception(f"OpenRouter HTTP error: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error in complete: {e}")
+            raise Exception(f"Unexpected error in complete: {e}")
+
+    def _convert_openai_response_to_strands(self, openai_response: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert OpenAI response format to Strands-compatible format.
+
+        Args:
+            openai_response: OpenAI API response
+
+        Returns:
+            Strands-compatible response dictionary
+        """
+        try:
+            choices = openai_response.get("choices", [])
+            if not choices:
+                return {"message": {"content": [{"text": "No response generated"}]}}
+
+            choice = choices[0]
+            message = choice.get("message", {})
+
+            # Extract content
+            content = message.get("content", "")
+
+            # Extract tool calls
+            tool_calls = message.get("tool_calls", [])
+            content_blocks = []
+
+            # Add text content if present
+            if content:
+                content_blocks.append({"text": content})
+
+            # Add tool calls if present
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {})
+                tool_name = function.get("name", "")
+                tool_args = function.get("arguments", "{}")
+
+                try:
+                    tool_input = json.loads(tool_args) if tool_args else {}
+                except json.JSONDecodeError:
+                    tool_input = {"raw_arguments": tool_args}
+
+                content_blocks.append({
+                    "toolUse": {
+                        "toolUseId": tool_call.get("id", f"tool_{hash(tool_name)}"),
+                        "name": tool_name,
+                        "input": tool_input
+                    }
+                })
+
+            return {
+                "message": {
+                    "content": content_blocks,
+                    "role": "assistant"
+                },
+                "stop_reason": choice.get("finish_reason", "end_turn"),
+                "usage": openai_response.get("usage", {})
+            }
+
+        except Exception as e:
+            logger.error(f"Error converting OpenAI response: {e}")
+            return {"message": {"content": [{"text": f"Error processing response: {str(e)}"}]}}

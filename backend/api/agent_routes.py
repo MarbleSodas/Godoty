@@ -103,8 +103,10 @@ async def create_plan(request: PlanRequest):
         )
 
     except Exception as e:
-        logger.error(f"Error generating plan: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"Error generating plan: {str(e)}"
+        logger.error(f"{error_detail}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @router.post("/plan/stream")
@@ -201,13 +203,21 @@ async def get_agent_config():
     try:
         agent = get_planning_agent()
 
+        # Ensure MCP tools are initialized before getting configuration
+        await agent._ensure_mcp_initialized()
+
         model_config = agent.model.get_config()
         return {
             "status": "success",
             "config": {
                 "model_id": model_config.get("model_id", "unknown"),
                 "model_config": model_config,
-                "tools": [tool.__name__ for tool in agent.tools],
+                "tools": [
+                    getattr(tool, '__name__',
+                           getattr(tool, 'name',
+                                  f"MCP_{type(tool).__name__}"))
+                    for tool in agent.tools
+                ],
                 "conversation_manager": type(agent.conversation_manager).__name__
             }
         }

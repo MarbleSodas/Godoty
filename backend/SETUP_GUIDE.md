@@ -10,9 +10,60 @@ This guide helps you set up the Godot Assistant with Strands agents, MCP (Model 
 - **FastAPI Backend** - RESTful API with WebSocket support
 - **PyWebView Desktop App** - Native desktop application wrapper
 
+## Step 0: Virtual Environment Setup
+
+### 0.1 Create Virtual Environment
+
+First, create a Python virtual environment to isolate dependencies:
+
+```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment (Windows)
+source ./venv/Scripts/activate
+
+# Verify activation (should show venv path)
+which python
+```
+
+### 0.2 Install Dependencies
+
+**Option A: Install from requirements-web-only.txt (Recommended)**
+
+This includes all core dependencies without PyWebView:
+
+```bash
+pip install -r requirements-web-only.txt
+```
+
+**Option B: Manual installation**
+
+```bash
+# Install core dependencies
+pip install fastapi uvicorn[standard] httpx aiofiles beautifulsoup4
+
+# Install Strands agents framework
+pip install strands-agents
+
+# Optional: PyWebView for desktop app (may require additional setup on some systems)
+pip install pywebview==5.3
+```
+
+**Note:** PyWebView may have installation issues on some Python versions/systems due to native dependencies. If you encounter build errors, you can still run the application as a web server without the desktop wrapper.
+
+### 0.3 Verify Installation
+
+Test that the core dependencies are working:
+
+```bash
+# Test basic imports
+python -c "from strands import Agent; from agents.models import OpenRouterModel; print('Core imports successful')"
+```
+
 ## ✅ Prerequisites Complete!
 
-All dependencies have been installed successfully. Follow these steps to configure and run the complete system.
+All core dependencies have been installed successfully. Follow these steps to configure and run the complete system.
 
 ## Step 1: Get an OpenRouter API Key
 
@@ -136,17 +187,39 @@ This tests the improved type safety and error handling:
 ### 4.1 Standard Startup
 
 ```bash
+# Make sure virtual environment is activated first
+source ./venv/Scripts/activate
+
+# Run the application
 python main.py
 ```
 
 This will:
 1. **Initialize MCP servers** (sequential-thinking and context7)
 2. **Start FastAPI server** on http://127.0.0.1:8000
-3. **Open PyWebView window** with your desktop application
+3. **Open PyWebView window** with your desktop application (if installed)
 4. **Enable planning agent** with streaming capabilities
 5. **Load refactored file system tools** with improved error handling
 
-### 4.2 Startup Sequence Details
+### 4.2 Web-Only Startup (if PyWebView installation failed)
+
+If you encountered issues installing PyWebView, you can run the application as a web server only:
+
+```bash
+# Make sure virtual environment is activated first
+source ./venv/Scripts/activate
+
+# Run only the FastAPI server
+python -c "
+import uvicorn
+from api.agent_router import app
+uvicorn.run(app, host='127.0.0.1', port=8000)
+"
+```
+
+This will start the FastAPI server on http://127.0.0.1:8000 without the desktop wrapper.
+
+### 4.3 Startup Sequence Details
 
 You'll see output similar to:
 ```
