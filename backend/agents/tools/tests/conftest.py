@@ -254,14 +254,6 @@ async def mock_godot_bridge(mock_websocket, mock_godot_config, mock_project_info
         yield bridge
 
 
-@pytest.fixture
-def mock_security_context():
-    """Fixture providing a mock security context."""
-    from agents.tools.godot_security import SecurityContext, OperationRisk
-
-    context = SecurityContext("/Users/testuser/projects/test_game")
-    context.set_risk_threshold(OperationRisk.MEDIUM)
-    return context
 
 
 @pytest.fixture
