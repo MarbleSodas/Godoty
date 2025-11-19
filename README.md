@@ -38,16 +38,25 @@ Godot-Assistant/
 ├── backend/                # Python backend
 │   ├── main.py            # FastAPI app + PyWebView launcher
 │   ├── agents/            # AI planning agent
+│   │   ├── config/        # Modular configuration
+│   │   │   ├── model_config.py    # Model settings
+│   │   │   ├── tool_config.py     # Tool & MCP settings
+│   │   │   ├── prompts.py         # System prompts
+│   │   │   └── validators.py      # Config validation
 │   │   ├── models/        # Custom model providers (OpenRouter)
-│   │   ├── tools/         # Agent tools (file system, web)
-│   │   ├── config.py      # Agent configuration
-│   │   └── planning_agent.py  # Main planning agent
+│   │   ├── tools/         # Agent tools (file system, web, MCP)
+│   │   ├── planning_agent.py  # Main planning agent
+│   │   └── executor_agent.py  # Executor agent
 │   ├── api/               # API routes
 │   │   └── agent_routes.py    # Agent endpoints
+│   ├── tests/             # Test suite
+│   │   ├── conftest.py        # Shared pytest fixtures
+│   │   ├── test_planning_agent.py  # Agent tests
+│   │   ├── test_api_endpoints.py   # API tests
+│   │   └── README.md          # Testing guide
 │   ├── requirements.txt   # Python dependencies
 │   ├── .env.example      # Environment template
 │   ├── PLANNING_AGENT_README.md  # Agent documentation
-│   ├── test_agent.py     # Agent test suite
 │   └── venv/             # Virtual environment
 │
 └── dist/                  # Angular build output
@@ -240,6 +249,28 @@ curl -X POST http://localhost:8000/api/agent/plan/stream \
 ```
 
 For detailed documentation, see [backend/PLANNING_AGENT_README.md](backend/PLANNING_AGENT_README.md)
+
+## Testing
+
+The backend includes a comprehensive test suite using pytest:
+
+```bash
+cd backend
+
+# Run all tests
+pytest tests/ -v
+
+# Run only unit tests (fast)
+pytest tests/ -v -m unit
+
+# Run only integration tests
+pytest tests/ -v -m integration
+
+# Run with coverage
+pytest tests/ --cov=agents --cov-report=html
+```
+
+For more details, see [backend/tests/README.md](backend/tests/README.md)
 
 ## Development Workflow
 

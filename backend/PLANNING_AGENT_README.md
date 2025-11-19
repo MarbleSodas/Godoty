@@ -342,7 +342,12 @@ asyncio.run(test_streaming())
 backend/
 ├── agents/                      # Agent module
 │   ├── __init__.py
-│   ├── config.py               # Configuration management
+│   ├── config/                 # Modular configuration (NEW)
+│   │   ├── __init__.py        # Unified config interface
+│   │   ├── model_config.py    # Model settings
+│   │   ├── tool_config.py     # Tool & MCP settings
+│   │   ├── prompts.py         # System prompts
+│   │   └── validators.py      # Configuration validation
 │   ├── planning_agent.py       # Main planning agent
 │   ├── models/                 # Custom model providers
 │   │   ├── __init__.py
@@ -351,13 +356,20 @@ backend/
 │       ├── __init__.py
 │       ├── file_system_tools.py
 │       ├── web_tools.py
-│       └── mcp_tools.py       # MCP integration (NEW)
+│       └── mcp_tools.py       # MCP integration
 ├── api/                        # API routes
 │   ├── __init__.py
 │   └── agent_routes.py        # Agent endpoints
+├── tests/                      # Test suite (NEW)
+│   ├── __init__.py
+│   ├── conftest.py            # Shared pytest fixtures
+│   ├── test_planning_agent.py # Planning agent tests
+│   ├── test_executor_agent.py # Executor agent tests
+│   ├── test_api_endpoints.py  # API integration tests
+│   ├── test_mcp_integration.py # MCP tests
+│   ├── test_multi_agent.py    # Multi-agent tests
+│   └── README.md              # Testing guide
 ├── main.py                     # Application entry point
-├── test_agent.py               # Integration tests
-├── test_mcp_integration.py     # MCP-specific tests (NEW)
 ├── requirements.txt            # Python dependencies
 ├── .env                        # Environment variables (gitignored)
 └── .env.example               # Environment template

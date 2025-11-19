@@ -16,7 +16,9 @@
       "WebFetch(domain:openrouter.ai)",
       "WebFetch(domain:strandsagents.com)",
       "Bash(python3:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(findstr:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

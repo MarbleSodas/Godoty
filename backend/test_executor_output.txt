@@ -1,0 +1,99 @@
+Godot tools available: True
+MCP tools available: True
+=== Executor Agent Test ===
+
+
+Testing Plan Parsing
+Sample Plan JSON:
+{
+  "title": "Create Enemy",
+  "description": "Create a simple enemy character",
+  "steps": [
+    {
+      "title": "Create Enemy Node",
+      "description": "Create enemy CharacterBody2D",
+      "tool_calls": [
+        {
+          "name": "create_node",
+          "parameters": {
+            "node_type": "CharacterBody2D",
+            "parent_path": "Root",
+            "node_name": "Enemy"
+          }
+        }
+      ]
+    },
+    {
+      "title": "Add Enemy Script",
+      "description": "Create enemy behavior script",
+      "tool_calls": [
+        {
+          "name": "write_file",
+          "parameters": {
+            "file_path": "enemy.gd",
+            "content": "extends CharacterBody2D\n\nfunc _ready():\n    print('Enemy created!')"
+          }
+        }
+      ],
+      "depends_on": [
+        "create_node"
+      ]
+    }
+  ]
+}
+
+Parsed Plan:
+Title: Create Enemy
+Steps: 2
+  Step 1: Create Enemy Node
+    Tools: 1
+    Depends on: []
+  Step 2: Add Enemy Script
+    Tools: 1
+    Depends on: ['create_node']
+
+=== Execution Test ===
+Testing Executor Agent
+Executing plan: Create Game Scripts
+Steps: 2
+Event: execution_started - {'execution_id': '48ff7ee4-84e3-457f-8377-cda67be4e223', 'plan_id': 'a661cbe2-3eb8-4f2f-8932-12d4f09364aa', 'step_count': 2}
+Event: step_started - {'step_id': 'create_player_script', 'title': 'Create Player Script', 'tool_count': 1}
+Event: tool_started - {'step_id': 'create_player_script', 'tool_name': 'write_file', 'tool_index': 0}
+Event: tool_completed - {'step_id': 'create_player_script', 'tool_name': 'write_file', 'success': True}
+Event: step_completed - {'step_id': 'create_player_script', 'success': True, 'duration': 0.005138}
+Event: step_started - {'step_id': 'create_enemy_script', 'title': 'Create Enemy Script', 'tool_count': 1}
+Event: tool_started - {'step_id': 'create_enemy_script', 'tool_name': 'write_file', 'tool_index': 0}
+Event: tool_completed - {'step_id': 'create_enemy_script', 'tool_name': 'write_file', 'success': True}
+Event: step_completed - {'step_id': 'create_enemy_script', 'success': True, 'duration': 0.002947}
+Event: execution_completed - {'status': 'completed', 'completed': 2}
+
+Total events received: 10
+
+=== Model Configuration Test ===
+Testing Model Configuration
+Default Executor Model: openrouter/sherlock-dash-alpha
+Executor Fallback Model: minimax/minimax-m2
+Primary model initialized: openrouter/sherlock-dash-alpha
+Fallback model available: minimax/minimax-m2
+Traceback (most recent call last):
+  File "C:\Users\eugen\Documents\Github\Godot-Assistant\backend\test_executor.py", line 196, in test_model_configuration
+    print("\u2705 Model configuration test completed")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2705' in position 0: character maps to <undefined>
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\eugen\Documents\Github\Godot-Assistant\backend\test_executor.py", line 288, in <module>
+    test_model_configuration()
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\eugen\Documents\Github\Godot-Assistant\backend\test_executor.py", line 199, in test_model_configuration
+    print(f"\u274c Model configuration test failed: {e}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u274c' in position 0: character maps to <undefined>

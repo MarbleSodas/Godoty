@@ -1,0 +1,360 @@
+"""
+Configuration module for the planning agent.
+
+Handles loading environment variables and providing agent configuration.
+"""
+
+import os
+import logging
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+
+class AgentConfig:
+    """Configuration for the planning agent."""
+
+    # OpenRouter API Configuration
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
+    # Model Configuration
+    DEFAULT_PLANNING_MODEL = os.getenv("DEFAULT_PLANNING_MODEL", "openai/gpt-4-turbo")
+    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "anthropic/claude-3.5-sonnet")
+
+    # Executor Model Configuration
+    DEFAULT_EXECUTOR_MODEL = os.getenv("DEFAULT_EXECUTOR_MODEL", "openrouter/sherlock-dash-alpha")
+    EXECUTOR_FALLBACK_MODEL = os.getenv("EXECUTOR_FALLBACK_MODEL", "minimax/minimax-m2")
+
+    # Agent Configuration
+    AGENT_TEMPERATURE = float(os.getenv("AGENT_TEMPERATURE", "0.7"))
+    AGENT_MAX_TOKENS = int(os.getenv("AGENT_MAX_TOKENS", "4000"))
+
+    # Application Configuration
+    APP_NAME = os.getenv("APP_NAME", "Godot-Assistant")
+    APP_URL = os.getenv("APP_URL", "http://localhost:8000")
+
+    # MCP Server Configuration
+    ENABLE_MCP_TOOLS = os.getenv("ENABLE_MCP_TOOLS", "true").lower() == "true"
+    MCP_FAIL_SILENTLY = os.getenv("MCP_FAIL_SILENTLY", "true").lower() == "true"
+
+    # Sequential Thinking MCP Server
+    ENABLE_SEQUENTIAL_THINKING = os.getenv("ENABLE_SEQUENTIAL_THINKING", "true").lower() == "true"
+    SEQUENTIAL_THINKING_COMMAND = os.getenv("SEQUENTIAL_THINKING_COMMAND", "npx")
+    SEQUENTIAL_THINKING_ARGS = os.getenv("SEQUENTIAL_THINKING_ARGS", "-y,@modelcontextprotocol/server-sequential-thinking").split(",")
+
+    # Context7 MCP Server
+    ENABLE_CONTEXT7 = os.getenv("ENABLE_CONTEXT7", "true").lower() == "true"
+    CONTEXT7_COMMAND = os.getenv("CONTEXT7_COMMAND", "npx")
+    CONTEXT7_ARGS = os.getenv("CONTEXT7_ARGS", "-y,@upstash/context7-mcp").split(",")
+
+    # Godot Integration Configuration
+    ENABLE_GODOT_TOOLS = os.getenv("ENABLE_GODOT_TOOLS", "true").lower() == "true"
+    GODOT_BRIDGE_HOST = os.getenv("GODOT_BRIDGE_HOST", "localhost")
+    GODOT_BRIDGE_PORT = int(os.getenv("GODOT_BRIDGE_PORT", "9001"))
+    GODOT_CONNECTION_TIMEOUT = float(os.getenv("GODOT_CONNECTION_TIMEOUT", "10.0"))
+    GODOT_MAX_RETRIES = int(os.getenv("GODOT_MAX_RETRIES", "3"))
+    GODOT_RETRY_DELAY = float(os.getenv("GODOT_RETRY_DELAY", "2.0"))
+    GODOT_COMMAND_TIMEOUT = float(os.getenv("GODOT_COMMAND_TIMEOUT", "30.0"))
+    GODOT_SCREENSHOT_DIR = os.getenv("GODOT_SCREENSHOT_DIR", ".godoty/screenshots")
+
+    # System Prompt for Planning Agent
+    PLANNING_AGENT_SYSTEM_PROMPT = """You are a specialized planning agent designed to create detailed execution plans for other agents.
+
+Your role is to:
+1. Analyze the user's request thoroughly
+2. Break down complex tasks into clear, actionable steps
+3. Identify dependencies between steps
+4. Suggest appropriate tools and resources
+5. Define success criteria for each step
+6. Anticipate potential challenges and provide solutions
+
+When creating a plan, structure it as follows:
+- **Objective**: Clear statement of the goal
+- **Analysis**: Understanding of the requirements and context
+- **Steps**: Numbered, sequential steps with details
+  - For each step, include:
+    * Description of what needs to be done
+    * Required tools or resources
+    * Expected outcome
+    * Potential challenges
+- **Dependencies**: Which steps depend on others
+- **Success Criteria**: How to know the task is complete
+- **Risks & Mitigations**: Potential issues and how to handle them
+
+Use the available tools to:
+- Read and analyze existing code files
+- Search the codebase for patterns and implementations
+- Fetch documentation and reference materials
+- Research best practices and solutions
+- Interact with Godot projects (if available):
+  * Analyze scene structure and node hierarchy
+  * Capture visual context and screenshots
+  * Get project overview and statistics
+  * Search for specific nodes by type, name, or properties
+
+**Advanced Reasoning with Sequential Thinking:**
+When facing complex, multi-step problems that require deep analysis, use the sequential-thinking tool:
+- It provides step-by-step reasoning capabilities with hypothesis generation and verification
+- Useful for breaking down ambiguous requirements into concrete steps
+- Helps explore alternative approaches and identify edge cases
+- Enables iterative problem-solving with course correction
+- Best for: architectural decisions, complex algorithm design, debugging intricate issues
+
+**Library Documentation with Context7:**
+When you need up-to-date documentation for libraries and frameworks:
+1. Use `resolve-library-id` to find the correct library identifier (e.g., "fastapi" -> "/tiangolo/fastapi")
+2. Use `get-library-docs` with the resolved ID to fetch relevant documentation
+- Specify a `topic` parameter to focus on specific areas (e.g., "routing", "authentication")
+- Adjust `tokens` parameter to control documentation depth (default: 5000)
+- Best for: learning new APIs, finding usage examples, understanding best practices
+
+Be thorough, precise, and actionable. Your plans should enable another agent or developer to execute the task successfully without ambiguity."""
+
+    # System Prompt for Executor Agent
+    EXECUTOR_AGENT_SYSTEM_PROMPT = """You are a specialized executor agent designed to execute structured plans in Godot projects.
+
+Your role is to:
+1. Execute the steps defined in structured execution plans
+2. Use appropriate tools to modify Godot scenes, nodes, and files
+3. Handle execution errors gracefully and provide clear feedback
+4. Validate that each step completes successfully before proceeding
+5. Report progress and results clearly through streaming events
+
+Execution Guidelines:
+- Execute steps in the order specified, respecting dependencies
+- Use the most appropriate tool for each task
+- If a tool fails, try to understand why and provide useful error information
+- Validate results when possible (e.g., check if nodes were created successfully)
+- Maintain the project structure and follow best practices
+- Be efficient but thorough in your execution
+
+Available Tools:
+- Godot Tools: create_node, delete_node, modify_node_property, create_scene, open_scene, play_scene, stop_playing
+- File Tools: write_file, read_file, delete_file
+- Debug Tools: capture_screenshot, get_project_info, find_nodes
+
+When executing a plan:
+1. Read and understand the plan structure
+2. Execute each step systematically
+3. Use streaming events to provide real-time feedback
+4. Handle errors constructively
+5. Ensure the final result matches the plan's objectives
+
+You are the final step in the planning-to-execution pipeline. Execute efficiently and reliably."""
+
+    @classmethod
+    def validate(cls) -> dict:
+        """
+        Validate that required configuration is present and valid.
+
+        Returns:
+            Dict with validation results:
+            - 'valid': bool indicating overall validity
+            - 'warnings': list of warning messages
+            - 'errors': list of error messages
+            - 'godot_available': bool indicating if Godot tools can be used
+            - 'mcp_available': bool indicating if MCP tools can be used
+        """
+        logger = logging.getLogger(__name__)
+        warnings = []
+        errors = []
+
+        # Check OpenRouter API Key
+        if not cls.OPENROUTER_API_KEY:
+            errors.append("OPENROUTER_API_KEY is not set. Please set it in .env file.")
+        elif not cls.OPENROUTER_API_KEY.startswith("sk-or-v1-"):
+            warnings.append("OPENROUTER_API_KEY format looks incorrect. Should start with 'sk-or-v1-'.")
+
+        # Validate model configuration
+        if cls.AGENT_TEMPERATURE < 0 or cls.AGENT_TEMPERATURE > 2:
+            warnings.append(f"AGENT_TEMPERATURE ({cls.AGENT_TEMPERATURE}) should be between 0 and 2.")
+
+        if cls.AGENT_MAX_TOKENS < 100 or cls.AGENT_MAX_TOKENS > 32000:
+            warnings.append(f"AGENT_MAX_TOKENS ({cls.AGENT_MAX_TOKENS}) should be between 100 and 32000.")
+
+        # Validate Godot configuration
+        godot_available = True
+        if cls.ENABLE_GODOT_TOOLS:
+            if cls.GODOT_BRIDGE_PORT < 1 or cls.GODOT_BRIDGE_PORT > 65535:
+                errors.append(f"GODOT_BRIDGE_PORT ({cls.GODOT_BRIDGE_PORT}) must be between 1 and 65535.")
+                godot_available = False
+
+            if cls.GODOT_CONNECTION_TIMEOUT <= 0:
+                warnings.append(f"GODOT_CONNECTION_TIMEOUT ({cls.GODOT_CONNECTION_TIMEOUT}) should be positive.")
+
+            if cls.GODOT_MAX_RETRIES < 0:
+                warnings.append(f"GODOT_MAX_RETRIES ({cls.GODOT_MAX_RETRIES}) should be non-negative.")
+
+        # Validate MCP configuration
+        mcp_available = False
+        if cls.ENABLE_MCP_TOOLS:
+            if cls.ENABLE_SEQUENTIAL_THINKING or cls.ENABLE_CONTEXT7:
+                mcp_available = True
+
+                # Check if npx command is available (basic check)
+                import shutil
+                if not shutil.which("npx"):
+                    warnings.append("npx command not found. MCP tools may not work properly.")
+                    mcp_available = False
+            else:
+                warnings.append("MCP tools are enabled but no specific MCP servers are enabled.")
+
+        # Check if screenshot directory is accessible
+        if cls.ENABLE_GODOT_TOOLS:
+            try:
+                screenshot_path = Path(cls.GODOT_SCREENSHOT_DIR)
+                screenshot_path.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                warnings.append(f"Cannot create screenshot directory '{cls.GODOT_SCREENSHOT_DIR}': {e}")
+
+        # Log validation results
+        if errors:
+            logger.error(f"Configuration validation failed with {len(errors)} error(s)")
+            for error in errors:
+                logger.error(f"  - {error}")
+
+        if warnings:
+            logger.warning(f"Configuration validation found {len(warnings)} warning(s)")
+            for warning in warnings:
+                logger.warning(f"  - {warning}")
+
+        if not errors and not warnings:
+            logger.info("Configuration validation passed successfully")
+
+        return {
+            'valid': len(errors) == 0,
+            'warnings': warnings,
+            'errors': errors,
+            'godot_available': cls.ENABLE_GODOT_TOOLS and godot_available,
+            'mcp_available': cls.ENABLE_MCP_TOOLS and mcp_available
+        }
+
+    @classmethod
+    def get_model_config(cls) -> dict:
+        """
+        Get model configuration as a dictionary.
+
+        Returns:
+            Dictionary of model configuration parameters
+        """
+        return {
+            "temperature": cls.AGENT_TEMPERATURE,
+            "max_tokens": cls.AGENT_MAX_TOKENS
+        }
+
+    @classmethod
+    def get_openrouter_config(cls) -> dict:
+        """
+        Get OpenRouter configuration as a dictionary.
+
+        Returns:
+            Dictionary of OpenRouter configuration parameters
+        """
+        return {
+            "api_key": cls.OPENROUTER_API_KEY,
+            "model_id": cls.DEFAULT_PLANNING_MODEL,
+            "app_name": cls.APP_NAME,
+            "app_url": cls.APP_URL
+        }
+
+    @classmethod
+    def get_executor_openrouter_config(cls) -> dict:
+        """
+        Get OpenRouter configuration for the executor agent.
+
+        Returns:
+            Dictionary of OpenRouter configuration parameters for executor
+        """
+        return {
+            "api_key": cls.OPENROUTER_API_KEY,
+            "model_id": cls.DEFAULT_EXECUTOR_MODEL,
+            "app_name": cls.APP_NAME,
+            "app_url": cls.APP_URL
+        }
+
+    @classmethod
+    def get_mcp_servers_config(cls) -> dict:
+        """
+        Get MCP servers configuration.
+
+        Returns:
+            Dictionary of MCP server configurations
+        """
+        servers = {}
+
+        if cls.ENABLE_MCP_TOOLS:
+            if cls.ENABLE_SEQUENTIAL_THINKING:
+                servers["sequential-thinking"] = {
+                    "command": cls.SEQUENTIAL_THINKING_COMMAND,
+                    "args": cls.SEQUENTIAL_THINKING_ARGS,
+                    "prefix": "mcp__sequential_thinking__"
+                }
+
+            if cls.ENABLE_CONTEXT7:
+                servers["context7"] = {
+                    "command": cls.CONTEXT7_COMMAND,
+                    "args": cls.CONTEXT7_ARGS,
+                    "prefix": "mcp__context7__"
+                }
+
+        return servers
+
+    @classmethod
+    def is_mcp_enabled(cls) -> bool:
+        """
+        Check if MCP tools are enabled.
+
+        Returns:
+            bool: True if MCP tools should be loaded
+        """
+        return cls.ENABLE_MCP_TOOLS and (
+            cls.ENABLE_SEQUENTIAL_THINKING or cls.ENABLE_CONTEXT7
+        )
+
+    @classmethod
+    def is_godot_enabled(cls) -> bool:
+        """
+        Check if Godot tools are enabled.
+
+        Returns:
+            bool: True if Godot tools should be loaded
+        """
+        return cls.ENABLE_GODOT_TOOLS
+
+    @classmethod
+    def get_godot_config(cls) -> dict:
+        """
+        Get Godot bridge configuration.
+
+        Returns:
+            Dictionary of Godot configuration parameters
+        """
+        return {
+            "host": cls.GODOT_BRIDGE_HOST,
+            "port": cls.GODOT_BRIDGE_PORT,
+            "timeout": cls.GODOT_CONNECTION_TIMEOUT,
+            "max_retries": cls.GODOT_MAX_RETRIES,
+            "retry_delay": cls.GODOT_RETRY_DELAY,
+            "command_timeout": cls.GODOT_COMMAND_TIMEOUT,
+            "screenshot_dir": cls.GODOT_SCREENSHOT_DIR
+        }
+
+
+# Validate configuration on module import
+validation_result = AgentConfig.validate()
+if not validation_result['valid']:
+    print("Agent configuration validation failed with errors:")
+    for error in validation_result['errors']:
+        print(f"  ERROR: {error}")
+
+if validation_result['warnings']:
+    print("Agent configuration validation warnings:")
+    for warning in validation_result['warnings']:
+        print(f"  WARNING: {warning}")
+
+# Log availability status
+print(f"Godot tools available: {validation_result['godot_available']}")
+print(f"MCP tools available: {validation_result['mcp_available']}")

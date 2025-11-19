@@ -320,7 +320,12 @@ class PlanningAgent:
 
     async def plan_async(self, prompt: str) -> str:
         """
-        Generate a plan asynchronously.
+        Generate a plan asynchronously using the Strands Agent Loop.
+
+        This method now properly uses the Strands Agent Loop, enabling:
+        - Multi-step reasoning
+        - Tool execution and recursion
+        - Proper conversation management
 
         Args:
             prompt: User's request for planning
@@ -332,47 +337,36 @@ class PlanningAgent:
             # Ensure MCP tools are initialized
             await self._ensure_mcp_initialized()
 
-            # Use direct OpenRouter model call to bypass Strands streaming entirely
-            logger.info("Using direct OpenRouter model call to bypass toolUseId streaming error")
+            logger.info("Using Strands Agent Loop for async planning")
 
-            # Create messages in Strands format
-            messages = [{"role": "user", "content": [{"text": prompt}]}]
+            # Use the Strands Agent's invoke_async method to get the result
+            # This will trigger the full agent loop with tool execution
+            result = await self.agent.invoke_async(prompt)
 
-            # Get tool specifications from agent tools
-            tool_specs = []
-            for tool in self.tools:
-                if hasattr(tool, 'tool_spec'):
-                    tool_specs.append(tool.tool_spec)
-                elif hasattr(tool, '__name__') and hasattr(tool, '__doc__'):
-                    # Create basic tool spec for tools without explicit spec
-                    tool_specs.append({
-                        "name": tool.__name__,
-                        "description": tool.__doc__ or f"Tool: {tool.__name__}",
-                        "input_schema": {"type": "object", "properties": {}}
-                    })
+            # Debug: Log the result structure
+            logger.info(f"AgentResult type: {type(result)}")
+            logger.info(f"AgentResult dir: {[attr for attr in dir(result) if not attr.startswith('_')]}")
+            if hasattr(result, 'message'):
+                logger.info(f"Message: {result.message}")
+                logger.info(f"Message type: {type(result.message)}")
+            if hasattr(result, '__dict__'):
+                logger.info(f"AgentResult dict: {result.__dict__}")
 
-            # Use the OpenRouter model's complete method directly
-            result = await self.model.complete(
-                messages=messages,
-                tool_specs=tool_specs,
-                system_prompt=AgentConfig.PLANNING_AGENT_SYSTEM_PROMPT
-            )
-
-            # Extract text from result
-            if result and 'message' in result:
-                content = result['message'].get('content', [])
+            # Extract text from AgentResult
+            if hasattr(result, 'message'):
+                content = result.message.get('content', [])
                 if content and isinstance(content, list):
-                    text_parts = []
-                    for block in content:
-                        if isinstance(block, dict) and 'text' in block:
-                            text_parts.append(block['text'])
-                        elif isinstance(block, str):
-                            text_parts.append(block)
-
+                    text_parts = [
+                        block.get('text', '')
+                        for block in content
+                        if 'text' in block
+                    ]
                     if text_parts:
                         return '\n'.join(text_parts)
 
-            return str(result) if result else "No plan generated"
+            # Fallback to string representation
+            logger.warning(f"No text content found in result, returning string representation")
+            return str(result)
 
         except Exception as e:
             logger.error(f"Error generating plan: {e}")
@@ -380,14 +374,19 @@ class PlanningAgent:
 
     async def plan_stream(self, prompt: str) -> AsyncIterable[Dict[str, Any]]:
         """
-        Generate a plan with streaming responses.
+        Generate a plan with streaming responses using the Strands Agent Loop.
+
+        This method now properly uses the Strands Agent Loop, enabling:
+        - Real-time streaming of text, tool calls, and results
+        - Multi-step reasoning with tool execution
+        - Proper event handling and conversation management
 
         Args:
             prompt: User's request for planning
 
         Yields:
             Dictionary events containing:
-            - type: Event type ('start', 'data', 'tool_use', 'tool_result', 'end')
+            - type: Event type ('start', 'data', 'tool_use', 'tool_result', 'end', etc.)
             - data: Event data (text chunk, tool info, etc.)
         """
         try:
@@ -400,94 +399,61 @@ class PlanningAgent:
             # Ensure MCP tools are initialized
             await self._ensure_mcp_initialized()
 
-            # Use direct OpenRouter model call to bypass Strands streaming entirely
-            logger.info("Using direct OpenRouter model call for streaming to avoid toolUseId error")
+            logger.info("Using Strands Agent Loop for streaming planning")
 
-            try:
-                # Create messages in Strands format
-                messages = [{"role": "user", "content": [{"text": prompt}]}]
+            # Use the Strands Agent's stream_async method to get streaming events
+            # This will trigger the full agent loop with tool execution
+            async for event in self.agent.stream_async(prompt):
+                # Convert Strands events to our expected format
+                event_type = None
+                event_data = {}
 
-                # Get tool specifications from agent tools
-                tool_specs = []
-                for tool in self.tools:
-                    if hasattr(tool, 'tool_spec'):
-                        tool_specs.append(tool.tool_spec)
-                    elif hasattr(tool, '__name__') and hasattr(tool, '__doc__'):
-                        # Create basic tool spec for tools without explicit spec
-                        tool_specs.append({
-                            "name": tool.__name__,
-                            "description": tool.__doc__ or f"Tool: {tool.__name__}",
-                            "input_schema": {"type": "object", "properties": {}}
-                        })
+                # Handle different event types from Strands
+                if "data" in event:
+                    # Text data streaming
+                    event_type = "data"
+                    event_data = {"text": event["data"]}
+                elif "current_tool_use" in event:
+                    # Tool being executed
+                    tool_info = event["current_tool_use"]
+                    event_type = "tool_use"
+                    event_data = {
+                        "tool_name": tool_info.get("name"),
+                        "tool_input": tool_info.get("input", {})
+                    }
+                elif "tool_result" in event:
+                    # Tool execution result
+                    tool_result = event["tool_result"]
+                    event_type = "tool_result"
+                    event_data = {
+                        "tool_name": tool_result.get("name"),
+                        "result": tool_result.get("content", [])
+                    }
+                elif "result" in event:
+                    # Final result - extract and yield end event
+                    result = event["result"]
+                    event_type = "end"
+                    event_data = {
+                        "stop_reason": getattr(result, 'stop_reason', 'end_turn')
+                    }
 
-                # Use the OpenRouter model's complete method directly
-                result = await self.model.complete(
-                    messages=messages,
-                    tool_specs=tool_specs,
-                    system_prompt=AgentConfig.PLANNING_AGENT_SYSTEM_PROMPT
-                )
+                    # Include metrics if available
+                    if hasattr(result, 'metrics'):
+                        event_data["metrics"] = result.metrics
+                elif "complete" in event and event["complete"]:
+                    # Stream completion marker
+                    continue
+                else:
+                    # Other events - pass through with minimal transformation
+                    logger.debug(f"Unhandled event type: {event}")
+                    continue
 
-                # Extract text from result
-                if result and 'message' in result:
-                    content = result['message'].get('content', [])
-                    if content and isinstance(content, list):
-                        text_parts = []
-                        for block in content:
-                            if isinstance(block, dict) and 'text' in block:
-                                text_parts.append(block['text'])
-                            elif isinstance(block, str):
-                                text_parts.append(block)
-
-                        if text_parts:
-                            full_text = '\n'.join(text_parts)
-
-                            # Replace problematic Unicode characters for Windows compatibility
-                            safe_text = full_text.replace('→', '->').replace('✓', '+').replace('✗', '-')
-
-                            # Stream the result as chunks for real-time feel
-                            chunk_size = 30  # Small chunks for streaming effect
-                            for i in range(0, len(safe_text), chunk_size):
-                                chunk = safe_text[i:i + chunk_size]
-                                yield {
-                                    "type": "data",
-                                    "data": {"text": chunk}
-                                }
-                                # Small delay to simulate streaming
-                                import asyncio
-                                await asyncio.sleep(0.05)
-
-                            # Yield end event
-                            yield {
-                                "type": "end",
-                                "data": {"stop_reason": "end_turn"}
-                            }
-
-                            # Include metadata if available
-                            if 'usage' in result:
-                                yield {
-                                    "type": "metadata",
-                                    "data": result['usage']
-                                }
-
-                            return
-
-                # If no content was extracted, yield a default message
-                yield {
-                    "type": "data",
-                    "data": {"text": "Plan generated but content could not be extracted."}
-                }
-
-                yield {
-                    "type": "end",
-                    "data": {"stop_reason": "end_turn"}
-                }
-
-            except Exception as inner_error:
-                logger.error(f"Error in direct OpenRouter call: {inner_error}")
-                yield {
-                    "type": "error",
-                    "data": {"error": str(inner_error)}
-                }
+                # Yield the converted event
+                if event_type:
+                    yield {
+                        "type": event_type,
+                        "data": event_data
+                    }
 
         except Exception as e:
             logger.error(f"Error in streaming plan: {e}")

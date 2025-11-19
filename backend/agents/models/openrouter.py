@@ -273,6 +273,11 @@ class OpenRouterModel(Model):
         """
         Parse Server-Sent Events stream and convert to Strands StreamEvents.
 
+        This method follows the Strands OpenAI model pattern:
+        1. Accumulate tool calls during streaming
+        2. Yield tool call events AFTER text content streaming completes
+        3. Use correct nested structure for toolUse events
+
         Args:
             response: HTTPX streaming response
 
@@ -281,12 +286,19 @@ class OpenRouterModel(Model):
         """
         message_started = False
         content_block_started = False
-        current_tool_use = None
         accumulated_text = ""
-        accumulated_tool_args = ""
+        finish_reason = None
+        usage_data = None
+
+        # Accumulate tool calls indexed by their index (for multiple tool calls)
+        tool_calls: dict[int, list[dict]] = {}
+
+        lines_processed = 0
+        chunks_processed = 0
 
         async for line in response.aiter_lines():
             line = line.strip()
+            lines_processed += 1
 
             # Skip empty lines and comments
             if not line or line.startswith(":"):
@@ -298,16 +310,23 @@ class OpenRouterModel(Model):
 
                 # Check for end of stream
                 if data == "[DONE]":
-                    if content_block_started:
-                        yield {"contentBlockStop": {}}
-                    yield {"messageStop": {"stopReason": "end_turn"}}
+                    logger.info(f"[STREAM] Received [DONE] marker after {chunks_processed} chunks")
                     break
 
                 try:
                     chunk = json.loads(data)
+                    chunks_processed += 1
+
+                    # Log first chunk for debugging
+                    if chunks_processed == 1:
+                        logger.info(f"[STREAM] First chunk: {json.dumps(chunk)[:500]}")
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse SSE data: {data}")
                     continue
+
+                # Capture usage metadata if present
+                if "usage" in chunk:
+                    usage_data = chunk["usage"]
 
                 # Handle error responses
                 if "error" in chunk:
@@ -323,10 +342,19 @@ class OpenRouterModel(Model):
                 # Process chunks
                 choices = chunk.get("choices", [])
                 if not choices:
+                    logger.warning(f"[STREAM] Chunk has no choices: {chunk}")
                     continue
 
                 delta = choices[0].get("delta", {})
-                finish_reason = choices[0].get("finish_reason")
+                choice_finish_reason = choices[0].get("finish_reason")
+
+                # Log finish reasons when they appear
+                if choice_finish_reason:
+                    logger.info(f"[STREAM] Received finish_reason: {choice_finish_reason}")
+
+                # Debug: Log delta structure to understand tool call format
+                if "tool_calls" in delta or "function_call" in delta:
+                    logger.info(f"[STREAM] Tool call delta received: {json.dumps(delta)}")
 
                 # Start message if not started
                 if not message_started:
@@ -336,88 +364,131 @@ class OpenRouterModel(Model):
                 # Handle content (text)
                 if "content" in delta and delta["content"]:
                     if not content_block_started:
-                        yield {"contentBlockStart": {"start": {"type": "text"}}}
+                        yield {"contentBlockStart": {"start": {}}}
                         content_block_started = True
 
                     text_chunk = delta["content"]
                     accumulated_text += text_chunk
+
                     yield {
                         "contentBlockDelta": {
                             "delta": {"text": text_chunk}
                         }
                     }
 
-                # Handle tool calls
+                # Accumulate tool calls (following OpenAI model pattern)
+                # We'll yield them AFTER streaming completes
                 if "tool_calls" in delta:
                     for tool_call in delta["tool_calls"]:
-                        function = tool_call.get("function", {})
-                        tool_id = tool_call.get("id", "")
-
-                        # Start new tool use block
-                        if "name" in function:
-                            if content_block_started:
-                                yield {"contentBlockStop": {}}
-
-                            current_tool_use = {
-                                "toolUseId": tool_id,
-                                "name": function["name"]
-                            }
-
-                            yield {
-                                "contentBlockStart": {
-                                    "start": {
-                                        "type": "toolUse",
-                                        "toolUseId": tool_id,
-                                        "name": function["name"]
-                                    }
-                                }
-                            }
-                            content_block_started = True
-                            accumulated_tool_args = ""
-
-                        # Accumulate tool arguments
-                        if "arguments" in function:
-                            args_chunk = function["arguments"]
-                            accumulated_tool_args += args_chunk
-                            yield {
-                                "contentBlockDelta": {
-                                    "delta": {
-                                        "toolUse": {"input": args_chunk}
-                                    }
-                                }
-                            }
+                        index = tool_call.get("index", 0)
+                        tool_calls.setdefault(index, []).append(tool_call)
 
                 # Handle finish
-                if finish_reason:
+                if choice_finish_reason:
+                    finish_reason = choice_finish_reason
                     if content_block_started:
                         yield {"contentBlockStop": {}}
+                        content_block_started = False
+                    break
 
-                    # Map OpenAI finish reasons to Strands stop reasons
-                    stop_reason_map = {
-                        "stop": "end_turn",
-                        "length": "max_tokens",
-                        "tool_calls": "tool_use",
-                        "content_filter": "content_filtered"
+        # After loop completes, check if we have a finish_reason
+        # If not, assume 'stop' if we received at least one chunk (successful completion)
+        if not finish_reason:
+            if chunks_processed > 0:
+                logger.warning(f"[STREAM] Stream ended without finish_reason after {chunks_processed} chunks - assuming 'stop'")
+                finish_reason = "stop"
+            else:
+                logger.error(f"[STREAM] Stream ended without any chunks - genuine error")
+                yield {
+                    "messageStop": {
+                        "stopReason": "error",
+                        "error": "Stream ended without producing any content"
                     }
+                }
+                return
 
-                    yield {
-                        "messageStop": {
-                            "stopReason": stop_reason_map.get(finish_reason, "end_turn")
+            # After streaming completes, yield accumulated tool calls
+            # This follows the Strands OpenAI model pattern
+            logger.info(f"[STREAM] Processing {len(tool_calls)} accumulated tool calls")
+            for tool_deltas in tool_calls.values():
+                if not tool_deltas:
+                    continue
+
+                # Get the first delta which has the tool info
+                first_delta = tool_deltas[0]
+                function = first_delta.get("function", {})
+                tool_id = first_delta.get("id", "")
+                tool_name = function.get("name", "")
+
+                # Generate tool ID if not provided
+                if tool_name and not tool_id:
+                    import hashlib
+                    tool_id = f"toolu_{hashlib.md5(tool_name.encode()).hexdigest()[:24]}"
+                    logger.debug(f"Generated tool ID: {tool_id} for tool: {tool_name}")
+
+                # Yield contentBlockStart with correct nested structure
+                # This matches the Strands OpenAI model format
+                logger.info(f"[STREAM] Yielding contentBlockStart for tool: {tool_name} (ID: {tool_id})")
+                yield {
+                    "contentBlockStart": {
+                        "start": {
+                            "toolUse": {  # <-- Key difference: nested under "toolUse"
+                                "name": tool_name,
+                                "toolUseId": tool_id,
+                            }
                         }
                     }
+                }
 
-                    # Include metadata if available
-                    if "usage" in chunk:
-                        usage = chunk["usage"]
+                # Yield deltas for tool arguments
+                for tool_delta in tool_deltas:
+                    function = tool_delta.get("function", {})
+                    if "arguments" in function and function["arguments"]:
                         yield {
-                            "metadata": {
-                                "usage": {
-                                    "inputTokens": usage.get("prompt_tokens", 0),
-                                    "outputTokens": usage.get("completion_tokens", 0),
-                                    "totalTokens": usage.get("total_tokens", 0)
+                            "contentBlockDelta": {
+                                "delta": {
+                                    "toolUse": {"input": function["arguments"]}
                                 }
                             }
                         }
+
+                # Close the tool use content block
+                yield {"contentBlockStop": {}}
+
+            # Map OpenAI finish reasons to Strands stop reasons
+            stop_reason_map = {
+                "stop": "end_turn",
+                "length": "max_tokens",
+                "tool_calls": "tool_use",
+                "content_filter": "content_filtered"
+            }
+
+            # If we have tool calls but no explicit tool_calls finish reason,
+            # set it to tool_use
+            final_stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+            if tool_calls and final_stop_reason == "end_turn":
+                logger.info(f"Tool calls present but finish_reason was '{finish_reason}', setting stop_reason to 'tool_use'")
+                final_stop_reason = "tool_use"
+
+            logger.info(f"[STREAM] Finish reason: {finish_reason}, mapped stop_reason: {final_stop_reason}, tool_calls count: {len(tool_calls)}")
+
+            yield {
+                "messageStop": {
+                    "stopReason": final_stop_reason
+                }
+            }
+
+            # Yield metadata if we collected it
+            if usage_data:
+                yield {
+                    "metadata": {
+                        "usage": {
+                            "inputTokens": usage_data.get("prompt_tokens", 0),
+                            "outputTokens": usage_data.get("completion_tokens", 0),
+                            "totalTokens": usage_data.get("total_tokens", 0)
+                        }
+                    }
+                }
 
     async def structured_output(
         self,
