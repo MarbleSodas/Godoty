@@ -1,4 +1,4 @@
-"""Tools for the planning agent."""
+"""Tools for Godot Assistant agents (planning and execution)."""
 
 from .file_system_tools import read_file, list_files, search_codebase
 from .web_tools import search_documentation, fetch_webpage, get_godot_api_reference
@@ -7,33 +7,71 @@ from .godot_debug_tools import (
     GodotDebugTools,
     get_project_overview,
     analyze_scene_tree,
+    capture_visual_context,
+    capture_editor_viewport,
+    capture_game_viewport,
+    get_visual_debug_info,
+    get_debug_output,
+    get_debug_logs,
+    search_debug_logs,
+    monitor_debug_output,
+    get_performance_metrics,
+    inspect_scene_file,
+    search_nodes,
+    analyze_node_performance,
+    get_scene_debug_overlays,
+    compare_scenes,
+    get_debugger_state,
+    access_debug_variables,
+    get_call_stack_info,
     SceneInfo,
     NodeInfo
 )
 from .godot_executor_tools import (
     GodotExecutorTools,
     create_node,
-    modify_node_property,
     delete_node,
+    modify_node_property,
     create_scene,
     open_scene,
     select_nodes,
     play_scene,
     stop_playing,
+    reparent_node,
+    duplicate_node,
+    create_resource,
+    delete_resource,
+    attach_script_to_node,
+    create_and_attach_script,
+    create_node_with_script,
+    batch_create_nodes,
+    batch_delete_nodes,
+    batch_modify_properties,
     CreationResult,
     ModificationResult
 )
-from .godot_security import (
-    GodotSecurityValidator,
-    SecurityContext,
-    OperationRisk,
-    ValidationResult,
-    get_security_validator,
-    set_security_context,
-    create_default_security_context,
-    validate_operation,
-    validate_path
+from .file_tools import (
+    FileTools,
+    write_file,
+    delete_file,
+    modify_gdscript_method,
+    add_gdscript_method,
+    remove_gdscript_method,
+    modify_project_setting,
+    FileOperationResult,
+    GDScriptEditResult
 )
+from .gdscript_editor import (
+    GDScriptEditor,
+    analyze_gdscript_structure,
+    validate_gdscript_syntax,
+    refactor_gdscript_method,
+    extract_gdscript_method,
+    GDScriptMethodInfo,
+    GDScriptClassInfo,
+    GDScriptValidationResult
+)
+from .mcp_tools import MCPToolManager, get_mcp_tools
 
 __all__ = [
     # File system tools
@@ -48,32 +86,71 @@ __all__ = [
     "GodotBridge",
     "get_godot_bridge",
     "ensure_godot_connection",
-    # Godot debug tools (essential only)
+    # Godot debug tools (comprehensive suite)
     "GodotDebugTools",
     "get_project_overview",
     "analyze_scene_tree",
+    "capture_visual_context",
+    "capture_editor_viewport",
+    "capture_game_viewport",
+    "get_visual_debug_info",
+    "get_debug_output",
+    "get_debug_logs",
+    "search_debug_logs",
+    "monitor_debug_output",
+    "get_performance_metrics",
+    "inspect_scene_file",
+    "search_nodes",
+    "analyze_node_performance",
+    "get_scene_debug_overlays",
+    "compare_scenes",
+    "get_debugger_state",
+    "access_debug_variables",
+    "get_call_stack_info",
     "SceneInfo",
     "NodeInfo",
-    # Godot executor tools (core functionality)
+    # Godot executor tools (comprehensive creation/modification tools)
     "GodotExecutorTools",
     "create_node",
-    "modify_node_property",
     "delete_node",
+    "modify_node_property",
     "create_scene",
     "open_scene",
     "select_nodes",
     "play_scene",
     "stop_playing",
+    "reparent_node",
+    "duplicate_node",
+    "create_resource",
+    "delete_resource",
+    "attach_script_to_node",
+    "create_and_attach_script",
+    "create_node_with_script",
+    "batch_create_nodes",
+    "batch_delete_nodes",
+    "batch_modify_properties",
     "CreationResult",
     "ModificationResult",
-    # Godot security (essential only)
-    "GodotSecurityValidator",
-    "SecurityContext",
-    "OperationRisk",
-    "ValidationResult",
-    "get_security_validator",
-    "set_security_context",
-    "create_default_security_context",
-    "validate_operation",
-    "validate_path"
+    # File management tools
+    "FileTools",
+    "write_file",
+    "delete_file",
+    "modify_gdscript_method",
+    "add_gdscript_method",
+    "remove_gdscript_method",
+    "modify_project_setting",
+    "FileOperationResult",
+    "GDScriptEditResult",
+    # GDScript editor tools
+    "GDScriptEditor",
+    "analyze_gdscript_structure",
+    "validate_gdscript_syntax",
+    "refactor_gdscript_method",
+    "extract_gdscript_method",
+    "GDScriptMethodInfo",
+    "GDScriptClassInfo",
+    "GDScriptValidationResult",
+    # MCP tools
+    "MCPToolManager",
+    "get_mcp_tools",
 ]

@@ -7,9 +7,144 @@ This module provides comprehensive tools for AI agents to interact with Godot pr
 The Godot integration consists of three main components:
 
 1. **Godot Bridge** (`godot_bridge.py`) - WebSocket connection manager
-2. **Godot Debug Tools** (`godot_debug_tools.py`) - Planning and analysis tools
+2. **Godot Debug Tools** (`godot_debug_tools.py`) - Comprehensive debugging and analysis tools
 3. **Godot Executor Tools** (`godot_executor_tools.py`) - Action and automation tools
-4. **Godot Security** (`godot_security.py`) - Security validation and safeguards
+
+## Comprehensive Debugging Tools
+
+The Godot Debug Tools provide agents with extensive debugging capabilities for visual input, logging, scene analysis, and runtime debugging.
+
+### **1. Visual Input Tools**
+
+#### `capture_visual_context(include_3d=True)`
+- **Purpose**: Capture comprehensive visual context from the Godot viewport
+- **Returns**: `VisualSnapshot` with screenshot path and viewport metadata
+- **Use Case**: Get complete visual understanding of current editor state
+
+#### `capture_editor_viewport(include_3d=True, include_2d=True)`
+- **Purpose**: Capture focused editor viewport screenshot with detailed metadata
+- **Returns**: Dict containing screenshot path, viewport info, and editor state
+- **Use Case**: Precise visual analysis of specific editor viewports
+
+#### `capture_game_viewport(wait_frames=3)`
+- **Purpose**: Capture in-game viewport screenshot with timing control
+- **Returns**: Dict containing screenshot path and game state information
+- **Use Case**: Capture gameplay screenshots for debugging or documentation
+
+#### `get_visual_debug_info()`
+- **Purpose**: Get visual debugging overlays and information
+- **Returns**: Dict containing debug overlays, collision shapes, navigation data
+- **Use Case**: Analyze debug visualizations and collision/navigation information
+
+### **2. Enhanced Log Access Tools**
+
+#### `get_debug_output(lines=100, severity_filter=None)`
+- **Purpose**: Get parsed debug output with severity analysis
+- **Parameters**:
+  - `lines`: Number of recent lines to retrieve
+  - `severity_filter`: Filter by 'error', 'warning', 'info'
+- **Returns**: Dict containing parsed messages, severity counts, and metadata
+- **Use Case**: Quick access to recent debug messages with analysis
+
+#### `get_debug_logs(severity_filter=None, time_range=None, limit=200)`
+- **Purpose**: Get filtered debug logs with advanced parsing and analytics
+- **Parameters**:
+  - `severity_filter`: Filter by severity level
+  - `time_range`: Filter by time ('recent', 'last_minute', 'last_hour')
+  - `limit`: Maximum number of log entries
+- **Returns**: Dict containing filtered logs, analytics, and common errors
+- **Use Case**: Comprehensive log analysis with time-based filtering
+
+#### `search_debug_logs(pattern, case_sensitive=False, regex=False)`
+- **Purpose**: Search debug logs for specific patterns
+- **Parameters**:
+  - `pattern`: Search pattern
+  - `case_sensitive`: Whether search is case sensitive
+  - `regex`: Use regex pattern matching
+- **Returns**: Dict containing matching log entries and search metadata
+- **Use Case**: Find specific errors, warnings, or patterns in debug logs
+
+#### `monitor_debug_output(duration=10, severity_filter=None)`
+- **Purpose**: Monitor debug output in real-time
+- **Parameters**:
+  - `duration`: Monitoring duration in seconds
+  - `severity_filter`: Optional severity filter
+- **Returns**: Dict containing captured debug output during monitoring
+- **Use Case**: Real-time debugging and log monitoring
+
+### **3. Scene Analysis Tools**
+
+#### `analyze_scene_tree(detailed=False)`
+- **Purpose**: Analyze current scene tree structure
+- **Parameters**: `detailed`: Include detailed node properties
+- **Returns**: Dict containing scene tree hierarchy and complexity analysis
+- **Use Case**: Scene structure analysis and optimization recommendations
+
+#### `get_project_overview()`
+- **Purpose**: Get comprehensive project information
+- **Returns**: Dict containing project structure, scenes, resources, metadata
+- **Use Case**: Project-wide analysis and documentation
+
+#### `inspect_scene_file(scene_path)`
+- **Purpose**: Inspect scene file without loading it
+- **Parameters**: `scene_path`: Path to scene file
+- **Returns**: Dict containing scene structure and metadata
+- **Use Case**: Static scene analysis without loading
+
+#### `search_nodes(search_type, query, scene_root=None)`
+- **Purpose**: Search for nodes in the scene tree
+- **Parameters**:
+  - `search_type`: 'name', 'type', 'group', 'script'
+  - `query`: Search query
+  - `scene_root`: Optional scene root to limit scope
+- **Returns**: List of `NodeInfo` objects
+- **Use Case**: Find specific nodes or analyze scene structure
+
+### **4. Advanced Scene Analysis Tools**
+
+#### `analyze_node_performance(node_path)`
+- **Purpose**: Analyze performance metrics for a specific node
+- **Parameters**: `node_path`: Path to node to analyze
+- **Returns**: Dict containing performance data and optimization suggestions
+- **Use Case**: Node-specific performance analysis and optimization
+
+#### `get_scene_debug_overlays(scene_path=None)`
+- **Purpose**: Get scene debug overlays and visualization information
+- **Parameters**: `scene_path`: Optional specific scene path
+- **Returns**: Dict containing debug overlays, collision shapes, navigation meshes
+- **Use Case**: Visual debugging information and overlay analysis
+
+#### `compare_scenes(scene_path_a, scene_path_b)`
+- **Purpose**: Compare two scenes and highlight differences
+- **Parameters**: Paths to both scenes to compare
+- **Returns**: Dict containing comparison results and differences
+- **Use Case**: Scene versioning, diff analysis, and change tracking
+
+### **5. Runtime Debugging Tools**
+
+#### `get_debugger_state()`
+- **Purpose**: Get current debugger state and information
+- **Returns**: Dict containing debugger state, breakpoints, debugging context
+- **Use Case**: Check debugger status and breakpoint information
+
+#### `access_debug_variables(variable_filter=None)`
+- **Purpose**: Access debug variables and watches from debugging context
+- **Parameters**: `variable_filter`: Optional filter by name or type
+- **Returns**: Dict containing organized debug variables and metadata
+- **Use Case**: Inspect variable values during debugging sessions
+
+#### `get_call_stack_info(max_depth=10)`
+- **Purpose**: Get current call stack information
+- **Parameters**: `max_depth`: Maximum call stack depth
+- **Returns**: Dict containing call stack frames and debugging information
+- **Use Case**: Analyze call stack for debugging and code analysis
+
+### **6. Performance Monitoring**
+
+#### `get_performance_metrics()`
+- **Purpose**: Get current performance metrics from Godot
+- **Returns**: Dict containing FPS, memory usage, frame time, draw calls
+- **Use Case**: Performance analysis and optimization
 
 ## Quick Start
 
@@ -19,6 +154,8 @@ The Godot integration consists of three main components:
 from agents.tools import (
     get_project_overview,
     analyze_scene_tree,
+    capture_visual_context,
+    get_debug_logs,
     create_node,
     play_scene,
     ensure_godot_connection
@@ -29,6 +166,15 @@ await ensure_godot_connection()
 
 # Get project overview
 overview = await get_project_overview()
+
+# Capture visual context
+visual = await capture_visual_context()
+
+# Get recent debug logs with error filtering
+errors = await get_debug_logs(severity_filter="error")
+
+# Analyze scene tree
+scene_analysis = await analyze_scene_tree(detailed=True)
 print(f"Project: {overview['project_info']['name']}")
 
 # Analyze current scene
