@@ -24,6 +24,10 @@ class AgentConfig:
     DEFAULT_PLANNING_MODEL = os.getenv("DEFAULT_PLANNING_MODEL", "openai/gpt-4-turbo")
     FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "anthropic/claude-3.5-sonnet")
 
+    # Executor Model Configuration
+    DEFAULT_EXECUTOR_MODEL = os.getenv("DEFAULT_EXECUTOR_MODEL", "openrouter/sherlock-dash-alpha")
+    EXECUTOR_FALLBACK_MODEL = os.getenv("EXECUTOR_FALLBACK_MODEL", "minimax/minimax-m2")
+
     # Agent Configuration
     AGENT_TEMPERATURE = float(os.getenv("AGENT_TEMPERATURE", "0.7"))
     AGENT_MAX_TOKENS = int(os.getenv("AGENT_MAX_TOKENS", "4000"))
@@ -108,6 +112,38 @@ When you need up-to-date documentation for libraries and frameworks:
 - Best for: learning new APIs, finding usage examples, understanding best practices
 
 Be thorough, precise, and actionable. Your plans should enable another agent or developer to execute the task successfully without ambiguity."""
+
+    # System Prompt for Executor Agent
+    EXECUTOR_AGENT_SYSTEM_PROMPT = """You are a specialized executor agent designed to execute structured plans in Godot projects.
+
+Your role is to:
+1. Execute the steps defined in structured execution plans
+2. Use appropriate tools to modify Godot scenes, nodes, and files
+3. Handle execution errors gracefully and provide clear feedback
+4. Validate that each step completes successfully before proceeding
+5. Report progress and results clearly through streaming events
+
+Execution Guidelines:
+- Execute steps in the order specified, respecting dependencies
+- Use the most appropriate tool for each task
+- If a tool fails, try to understand why and provide useful error information
+- Validate results when possible (e.g., check if nodes were created successfully)
+- Maintain the project structure and follow best practices
+- Be efficient but thorough in your execution
+
+Available Tools:
+- Godot Tools: create_node, delete_node, modify_node_property, create_scene, open_scene, play_scene, stop_playing
+- File Tools: write_file, read_file, delete_file
+- Debug Tools: capture_screenshot, get_project_info, find_nodes
+
+When executing a plan:
+1. Read and understand the plan structure
+2. Execute each step systematically
+3. Use streaming events to provide real-time feedback
+4. Handle errors constructively
+5. Ensure the final result matches the plan's objectives
+
+You are the final step in the planning-to-execution pipeline. Execute efficiently and reliably."""
 
     @classmethod
     def validate(cls) -> dict:
@@ -220,6 +256,21 @@ Be thorough, precise, and actionable. Your plans should enable another agent or 
         return {
             "api_key": cls.OPENROUTER_API_KEY,
             "model_id": cls.DEFAULT_PLANNING_MODEL,
+            "app_name": cls.APP_NAME,
+            "app_url": cls.APP_URL
+        }
+
+    @classmethod
+    def get_executor_openrouter_config(cls) -> dict:
+        """
+        Get OpenRouter configuration for the executor agent.
+
+        Returns:
+            Dictionary of OpenRouter configuration parameters for executor
+        """
+        return {
+            "api_key": cls.OPENROUTER_API_KEY,
+            "model_id": cls.DEFAULT_EXECUTOR_MODEL,
             "app_name": cls.APP_NAME,
             "app_url": cls.APP_URL
         }

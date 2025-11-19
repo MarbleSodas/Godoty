@@ -29,19 +29,34 @@ from .tools import (
     GodotDebugTools,
     get_project_overview,
     analyze_scene_tree,
-    # Godot executor tools
+    capture_visual_context,
+    capture_editor_viewport,
+    capture_game_viewport,
+    get_visual_debug_info,
+    get_debug_output,
+    get_debug_logs,
+    search_debug_logs,
+    monitor_debug_output,
+    get_performance_metrics,
+    inspect_scene_file,
+    search_nodes,
+    # Advanced scene analysis tools
+    analyze_node_performance,
+    get_scene_debug_overlays,
+    compare_scenes,
+    # Runtime debugging tools
+    get_debugger_state,
+    access_debug_variables,
+    get_call_stack_info,
+    # Godot executor tools (safe operations only)
     create_node,
     modify_node_property,
-    delete_node,
     create_scene,
     open_scene,
     select_nodes,
     play_scene,
     stop_playing,
-    # Godot security
-    validate_operation,
-    validate_path
-)
+    )
 from .tools.mcp_tools import MCPToolManager
 
 logger = logging.getLogger(__name__)
@@ -106,7 +121,7 @@ class PlanningAgent:
             else:
                 raise
 
-        # Define base tools for the agent - streamlined for essential functionality
+        # Define base tools for the agent - limited to safe operations
         self.tools = [
             # File system tools
             read_file,
@@ -118,21 +133,37 @@ class PlanningAgent:
             get_godot_api_reference,
             # Godot connection tools
             ensure_godot_connection,
-            # Essential Godot debug tools
+            # Safe Godot debug tools (read-only operations)
             get_project_overview,
             analyze_scene_tree,
-            # Godot executor tools - core functionality
+            capture_visual_context,
+            capture_editor_viewport,
+            capture_game_viewport,
+            get_visual_debug_info,
+            get_debug_output,
+            get_debug_logs,
+            search_debug_logs,
+            monitor_debug_output,
+            get_performance_metrics,
+            inspect_scene_file,
+            search_nodes,
+            # Advanced scene analysis tools
+            analyze_node_performance,
+            get_scene_debug_overlays,
+            compare_scenes,
+            # Runtime debugging tools
+            get_debugger_state,
+            access_debug_variables,
+            get_call_stack_info,
+            # Safe Godot executor tools (non-destructive operations)
             create_node,
             modify_node_property,
-            delete_node,
             create_scene,
             open_scene,
             select_nodes,
             play_scene,
             stop_playing,
-            # Essential security tools
-            validate_operation,
-            validate_path
+            # Note: delete_node removed for safety - agents can create/modify but not delete
         ]
 
         # Track MCP manager for cleanup
