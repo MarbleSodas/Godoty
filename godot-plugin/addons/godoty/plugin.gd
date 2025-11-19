@@ -79,6 +79,11 @@ func _on_command_received(command: Dictionary) -> void:
 	_update_status("Executing: %s" % command.get("action", "unknown"))
 
 	var result = await command_executor.execute_command(command)
+	
+	# Ensure response has the correct type and matches the command ID
+	result["type"] = "command_response"
+	result["id"] = command.get("id")
+	
 	websocket_server.send_response(result)
 
 	var status_symbol := "✓" if result.get("status") == "success" else "✗"
