@@ -84,7 +84,7 @@ async def create_plan(request: PlanRequest):
         request: PlanRequest with prompt and options
 
     Returns:
-        PlanResponse with generated plan
+        PlanResponse with generated plan and metrics
     """
     try:
         # Get agent
@@ -94,12 +94,25 @@ async def create_plan(request: PlanRequest):
         if request.reset_conversation:
             agent.reset_conversation()
 
-        # Generate plan
-        plan = await agent.plan_async(request.prompt)
+        # Generate plan - returns dict with plan, message_id, and metrics
+        result = await agent.plan_async(request.prompt)
+
+        # Extract plan text and metrics
+        plan_text = result.get("plan", "") if isinstance(result, dict) else str(result)
+        message_id = result.get("message_id") if isinstance(result, dict) else None
+        metrics = result.get("metrics") if isinstance(result, dict) else None
+
+        # Build metadata
+        metadata = {}
+        if message_id:
+            metadata["message_id"] = message_id
+        if metrics:
+            metadata["metrics"] = metrics
 
         return PlanResponse(
             status="success",
-            plan=plan
+            plan=plan_text,
+            metadata=metadata if metadata else None
         )
 
     except Exception as e:
@@ -383,4 +396,62 @@ async def chat_session(session_id: str, request: ChatRequest):
         }
     except Exception as e:
         logger.error(f"Error processing chat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/chat/stream")
+async def chat_session_stream(session_id: str, request: ChatRequest):
+    """
+    Send a message to a session and stream the response.
+    
+    Args:
+        session_id: Session ID
+        request: ChatRequest with message
+        
+    Returns:
+        StreamingResponse with Server-Sent Events
+    """
+    try:
+        from agents.multi_agent_manager import get_multi_agent_manager
+        manager = get_multi_agent_manager()
+        
+        # Create streaming generator
+        async def event_generator():
+            """Generate Server-Sent Events from agent stream."""
+            try:
+                async for event in manager.process_message_stream(session_id, request.message):
+                    # Format as SSE
+                    event_type = event.get("type", "data")
+                    event_data = event.get("data", {})
+                    
+                    # Serialize data
+                    data_json = json.dumps(event_data)
+                    
+                    # Yield SSE format
+                    yield f"event: {event_type}\n"
+                    yield f"data: {data_json}\n\n"
+                
+                # Send done event
+                yield "event: done\n"
+                yield "data: {}\n\n"
+                
+            except Exception as e:
+                logger.error(f"Error in chat stream: {e}")
+                error_data = json.dumps({"error": str(e)})
+                yield "event: error\n"
+                yield f"data: {error_data}\n\n"
+
+        # Return streaming response
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error setting up chat stream: {e}")
         raise HTTPException(status_code=500, detail=str(e))

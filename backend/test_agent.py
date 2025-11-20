@@ -9,6 +9,10 @@ import httpx
 import asyncio
 import json
 import sys
+import warnings
+
+# Suppress LangGraph warning
+warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
 
 
 async def test_health():

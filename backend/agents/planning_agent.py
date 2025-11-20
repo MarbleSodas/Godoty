@@ -6,12 +6,20 @@ to generate execution plans for other agents.
 """
 
 import logging
+import uuid
+import warnings
+from datetime import datetime
 from typing import Optional, AsyncIterable, Dict, Any
+
+# Suppress LangGraph warning
+warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
+
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from .models import OpenRouterModel
 from .config import AgentConfig
+from .metrics_tracker import TokenMetricsTracker
 from .tools import (
     # File system tools
     read_file,
@@ -169,6 +177,14 @@ class PlanningAgent:
         # Track MCP manager for cleanup
         self.mcp_manager: Optional[MCPToolManager] = None
 
+        # Initialize metrics tracker if enabled
+        metrics_config = AgentConfig.get_metrics_config()
+        self.metrics_enabled = metrics_config.get("enabled", True)
+        self.metrics_tracker: Optional[TokenMetricsTracker] = None
+        if self.metrics_enabled:
+            self.metrics_tracker = TokenMetricsTracker(api_key=api_key_value)
+            logger.info("Metrics tracking enabled")
+
         # Initialize conversation manager for context handling BEFORE MCP initialization
         self.conversation_manager = SlidingWindowConversationManager(
             window_size=20,  # Keep last 20 messages for context
@@ -318,7 +334,7 @@ class PlanningAgent:
             logger.error(f"Error generating plan: {e}")
             raise
 
-    async def plan_async(self, prompt: str) -> str:
+    async def plan_async(self, prompt: str, session_id: Optional[str] = None, project_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate a plan asynchronously using the Strands Agent Loop.
 
@@ -326,13 +342,19 @@ class PlanningAgent:
         - Multi-step reasoning
         - Tool execution and recursion
         - Proper conversation management
+        - Metrics tracking for tokens and costs
 
         Args:
             prompt: User's request for planning
+            session_id: Optional session ID for metrics tracking
+            project_id: Optional project ID for metrics tracking
 
         Returns:
-            Generated plan as a string
+            Dictionary with plan text, message_id, and optional metrics
         """
+        start_time = datetime.utcnow()
+        message_id = str(uuid.uuid4())
+        
         try:
             # Ensure MCP tools are initialized
             await self._ensure_mcp_initialized()
@@ -340,19 +362,10 @@ class PlanningAgent:
             logger.info("Using Strands Agent Loop for async planning")
 
             # Use the Strands Agent's invoke_async method to get the result
-            # This will trigger the full agent loop with tool execution
             result = await self.agent.invoke_async(prompt)
 
-            # Debug: Log the result structure
-            logger.info(f"AgentResult type: {type(result)}")
-            logger.info(f"AgentResult dir: {[attr for attr in dir(result) if not attr.startswith('_')]}")
-            if hasattr(result, 'message'):
-                logger.info(f"Message: {result.message}")
-                logger.info(f"Message type: {type(result.message)}")
-            if hasattr(result, '__dict__'):
-                logger.info(f"AgentResult dict: {result.__dict__}")
-
             # Extract text from AgentResult
+            response_text = ""
             if hasattr(result, 'message'):
                 content = result.message.get('content', [])
                 if content and isinstance(content, list):
@@ -362,11 +375,56 @@ class PlanningAgent:
                         if 'text' in block
                     ]
                     if text_parts:
-                        return '\n'.join(text_parts)
+                        response_text = '\n'.join(text_parts)
 
-            # Fallback to string representation
-            logger.warning(f"No text content found in result, returning string representation")
-            return str(result)
+            if not response_text:
+                response_text = str(result)
+
+            # Extract and persist metrics if enabled
+            metrics = None
+            if self.metrics_enabled and self.metrics_tracker:
+                try:
+                    # Get model ID from config
+                    model_id = self.model.get_config().get("model_id", "unknown")
+                    
+                    # Extract metrics from result
+                    metrics = self.metrics_tracker.extract_metrics_from_strands_result(result, model_id)
+                    
+                    if metrics:
+                        # Calculate response time
+                        response_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                        
+                        # Count tool calls
+                        tool_calls_count = self.metrics_tracker.count_tool_calls(result)
+                        
+                        # Store metrics in database
+                        from database import get_db_manager
+                        db_manager = get_db_manager()
+                        
+                        await db_manager.create_message_metrics(
+                            message_id=message_id,
+                            model_id=metrics.get("model_id", model_id),
+                            prompt_tokens=metrics.get("prompt_tokens", 0),
+                            completion_tokens=metrics.get("completion_tokens", 0),
+                            total_tokens=metrics.get("total_tokens", 0),
+                            estimated_cost=metrics.get("estimated_cost", 0.0),
+                            session_id=session_id,
+                            project_id=project_id,
+                            response_time_ms=response_time_ms,
+                            stop_reason=metrics.get("stop_reason"),
+                            tool_calls_count=tool_calls_count
+                        )
+                        
+                        logger.info(f"Persisted metrics for message {message_id}")
+                except Exception as e:
+                    logger.error(f"Failed to persist metrics: {e}")
+                    # Don't fail the request if metrics fail
+
+            return {
+                "plan": response_text,
+                "message_id": message_id,
+                "metrics": metrics
+            }
 
         except Exception as e:
             logger.error(f"Error generating plan: {e}")
@@ -482,6 +540,14 @@ class PlanningAgent:
                 logger.info("MCP tools cleaned up")
             except Exception as e:
                 logger.error(f"Error cleaning up MCP tools: {e}")
+
+        # Cleanup metrics tracker
+        if self.metrics_tracker:
+            try:
+                await self.metrics_tracker.close()
+                logger.info("Metrics tracker cleaned up")
+            except Exception as e:
+                logger.error(f"Error cleaning up metrics tracker: {e}")
 
         # Close model
         if hasattr(self.model, 'close'):

@@ -5,6 +5,7 @@ Handles all model-related settings including:
 - Model IDs and selections
 - Temperature and token limits
 - OpenRouter configuration
+- Metrics tracking configuration
 """
 import os
 from typing import Dict
@@ -29,6 +30,12 @@ class ModelConfig:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     APP_NAME = os.getenv("APP_NAME", "Godot-Assistant ")
     APP_URL = os.getenv("APP_URL", "http://localhost:8000")
+    
+    # Metrics Tracking Configuration
+    ENABLE_METRICS_TRACKING = os.getenv("ENABLE_METRICS_TRACKING", "true").lower() == "true"
+    METRICS_DB_PATH = os.getenv("METRICS_DB_PATH", ".godoty_metrics.db")
+    ENABLE_PRECISE_COST_TRACKING = os.getenv("ENABLE_PRECISE_COST_TRACKING", "false").lower() == "true"
+    COST_QUERY_DELAY_MS = int(os.getenv("COST_QUERY_DELAY_MS", "1000"))
     
     @classmethod
     def get_model_config(cls) -> Dict:
@@ -56,4 +63,14 @@ class ModelConfig:
             "model_id": cls.DEFAULT_EXECUTOR_MODEL,
             "app_name": cls.APP_NAME,
             "app_url": cls.APP_URL
+        }
+    
+    @classmethod
+    def get_metrics_config(cls) -> Dict:
+        """Get metrics tracking configuration."""
+        return {
+            "enabled": cls.ENABLE_METRICS_TRACKING,
+            "db_path": cls.METRICS_DB_PATH,
+            "precise_cost_tracking": cls.ENABLE_PRECISE_COST_TRACKING,
+            "cost_query_delay_ms": cls.COST_QUERY_DELAY_MS
         }

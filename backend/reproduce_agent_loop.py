@@ -11,7 +11,11 @@ This script tests that:
 import asyncio
 import os
 import logging
+import warnings
 from dotenv import load_dotenv
+
+# Suppress LangGraph warning
+warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
 
 # Configure logging
 logging.basicConfig(

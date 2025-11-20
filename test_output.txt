@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "C:\Users\eugen\Documents\Github\Godot-Assistant\backend\tests\test_api_streaming.py", line 55, in test_chat_stream_endpoint
+    assert "data" in events
+AssertionError: assert 'data' in ['start', 'error']

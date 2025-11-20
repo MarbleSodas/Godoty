@@ -37,6 +37,7 @@ class GodotProjectInfo:
     project_name: str = ""
     godot_version: str = ""
     plugin_version: str = ""
+    project_settings: Dict[str, Any] = field(default_factory=dict)
     is_ready: bool = False
 
 

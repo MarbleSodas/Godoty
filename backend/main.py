@@ -1,14 +1,28 @@
 import multiprocessing
 import signal
+import os
+
+# CRITICAL: Suppress warnings BEFORE any other imports
+# This must be set before importing uvicorn, fastapi, or agents
+os.environ['PYTHONWARNINGS'] = 'ignore'
+
 import uvicorn
 import webview
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import os
 import time
 import platform
-import sys
+import warnings
+
+# Aggressively suppress all LangGraph warnings
+warnings.simplefilter("ignore", UserWarning)
+warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
+
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Global shutdown flag
 shutdown_requested = False
@@ -31,9 +45,17 @@ def create_app():
     Create and configure the FastAPI application.
     This function is called inside the server process to avoid pickling issues.
     """
+    # CRITICAL: Suppress warnings in the server process
+    # This runs in a separate process, so parent warnings config doesn't apply
+    import warnings
+    warnings.simplefilter("ignore", UserWarning)
+    warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
+
     from fastapi.middleware.cors import CORSMiddleware
     from api import agent_router
     from api.health_routes import router as health_router
+    from api.metrics_routes import router as metrics_router
+    from api.sse_routes import router as sse_router
 
     app = FastAPI(title="PyWebView Desktop App", version="1.0.0")
 
@@ -51,6 +73,12 @@ def create_app():
 
     # Include health check routes
     app.include_router(health_router)
+
+    # Include metrics routes
+    app.include_router(metrics_router)
+
+    # Include SSE routes for real-time Godot status
+    app.include_router(sse_router, prefix="/api")
 
     # FastAPI API Routes (must be defined before mounting static files)
     @app.get("/api/health")
@@ -92,6 +120,62 @@ def create_app():
         print(f"Warning: dist path not found at {dist_path}")
         print("Please build the Angular app first with: cd frontend && npm run build")
 
+    # Initialize database on startup
+    @app.on_event("startup")
+    async def startup_event():
+        """Initialize database and connection monitor on application startup."""
+        # Initialize metrics database
+        try:
+            from database import get_db_manager
+            from agents.config import AgentConfig
+
+            # Check if metrics tracking is enabled
+            metrics_config = AgentConfig.get_metrics_config()
+            if metrics_config.get("enabled", True):
+                db_manager = get_db_manager()
+                await db_manager.initialize()
+                print("Metrics database initialized successfully")
+        except Exception as e:
+            print(f"Warning: Failed to initialize metrics database: {e}")
+
+        # Start Godot connection monitor
+        try:
+            from services import get_connection_monitor
+            from api.sse_routes import setup_sse_listener
+
+            monitor = get_connection_monitor()
+            await monitor.start()
+            setup_sse_listener()  # Register SSE broadcaster with monitor
+            print("Godot connection monitor started")
+        except Exception as e:
+            print(f"Warning: Failed to start Godot connection monitor: {e}")
+
+    # Cleanup database on shutdown
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        """Cleanup database connections and connection monitor on shutdown."""
+        # Stop Godot connection monitor
+        try:
+            from services import get_connection_monitor
+            monitor = get_connection_monitor()
+            await monitor.stop()
+            print("Godot connection monitor stopped")
+        except Exception as e:
+            print(f"Warning: Failed to stop Godot connection monitor: {e}")
+
+        # Close metrics database
+        try:
+            from database import get_db_manager
+            from agents.config import AgentConfig
+
+            metrics_config = AgentConfig.get_metrics_config()
+            if metrics_config.get("enabled", True):
+                db_manager = get_db_manager()
+                await db_manager.close()
+                print("Metrics database closed successfully")
+        except Exception as e:
+            print(f"Warning: Failed to close metrics database: {e}")
+
     return app
 
 
@@ -121,6 +205,26 @@ class DesktopApi:
         """Open native file dialog"""
         # This would need to be called from main thread
         return {'path': '/path/to/file'}
+
+    def get_godot_status(self):
+        """Get Godot connection status and project info."""
+        from agents.tools.godot_bridge import get_godot_bridge
+        bridge = get_godot_bridge()
+        
+        # Check connection status (this is non-blocking check)
+        is_connected = bridge.connection_state.value == "connected"
+        
+        # Get project info if available
+        project_path = bridge.get_project_path()
+        project_info = bridge.project_info
+        
+        return {
+            'connected': is_connected,
+            'status': bridge.connection_state.value,
+            'project_path': project_path,
+            'godot_version': project_info.godot_version if project_info else None,
+            'plugin_version': project_info.plugin_version if project_info else None
+        }
 
 
 # Uvicorn Server Process
@@ -156,7 +260,7 @@ class UvicornServer(multiprocessing.Process):
                 app,
                 host=self.host,
                 port=self.port,
-                log_level="info"
+                log_level="warning"
             )
             server = uvicorn.Server(config=config)
             server.run()

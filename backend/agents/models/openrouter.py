@@ -640,12 +640,16 @@ class OpenRouterModel(Model):
             openai_response: OpenAI API response
 
         Returns:
-            Strands-compatible response dictionary
+            Strands-compatible response dictionary with usage metrics
         """
         try:
             choices = openai_response.get("choices", [])
             if not choices:
-                return {"message": {"content": [{"text": "No response generated"}]}}
+                return {
+                    "message": {"content": [{"text": "No response generated"}]},
+                    "usage": openai_response.get("usage", {}),
+                    "id": openai_response.get("id")
+                }
 
             choice = choices[0]
             message = choice.get("message", {})
@@ -686,9 +690,15 @@ class OpenRouterModel(Model):
                     "role": "assistant"
                 },
                 "stop_reason": choice.get("finish_reason", "end_turn"),
-                "usage": openai_response.get("usage", {})
+                "usage": openai_response.get("usage", {}),
+                "id": openai_response.get("id"),  # OpenRouter generation ID
+                "model": openai_response.get("model")  # Actual model used
             }
 
         except Exception as e:
             logger.error(f"Error converting OpenAI response: {e}")
-            return {"message": {"content": [{"text": f"Error processing response: {str(e)}"}]}}
+            return {
+                "message": {"content": [{"text": f"Error processing response: {str(e)}"}]},
+                "usage": openai_response.get("usage", {}),
+                "id": openai_response.get("id")
+            }

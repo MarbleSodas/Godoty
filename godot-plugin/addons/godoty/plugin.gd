@@ -107,10 +107,31 @@ func _update_status(message: String) -> void:
 
 func _send_project_info(ws: WebSocketPeer) -> void:
 	var project_path := ProjectSettings.globalize_path("res://")
+
+	# Get Godot version info
+	var version_info := Engine.get_version_info()
+	var godot_version := "%d.%d.%d" % [version_info.major, version_info.minor, version_info.patch]
+	if version_info.status:
+		godot_version += "-%s" % version_info.status
+
+	# Get project settings
+	var project_settings := {
+		"name": ProjectSettings.get_setting("application/config/name", "Unknown"),
+		"main_scene": ProjectSettings.get_setting("application/run/main_scene", ""),
+		"viewport_width": ProjectSettings.get_setting("display/window/size/viewport_width", 1920),
+		"viewport_height": ProjectSettings.get_setting("display/window/size/viewport_height", 1080),
+		"renderer": ProjectSettings.get_setting("rendering/renderer/rendering_method", "forward_plus")
+	}
+
 	var message := {
 		"type": "project_info",
 		"status": "success",
-		"data": {"project_path": project_path}
+		"data": {
+			"project_path": project_path,
+			"godot_version": godot_version,
+			"plugin_version": "0.1.0",
+			"project_settings": project_settings
+		}
 	}
 
 	var json_string := JSON.stringify(message)

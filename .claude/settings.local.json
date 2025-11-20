@@ -18,7 +18,11 @@
       "Bash(python3:*)",
       "Bash(timeout:*)",
       "Bash(findstr:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(test:*)",
+      "Bash(powershell -Command \"Start-Sleep -Seconds 5\")",
+      "Bash(powershell:*)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []

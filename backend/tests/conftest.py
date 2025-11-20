@@ -117,10 +117,13 @@ def mock_executor_agent():
 
 
 @pytest.fixture(autouse=True)
-def reset_environment():
+def reset_environment(mock_api_key):
     """Reset environment variables before each test."""
     # Store original env
     original_env = os.environ.copy()
+    
+    # Set test API key
+    os.environ["OPENROUTER_API_KEY"] = mock_api_key
     
     yield
     
