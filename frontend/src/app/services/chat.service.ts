@@ -2,6 +2,26 @@ import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, map, tap } from 'rxjs';
 
+export interface ToolCall {
+  name: string;
+  input: any;
+  status: 'running' | 'completed' | 'failed';
+  result?: any;
+  error?: string;
+}
+
+export interface ExecutionStep {
+  id: string;
+  title: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+}
+
+export interface ExecutionPlan {
+  title: string;
+  steps: ExecutionStep[];
+  status: 'pending' | 'running' | 'completed' | 'failed';
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -10,6 +30,10 @@ export interface Message {
   tokens?: number;
   cost?: number;
   isStreaming?: boolean;
+
+  // Extended fields for agentic flow
+  toolCalls?: ToolCall[];
+  plan?: ExecutionPlan;
 }
 
 export interface Session {
@@ -28,22 +52,25 @@ export class ChatService {
   constructor(private http: HttpClient) { }
 
   // Session Management
-  createSession(sessionId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/sessions`, { session_id: sessionId });
+  createSession(sessionId: string, title?: string): Observable<any> {
+    const body: any = { session_id: sessionId };
+    if (title) {
+      body.title = title;
+    }
+    return this.http.post(`${this.apiUrl}/sessions`, body);
   }
 
   listSessions(): Observable<Session[]> {
     return this.http.get<any>(`${this.apiUrl}/sessions`).pipe(
       map(response => {
         if (response.status === 'success' && response.sessions) {
-          // Map backend session format to frontend interface if needed
-          // For now assuming backend returns compatible list or we adapt here
+          // Backend returns a dictionary of sessions
           return Object.entries(response.sessions).map(([id, data]: [string, any]) => ({
             id: id,
-            title: data.metadata?.title || `Session ${id}`, // Fallback title
-            date: new Date(data.created_at || Date.now()),
+            title: data.metadata?.title || `Session ${id}`,
+            date: new Date(data.metadata?.created_at || Date.now()),
             active: false
-          }));
+          })).sort((a, b) => b.date.getTime() - a.date.getTime()); // Sort by date, newest first
         }
         return [];
       })
@@ -73,7 +100,8 @@ export class ChatService {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
 
     if (!response.body) {
@@ -87,24 +115,98 @@ export class ChatService {
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log('[SSE] Stream complete');
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
+
+        // Process complete lines (split by \n)
         const lines = buffer.split('\n');
+
+        // Keep the last incomplete line in buffer
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
+          const trimmedLine = line.trim();
+
+          // Skip empty lines
+          if (!trimmedLine) {
+            continue;
+          }
+
+          console.log('[SSE] Raw line:', trimmedLine);
+
+          // Process SSE data lines
+          if (trimmedLine.startsWith('data: ')) {
+            const data = trimmedLine.slice(6).trim();
+
+            // Skip DONE signal
+            if (data === '[DONE]') {
+              console.log('[SSE] Received DONE signal');
+              continue;
+            }
+
+            // Parse and yield JSON data
             try {
-              yield JSON.parse(data);
+              const parsed = JSON.parse(data);
+              console.log('[SSE] Parsed event:', parsed);
+
+              // Yield the parsed event
+              yield parsed;
             } catch (e) {
-              console.error('Error parsing SSE data:', e);
+              console.error('[SSE] Error parsing JSON:', e, 'Data:', data);
+              // Yield error event so UI can show something went wrong
+              yield {
+                type: 'error',
+                data: {
+                  message: 'Failed to parse server response',
+                  raw: data
+                }
+              };
+            }
+          }
+          // Log event type lines (for debugging)
+          else if (trimmedLine.startsWith('event: ')) {
+            const eventType = trimmedLine.slice(7).trim();
+            console.log('[SSE] Event type:', eventType);
+          }
+          // Log unexpected lines
+          else {
+            console.warn('[SSE] Unexpected line format:', trimmedLine);
+          }
+        }
+      }
+
+      // Process any remaining buffer content
+      if (buffer.trim()) {
+        console.log('[SSE] Processing final buffer:', buffer);
+        const trimmedBuffer = buffer.trim();
+        if (trimmedBuffer.startsWith('data: ')) {
+          const data = trimmedBuffer.slice(6).trim();
+          if (data && data !== '[DONE]') {
+            try {
+              const parsed = JSON.parse(data);
+              console.log('[SSE] Parsed final event:', parsed);
+              yield parsed;
+            } catch (e) {
+              console.error('[SSE] Error parsing final buffer:', e, 'Data:', data);
             }
           }
         }
       }
+    } catch (error) {
+      console.error('[SSE] Stream error:', error);
+      // Yield error event
+      yield {
+        type: 'error',
+        data: {
+          message: error instanceof Error ? error.message : 'Stream error occurred',
+          error: error
+        }
+      };
+      throw error;
     } finally {
       reader.releaseLock();
     }

@@ -245,6 +245,7 @@ async def get_agent_config():
 class SessionRequest(BaseModel):
     """Request model for session creation."""
     session_id: str = Field(..., description="Unique session identifier", min_length=1)
+    title: Optional[str] = Field(None, description="Optional session title")
 
 
 class ChatRequest(BaseModel):
@@ -258,7 +259,7 @@ async def create_session(request: SessionRequest):
     Create a new multi-agent session.
     
     Args:
-        request: SessionRequest with session_id
+        request: SessionRequest with session_id and optional title
         
     Returns:
         Session details
@@ -267,7 +268,7 @@ async def create_session(request: SessionRequest):
         from agents.multi_agent_manager import get_multi_agent_manager
         manager = get_multi_agent_manager()
         
-        session_id = manager.create_session(request.session_id)
+        session_id = manager.create_session(request.session_id, title=request.title)
         
         return {
             "status": "success",
@@ -378,6 +379,11 @@ async def chat_session(session_id: str, request: ChatRequest):
         from agents.multi_agent_manager import get_multi_agent_manager
         manager = get_multi_agent_manager()
         
+        # Auto-create session if it doesn't exist (lazy creation)
+        if not manager.get_session(session_id):
+            logger.info(f"Auto-creating session {session_id} with title: {request.message[:50]}...")
+            manager.create_session(session_id, title=request.message)
+        
         # Process message
         # Note: This might take time, so in a real app we might want streaming or background tasks
         result = await manager.process_message(session_id, request.message)
@@ -411,9 +417,49 @@ async def chat_session_stream(session_id: str, request: ChatRequest):
     Returns:
         StreamingResponse with Server-Sent Events
     """
+    
+    def sanitize_for_json(obj):
+        """
+        Recursively sanitize an object to ensure it's JSON serializable.
+        Filters out non-serializable objects like EventLoopMetrics.
+        """
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+        elif isinstance(obj, dict):
+            # Filter out known non-serializable types and recursively sanitize values
+            sanitized = {}
+            for key, value in obj.items():
+                # Skip known non-serializable object types
+                if hasattr(value, '__class__') and 'EventLoopMetrics' in value.__class__.__name__:
+                    continue
+                # Skip private/internal keys that might contain complex objects
+                if isinstance(key, str) and key.startswith('_'):
+                    continue
+                try:
+                    sanitized[key] = sanitize_for_json(value)
+                except (TypeError, ValueError):
+                    # If we can't serialize it, convert to string representation
+                    sanitized[key] = str(value)
+            return sanitized
+        elif isinstance(obj, (list, tuple)):
+            return [sanitize_for_json(item) for item in obj]
+        else:
+            # For any other type, try to convert to string
+            try:
+                # Check if it's actually JSON serializable first
+                json.dumps(obj)
+                return obj
+            except (TypeError, ValueError):
+                return str(obj)
+    
     try:
         from agents.multi_agent_manager import get_multi_agent_manager
         manager = get_multi_agent_manager()
+        
+        # Auto-create session if it doesn't exist (lazy creation)
+        if not manager.get_session(session_id):
+            logger.info(f"Auto-creating session {session_id} with title: {request.message[:50]}...")
+            manager.create_session(session_id, title=request.message)
         
         # Create streaming generator
         async def event_generator():
@@ -424,8 +470,24 @@ async def chat_session_stream(session_id: str, request: ChatRequest):
                     event_type = event.get("type", "data")
                     event_data = event.get("data", {})
                     
-                    # Serialize data
-                    data_json = json.dumps(event_data)
+                    # Sanitize event data to ensure JSON serializability
+                    sanitized_data = sanitize_for_json(event_data)
+                    
+                    # Ensure type is in the data
+                    # The frontend expects the type to be part of the data object
+                    # and the actual payload to be in a 'data' field
+                    final_data = {
+                        "type": event_type,
+                        "data": sanitized_data
+                    }
+                    
+                    # Serialize data with error handling
+                    try:
+                        data_json = json.dumps(final_data)
+                    except (TypeError, ValueError) as e:
+                        logger.error(f"Failed to serialize event data: {e}, event_type: {event_type}")
+                        # Fallback to a basic error message
+                        data_json = json.dumps({"error": "Serialization failed", "type": str(type(event_data))})
                     
                     # Yield SSE format
                     yield f"event: {event_type}\n"
@@ -437,6 +499,8 @@ async def chat_session_stream(session_id: str, request: ChatRequest):
                 
             except Exception as e:
                 logger.error(f"Error in chat stream: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 error_data = json.dumps({"error": str(e)})
                 yield "event: error\n"
                 yield f"data: {error_data}\n\n"

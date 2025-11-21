@@ -1,7 +1,7 @@
 import { Component, signal, computed, effect, ViewChild, ElementRef, AfterViewChecked, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ChatService, Message, Session } from './services/chat.service';
+import { ChatService, Message, Session, ToolCall, ExecutionPlan } from './services/chat.service';
 import { DesktopService } from './services/desktop.service';
 
 interface SessionMetrics {
@@ -196,10 +196,85 @@ interface AgentConfig {
                      [class.text-white]="msg.role === 'user'"
                      [class.rounded-tr-none]="msg.role === 'user'">
                   
-                  <div class="whitespace-pre-wrap font-light">{{ msg.content }}</div>
-                  
-                  @if(msg.isStreaming) {
-                    <span class="inline-block w-2 h-4 ml-1 bg-[#478cbf] animate-pulse align-middle"></span>
+                  <!-- Tool Calls -->
+                  @if (msg.toolCalls && msg.toolCalls.length > 0) {
+                    <div class="mb-3 space-y-2">
+                      @for (tool of msg.toolCalls; track tool.name + $index) {
+                        <div class="bg-[#1a1d21] rounded p-2 border border-[#363d4a] text-xs">
+                          <div class="flex items-center justify-between mb-1">
+                            <span class="font-mono text-[#478cbf]">{{ tool.name }}</span>
+                            <span class="text-[10px] uppercase px-1.5 py-0.5 rounded"
+                                  [class.bg-yellow-500/20]="tool.status === 'running'"
+                                  [class.text-yellow-500]="tool.status === 'running'"
+                                  [class.bg-green-500/20]="tool.status === 'completed'"
+                                  [class.text-green-500]="tool.status === 'completed'"
+                                  [class.bg-red-500/20]="tool.status === 'failed'"
+                                  [class.text-red-500]="tool.status === 'failed'">
+                              {{ tool.status }}
+                            </span>
+                          </div>
+                          <div class="font-mono text-slate-500 truncate opacity-75">
+                            {{ tool.input | json }}
+                          </div>
+                          @if (tool.result) {
+                            <div class="mt-1 pt-1 border-t border-[#363d4a] text-slate-400 font-mono max-h-20 overflow-y-auto">
+                              <span class="text-[10px] text-slate-600 block">RESULT:</span>
+                              {{ tool.result | json }}
+                            </div>
+                          }
+                        </div>
+                      }
+                    </div>
+                  }
+
+                  <!-- Execution Plan -->
+                  @if (msg.plan) {
+                    <div class="mb-4 bg-[#1a1d21] rounded-lg border border-[#363d4a] overflow-hidden">
+                      <div class="bg-[#363d4a]/50 px-3 py-2 border-b border-[#363d4a] flex justify-between items-center">
+                        <span class="font-medium text-slate-200">{{ msg.plan.title }}</span>
+                        <span class="text-[10px] text-slate-400">{{ msg.plan.steps.length }} steps</span>
+                      </div>
+                      <div class="p-2 space-y-1">
+                        @for (step of msg.plan.steps; track step.id) {
+                          <div class="flex items-center gap-2 px-2 py-1.5 rounded text-xs"
+                               [class.bg-[#363d4a]/30]="step.status === 'running'"
+                               [class.text-slate-300]="step.status === 'pending'"
+                               [class.text-white]="step.status === 'running'"
+                               [class.text-slate-400]="step.status === 'completed'">
+                             
+                             @if (step.status === 'completed') {
+                               <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-green-500" viewBox="0 0 20 20" fill="currentColor">
+                                 <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                               </svg>
+                             } @else if (step.status === 'running') {
+                               <span class="w-3.5 h-3.5 border-2 border-[#478cbf] border-t-transparent rounded-full animate-spin"></span>
+                             } @else {
+                               <span class="w-3.5 h-3.5 rounded-full border border-slate-600"></span>
+                             }
+                             
+                             <span>{{ step.title }}</span>
+                          </div>
+                        }
+                      </div>
+                    </div>
+                  }
+
+                  <!-- Show thinking indicator when streaming with no content yet -->
+                  @if (msg.isStreaming && !msg.content && msg.toolCalls?.length === 0 && !msg.plan) {
+                    <div class="flex items-center gap-2 text-slate-400 italic">
+                      <div class="flex gap-1">
+                        <span class="w-2 h-2 bg-[#478cbf] rounded-full animate-bounce" style="animation-delay: 0ms"></span>
+                        <span class="w-2 h-2 bg-[#478cbf] rounded-full animate-bounce" style="animation-delay: 150ms"></span>
+                        <span class="w-2 h-2 bg-[#478cbf] rounded-full animate-bounce" style="animation-delay: 300ms"></span>
+                      </div>
+                      <span>Processing your request...</span>
+                    </div>
+                  } @else {
+                    <div class="whitespace-pre-wrap font-light">{{ msg.content }}</div>
+
+                    @if(msg.isStreaming) {
+                      <span class="inline-block w-2 h-4 ml-1 bg-[#478cbf] animate-pulse align-middle"></span>
+                    }
                   }
                 </div>
 
@@ -412,15 +487,14 @@ export class App implements AfterViewChecked, OnInit {
       this.sessions.set(sessions);
       if (sessions.length > 0 && !this.currentSessionId()) {
         this.selectSession(sessions[0].id);
-      } else if (sessions.length === 0) {
-        this.createNewSession();
       }
+      // Don't auto-create session if empty - wait for first message
     });
   }
 
-  createNewSession() {
+  createNewSession(title?: string) {
     const newId = 'session-' + Date.now();
-    this.chatService.createSession(newId).subscribe(() => {
+    this.chatService.createSession(newId, title).subscribe(() => {
       this.loadSessions();
       this.selectSession(newId);
     });
@@ -454,10 +528,17 @@ export class App implements AfterViewChecked, OnInit {
     const text = this.userInput().trim();
     if (!text || this.config().status === 'working') return;
 
-    const sessionId = this.currentSessionId();
-    if (!sessionId) {
-      this.createNewSession();
-      return;
+    let sessionId = this.currentSessionId();
+    const isNewSession = !sessionId;
+
+    // Lazy session creation - create session on first message if none exists
+    if (isNewSession) {
+      sessionId = 'session-' + Date.now();
+      this.currentSessionId.set(sessionId);
+
+      // Note: We don't create the session here because the backend will
+      // auto-create it with the message as the title when we send the message
+      console.log(`Will auto-create session ${sessionId} on first message`);
     }
 
     // 1. Add User Message
@@ -483,27 +564,172 @@ export class App implements AfterViewChecked, OnInit {
       timestamp: new Date(),
       isStreaming: true,
       tokens: 0,
-      cost: 0
+      cost: 0,
+      toolCalls: [],
+      plan: undefined
     };
     this.messages.update(msgs => [...msgs, aiMsg]);
 
     try {
-      // 3. Stream Response
-      for await (const chunk of this.chatService.sendMessageStream(sessionId, text)) {
-        // Update message content
-        if (chunk.content) {
-          this.messages.update(msgs => msgs.map(m => {
-            if (m.id === aiMsgId) {
-              return { ...m, content: m.content + chunk.content };
-            }
-            return m;
-          }));
-        }
+      // 3. Stream Response (sessionId is guaranteed to be non-null here)
+      for await (const chunk of this.chatService.sendMessageStream(sessionId!, text)) {
+        console.log('[AppComponent] Received chunk:', chunk); // DEBUG
 
-        // Handle other event types if needed (e.g., metrics)
-        if (chunk.metrics) {
-          this.updateMetrics(chunk.metrics.tokens || 0, chunk.metrics.cost || 0);
-        }
+        this.messages.update(msgs => msgs.map(m => {
+          if (m.id !== aiMsgId) return m;
+
+          const updatedMsg = { ...m };
+
+          // Handle different event types
+          console.log('[AppComponent] Processing event type:', chunk.type); // DEBUG
+          switch (chunk.type) {
+            case 'start':
+              // Stream has started - show thinking indicator
+              console.log('[AppComponent] Stream started');
+              if (!updatedMsg.content) {
+                updatedMsg.content = '';
+              }
+              break;
+
+            case 'data':
+              if (chunk.data?.text) {
+                updatedMsg.content += chunk.data.text;
+              }
+              break;
+
+            case 'tool_use':
+              if (!updatedMsg.toolCalls) updatedMsg.toolCalls = [];
+              updatedMsg.toolCalls.push({
+                name: chunk.data.tool_name,
+                input: chunk.data.tool_input,
+                status: 'running'
+              });
+              break;
+
+            case 'tool_result':
+              if (updatedMsg.toolCalls) {
+                const toolCall = updatedMsg.toolCalls.find(t => t.name === chunk.data.tool_name && t.status === 'running');
+                if (toolCall) {
+                  toolCall.status = 'completed';
+                  toolCall.result = chunk.data.result;
+                }
+              }
+              break;
+
+            case 'plan_created':
+              updatedMsg.plan = {
+                title: chunk.data.title,
+                steps: Array(chunk.data.steps).fill(null).map((_, i) => ({
+                  id: `step-${i}`,
+                  title: `Step ${i + 1}`,
+                  status: 'pending'
+                })),
+                status: 'pending'
+              };
+              break;
+
+            case 'execution_started':
+              // Execution has started
+              console.log('[AppComponent] Execution started:', chunk.data);
+              if (updatedMsg.plan) {
+                updatedMsg.plan.status = 'running';
+              }
+              if (chunk.data?.message) {
+                updatedMsg.content += chunk.data.message + '\n';
+              }
+              break;
+
+            case 'execution_completed':
+              // Execution has completed
+              console.log('[AppComponent] Execution completed:', chunk.data);
+              if (updatedMsg.plan) {
+                updatedMsg.plan.status = 'completed';
+              }
+              if (chunk.data?.message) {
+                updatedMsg.content += chunk.data.message + '\n';
+              }
+              break;
+
+            case 'step_started':
+              if (updatedMsg.plan) {
+                const stepIndex = updatedMsg.plan.steps.findIndex(s => s.status === 'pending');
+                if (stepIndex !== -1) {
+                  updatedMsg.plan.steps[stepIndex].title = chunk.data.title;
+                  updatedMsg.plan.steps[stepIndex].status = 'running';
+                }
+              }
+              break;
+
+            case 'step_completed':
+              if (updatedMsg.plan) {
+                const step = updatedMsg.plan.steps.find(s => s.status === 'running');
+                if (step) {
+                  step.status = 'completed';
+                }
+              }
+              break;
+
+            case 'step_failed':
+              if (updatedMsg.plan) {
+                const step = updatedMsg.plan.steps.find(s => s.status === 'running');
+                if (step) {
+                  step.status = 'failed';
+                }
+              }
+              break;
+
+            case 'tool_started':
+              // Executor tool started
+              if (!updatedMsg.toolCalls) updatedMsg.toolCalls = [];
+              updatedMsg.toolCalls.push({
+                name: chunk.data.tool_name,
+                input: {}, // Input might not be available in start event
+                status: 'running'
+              });
+              break;
+
+            case 'tool_completed':
+              // Executor tool completed
+              if (updatedMsg.toolCalls) {
+                // Find the last running tool with this name
+                const toolCall = [...updatedMsg.toolCalls].reverse().find(t => t.name === chunk.data.tool_name && t.status === 'running');
+                if (toolCall) {
+                  toolCall.status = chunk.data.success ? 'completed' : 'failed';
+                }
+              }
+              break;
+
+            case 'end':
+              // Stream has ended
+              console.log('[AppComponent] Stream ended');
+              break;
+
+            case 'error':
+              // Error occurred during streaming
+              console.error('[AppComponent] Stream error:', chunk.data);
+              if (chunk.data?.message) {
+                updatedMsg.content += `\n\n⚠️ Error: ${chunk.data.message}`;
+              } else if (chunk.data?.error) {
+                updatedMsg.content += `\n\n⚠️ Error: ${JSON.stringify(chunk.data.error)}`;
+              }
+              if (updatedMsg.plan) {
+                updatedMsg.plan.status = 'failed';
+              }
+              break;
+
+            default:
+              // Unknown event type - log it for debugging
+              console.warn('[AppComponent] Unknown event type:', chunk.type, chunk);
+              break;
+          }
+
+          // Handle metrics if present in any event
+          if (chunk.data?.metrics) {
+            // Update metrics logic here if needed
+          }
+
+          return updatedMsg;
+        }));
       }
 
       // Mark as done streaming
@@ -513,6 +739,23 @@ export class App implements AfterViewChecked, OnInit {
         }
         return m;
       }));
+
+      // If this was a new session, refresh the session list and ensure it's selected
+      if (isNewSession) {
+        await new Promise(resolve => setTimeout(resolve, 100)); // Brief delay for backend to persist
+        this.chatService.listSessions().subscribe(sessions => {
+          this.sessions.set(sessions);
+          // Find and select the session we just created
+          const currentSession = sessions.find(s => s.id === sessionId);
+          if (currentSession) {
+            this.sessions.update(s => s.map(session => ({
+              ...session,
+              active: session.id === sessionId
+            })));
+            console.log(`Session ${sessionId} created and selected with title: ${currentSession.title}`);
+          }
+        });
+      }
 
     } catch (err: any) {
       console.error('Chat error:', err);

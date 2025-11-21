@@ -11,6 +11,8 @@ It handles:
 import logging
 import os
 import warnings
+import json
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from strands.session.file_session_manager import FileSessionManager
 
 from .planning_agent import get_planning_agent
 from .executor_agent import get_executor_agent
+from .execution_models import ExecutionPlan, ExecutionStep, ToolCall
 from .config import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -45,12 +48,13 @@ class MultiAgentManager:
         self._active_graphs: Dict[str, Graph] = {}
         logger.info(f"MultiAgentManager initialized with storage: {self.storage_dir}")
 
-    def create_session(self, session_id: str) -> str:
+    def create_session(self, session_id: str, title: Optional[str] = None) -> str:
         """
         Create a new multi-agent session.
 
         Args:
             session_id: Unique session identifier
+            title: Optional session title (e.g., first user message)
 
         Returns:
             Session ID
@@ -83,7 +87,15 @@ class MultiAgentManager:
             graph = builder.build()
             
             self._active_graphs[session_id] = graph
-            logger.info(f"Created session {session_id}")
+            
+            # Store session metadata
+            metadata = {
+                "title": title or f"Session {session_id}",
+                "created_at": datetime.now().isoformat()
+            }
+            self._save_session_metadata(session_id, metadata)
+            
+            logger.info(f"Created session {session_id} with title: {title}")
             return session_id
 
         except Exception as e:
@@ -103,26 +115,30 @@ class MultiAgentManager:
         # Check if session file exists even if not in memory
         session_path = os.path.join(self.storage_dir, f"{session_id}.json")
         if os.path.exists(session_path):
+            metadata = self._load_session_metadata(session_id)
             return {
                 "session_id": session_id,
                 "path": session_path,
-                "active": session_id in self._active_graphs
+                "active": session_id in self._active_graphs,
+                "metadata": metadata
             }
         return None
 
-    def list_sessions(self) -> List[Dict[str, Any]]:
+    def list_sessions(self) -> Dict[str, Dict[str, Any]]:
         """
         List all available sessions.
 
         Returns:
-            List of session details
+            Dictionary of session_id to session details
         """
-        sessions = []
+        sessions = {}
         if os.path.exists(self.storage_dir):
             for filename in os.listdir(self.storage_dir):
-                if filename.endswith(".json"):
+                if filename.endswith(".json") and not filename.endswith("_metadata.json"):
                     session_id = filename[:-5]
-                    sessions.append(self.get_session(session_id))
+                    session = self.get_session(session_id)
+                    if session:
+                        sessions[session_id] = session
         return sessions
 
     def delete_session(self, session_id: str) -> bool:
@@ -150,6 +166,45 @@ class MultiAgentManager:
                 logger.error(f"Failed to delete session file {session_path}: {e}")
                 return False
         return False
+    
+    def _save_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
+        """
+        Save session metadata to a separate file.
+        
+        Args:
+            session_id: Session ID
+            metadata: Metadata dictionary
+        """
+        metadata_path = os.path.join(self.storage_dir, f"{session_id}_metadata.json")
+        try:
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save metadata for session {session_id}: {e}")
+    
+    def _load_session_metadata(self, session_id: str) -> Dict[str, Any]:
+        """
+        Load session metadata from file.
+        
+        Args:
+            session_id: Session ID
+            
+        Returns:
+            Metadata dictionary or default metadata
+        """
+        metadata_path = os.path.join(self.storage_dir, f"{session_id}_metadata.json")
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load metadata for session {session_id}: {e}")
+        
+        # Return default metadata if file doesn't exist
+        return {
+            "title": f"Session {session_id}",
+            "created_at": datetime.now().isoformat()
+        }
 
     async def process_message(self, session_id: str, message: str, project_id: Optional[str] = None) -> Any:
         """
@@ -234,28 +289,101 @@ class MultiAgentManager:
             else:
                 raise ValueError(f"Session {session_id} not found")
 
-        graph = self._active_graphs[session_id]
-        
         try:
             logger.info(f"Processing message stream in session {session_id}")
             
-            # Get the planning agent from the graph
-            # Note: This assumes the graph structure has a 'planner' node which is the PlanningAgent
-            # In a more complex graph, we might need to stream from the graph execution itself
-            # but Strands Graph doesn't natively support streaming intermediate results easily yet
-            # so we'll stream from the planner directly for now if possible, or emulate it.
-            
-            # For now, we'll use the planner's stream method directly if we can access it
-            # This is a simplification - ideally we'd stream the graph execution
-            
-            # Find the planner node
-            # This is a bit of a hack - we know the structure from create_session
             planning_agent = get_planning_agent()
+            executor_agent = get_executor_agent()
             
-            # Stream from the agent
-            async for event in planning_agent.plan_stream(message):
-                yield event
+            # Track if a plan was submitted
+            submitted_plan_data = None
+            
+            # Stream from the planning agent
+            try:
+                async for event in planning_agent.plan_stream(message):
+                    # Check for plan submission
+                    if event.get("type") == "tool_use":
+                        data = event.get("data", {})
+                        if data.get("tool_name") ==  "submit_execution_plan":
+                            logger.info("Plan submission detected")
+                            submitted_plan_data = data.get("tool_input", {})
+                            
+                            # Parse tool_input if it's a JSON string
+                            if isinstance(submitted_plan_data, str):
+                                try:
+                                    submitted_plan_data = json.loads(submitted_plan_data)
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"Failed to parse tool_input as JSON: {e}")
+                                    submitted_plan_data = {}
+                            
+                            # Yield a special event to notify frontend of plan creation
+                            yield {
+                                "type": "plan_created",
+                                "data": {
+                                    "title": submitted_plan_data.get("title", "Execution Plan"),
+                                    "steps": len(submitted_plan_data.get("steps", []))
+                                }
+                            }
+                    
+                    yield event
+            except Exception as e:
+                # Check if this is the specific "Error in input stream" AND we have a plan
+                error_msg = str(e)
+                if "Error in input stream" in error_msg and submitted_plan_data:
+                    logger.warning(f"Suppressed stream error after plan submission: {e}")
+                    # Continue to execution phase
+                else:
+                    raise e
+
+            # If a plan was submitted, execute it
+            if submitted_plan_data:
+                logger.info("Executing submitted plan...")
                 
+                try:
+                    # Parse plan data into ExecutionPlan object
+                    steps_data = submitted_plan_data.get("steps", [])
+                    execution_steps = []
+                    
+                    for step in steps_data:
+                        # Convert tool calls dicts to ToolCall objects
+                        tool_calls_data = step.get("tool_calls", [])
+                        tool_calls = []
+                        for tc in tool_calls_data:
+                            tool_calls.append(ToolCall(
+                                name=tc.get("name"),
+                                parameters=tc.get("parameters", {})
+                            ))
+                            
+                        execution_steps.append(ExecutionStep(
+                            title=step.get("title", "Untitled Step"),
+                            description=step.get("description", ""),
+                            tool_calls=tool_calls,
+                            depends_on=step.get("depends_on", [])
+                        ))
+                    
+                    plan = ExecutionPlan(
+                        title=submitted_plan_data.get("title", "Execution Plan"),
+                        description=submitted_plan_data.get("description", ""),
+                        steps=execution_steps
+                    )
+                    
+                    # Stream execution events
+                    async for event in executor_agent.execute_plan(plan):
+                        # Convert StreamEvent to dict
+                        event_dict = {
+                            "type": event.type,
+                            "data": event.data,
+                            "timestamp": event.timestamp.isoformat()
+                        }
+                        yield event_dict
+                        
+                except Exception as e:
+                    logger.error(f"Error executing plan: {e}")
+                    yield {
+                        "type": "error",
+                        "data": {"message": f"Plan execution failed: {str(e)}"}
+                    }
+
             # Track session-level metrics if enabled (after streaming completes)
             try:
                 from agents.config import AgentConfig
@@ -275,6 +403,8 @@ class MultiAgentManager:
 
         except Exception as e:
             logger.error(f"Error processing message stream in session {session_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             yield {"type": "error", "data": {"message": str(e)}}
 
 

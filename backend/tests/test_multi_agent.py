@@ -101,7 +101,7 @@ async def test_session_persistence(temp_storage_dir, mock_agents):
     # List sessions
     sessions = new_manager.list_sessions()
     assert len(sessions) == 1
-    assert sessions[0]['session_id'] == session_id
+    assert sessions[session_id]['session_id'] == session_id
     
     # Get session
     session = new_manager.get_session(session_id)

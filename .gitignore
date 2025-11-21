@@ -50,3 +50,24 @@ htmlcov/
 *.log
 logs/
 *bun.lock
+
+# Project-specific
+# Test outputs
+test_output*.txt
+*_output.txt
+
+# Temporary directories
+temp_*/
+
+# Session and runtime data
+.godoty_sessions/
+.godoty_backups/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.backup
+*.bak
