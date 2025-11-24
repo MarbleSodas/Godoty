@@ -130,6 +130,12 @@ class TokenMetricsTracker:
             completion_tokens
         )
         
+        # Extract actual cost if available from OpenRouter usage accounting
+        actual_cost = usage.get("cost")
+        if actual_cost is None:
+             # Sometimes might be nested or named differently, but OpenRouter docs say 'cost' in usage.
+             pass
+        
         # Extract generation ID if available
         generation_id = response.get("id")
         
@@ -144,6 +150,7 @@ class TokenMetricsTracker:
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
             "estimated_cost": estimated_cost,
+            "actual_cost": actual_cost,
             "generation_id": generation_id,
             "stop_reason": stop_reason,
             "model_id": model_id,
@@ -350,3 +357,45 @@ class TokenMetricsTracker:
             logger.error(f"Error counting tool calls: {e}")
         
         return count
+
+    def extract_tool_stats(self, result: Any) -> Dict[str, int]:
+        """
+        Extract tool usage statistics (calls and errors) from AgentResult.
+        
+        Args:
+            result: AgentResult from Strands agent
+            
+        Returns:
+            Dictionary with 'call_count' and 'error_count'
+        """
+        stats = {"call_count": 0, "error_count": 0}
+        
+        try:
+            # Try to extract from metrics attribute (Strands specific)
+            if hasattr(result, 'metrics') and result.metrics:
+                # Assuming result.metrics.tool_metrics is a dict of ToolMetrics
+                tool_metrics = getattr(result.metrics, 'tool_metrics', {})
+                
+                for _, metric in tool_metrics.items():
+                    stats["call_count"] += getattr(metric, 'call_count', 0)
+                    stats["error_count"] += getattr(metric, 'error_count', 0)
+                    
+            # Fallback: Manual counting if metrics not available/populated
+            # (This is harder for errors without specific result inspection)
+            elif hasattr(result, 'steps'):
+                # If we have access to execution steps
+                for step in result.steps:
+                    if step.tool_calls:
+                        stats["call_count"] += len(step.tool_calls)
+                        # Check results for errors?
+                        # This depends on Strands internal structure
+                        pass
+            
+            # Ensure call_count is at least what we counted before if we use fallback
+            if stats["call_count"] == 0:
+                stats["call_count"] = self.count_tool_calls(result)
+
+        except Exception as e:
+            logger.error(f"Error extracting tool stats: {e}")
+            
+        return stats

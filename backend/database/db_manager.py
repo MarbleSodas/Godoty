@@ -86,6 +86,7 @@ class DatabaseManager:
         response_time_ms: Optional[int] = None,
         stop_reason: Optional[str] = None,
         tool_calls_count: int = 0,
+        tool_errors_count: int = 0,
         actual_cost: Optional[float] = None
     ) -> MessageMetrics:
         """
@@ -104,6 +105,7 @@ class DatabaseManager:
             response_time_ms: Optional response time in milliseconds
             stop_reason: Optional stop reason
             tool_calls_count: Number of tool calls made
+            tool_errors_count: Number of tool errors
             actual_cost: Optional actual cost from generation endpoint
 
         Returns:
@@ -124,7 +126,8 @@ class DatabaseManager:
                     generation_id=generation_id,
                     response_time_ms=response_time_ms,
                     stop_reason=stop_reason,
-                    tool_calls_count=tool_calls_count
+                    tool_calls_count=tool_calls_count,
+                    tool_errors_count=tool_errors_count
                 )
 
                 session.add(metrics)
@@ -208,7 +211,8 @@ class DatabaseManager:
         total_tokens: int,
         estimated_cost: float,
         model_id: str,
-        actual_cost: Optional[float] = None
+        actual_cost: Optional[float] = None,
+        tool_errors_count: int = 0
     ):
         """Update session metrics by adding message metrics."""
         async with self.async_session_maker() as session:
@@ -229,6 +233,7 @@ class DatabaseManager:
                 metrics.total_estimated_cost += estimated_cost
                 if actual_cost:
                     metrics.total_actual_cost = (metrics.total_actual_cost or 0) + actual_cost
+                metrics.total_tool_errors += tool_errors_count
                 metrics.message_count += 1
                 metrics.updated_at = datetime.utcnow()
 

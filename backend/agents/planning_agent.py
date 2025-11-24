@@ -65,7 +65,6 @@ from .tools import (
     play_scene,
     stop_playing,
     )
-from .tools.plan_submission import submit_execution_plan
 from .tools.mcp_tools import MCPToolManager
 
 logger = logging.getLogger(__name__)
@@ -173,9 +172,6 @@ class PlanningAgent:
             play_scene,
             stop_playing,
             # Note: delete_node removed for safety - agents can create/modify but not delete
-            
-            # Plan submission
-            submit_execution_plan,
         ]
 
         # Track MCP manager for cleanup
@@ -398,8 +394,14 @@ class PlanningAgent:
                         # Calculate response time
                         response_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
                         
-                        # Count tool calls
-                        tool_calls_count = self.metrics_tracker.count_tool_calls(result)
+                        # Count tool calls and errors
+                        tool_stats = self.metrics_tracker.extract_tool_stats(result)
+                        tool_calls_count = tool_stats["call_count"]
+                        tool_errors_count = tool_stats["error_count"]
+                        
+                        # Add to metrics dict for response
+                        metrics["tool_calls"] = tool_calls_count
+                        metrics["tool_errors"] = tool_errors_count
                         
                         # Store metrics in database
                         from database import get_db_manager
@@ -412,12 +414,38 @@ class PlanningAgent:
                             completion_tokens=metrics.get("completion_tokens", 0),
                             total_tokens=metrics.get("total_tokens", 0),
                             estimated_cost=metrics.get("estimated_cost", 0.0),
+                            actual_cost=metrics.get("actual_cost"),
                             session_id=session_id,
                             project_id=project_id,
                             response_time_ms=response_time_ms,
                             stop_reason=metrics.get("stop_reason"),
-                            tool_calls_count=tool_calls_count
+                            tool_calls_count=tool_calls_count,
+                            tool_errors_count=tool_errors_count
                         )
+
+                        # Update session metrics if session_id is provided
+                        if session_id:
+                            await db_manager.update_session_metrics(
+                                session_id=session_id,
+                                prompt_tokens=metrics.get("prompt_tokens", 0),
+                                completion_tokens=metrics.get("completion_tokens", 0),
+                                total_tokens=metrics.get("total_tokens", 0),
+                                estimated_cost=metrics.get("estimated_cost", 0.0),
+                                model_id=metrics.get("model_id", model_id),
+                                actual_cost=metrics.get("actual_cost"),
+                                tool_errors_count=tool_errors_count
+                            )
+                        
+                        # Update project metrics if project_id is provided
+                        if project_id:
+                            await db_manager.update_project_metrics(
+                                project_id=project_id,
+                                prompt_tokens=metrics.get("prompt_tokens", 0),
+                                completion_tokens=metrics.get("completion_tokens", 0),
+                                total_tokens=metrics.get("total_tokens", 0),
+                                estimated_cost=metrics.get("estimated_cost", 0.0),
+                                actual_cost=metrics.get("actual_cost")
+                            )
                         
                         logger.info(f"Persisted metrics for message {message_id}")
                 except Exception as e:
@@ -451,42 +479,6 @@ class PlanningAgent:
             - type: Event type ('start', 'data', 'tool_use', 'tool_result', 'end', etc.)
             - data: Event data (text chunk, tool info, etc.)
         """
-        def sanitize_event_data(data: Any) -> Any:
-            """
-            Sanitize event data to ensure JSON serializability.
-            Filters out complex objects like EventLoopMetrics.
-            """
-            if data is None or isinstance(data, (str, int, float, bool)):
-                return data
-            elif isinstance(data, dict):
-                sanitized = {}
-                for key, value in data.items():
-                    # Skip non-serializable objects
-                    if hasattr(value, '__class__'):
-                        class_name = value.__class__.__name__
-                        if 'EventLoopMetrics' in class_name or 'Metrics' in class_name:
-                            # Skip metrics objects that aren't primitives
-                            continue
-                    # Skip private keys
-                    if isinstance(key, str) and key.startswith('_'):
-                        continue
-                    try:
-                        sanitized[key] = sanitize_event_data(value)
-                    except (TypeError, ValueError):
-                        # Convert to string if can't serialize
-                        sanitized[key] = str(value)
-                return sanitized
-            elif isinstance(data, (list, tuple)):
-                return [sanitize_event_data(item) for item in data]
-            else:
-                # Try to serialize, otherwise convert to string
-                try:
-                    import json
-                    json.dumps(data)
-                    return data
-                except (TypeError, ValueError):
-                    return str(data)
-        
         try:
             # Yield start event
             print("\n" + "="*80)
@@ -505,6 +497,9 @@ class PlanningAgent:
             print(f"[PLAN] Starting Strands Agent Loop...")
             logger.info(f"[PLAN] Starting Strands Agent Loop for prompt: {prompt[:100]}...")
 
+            # Import shared event utility
+            from .event_utils import transform_strands_event
+
             # Use the Strands Agent's stream_async method to get streaming events
             # This will trigger the full agent loop with tool execution
             event_count = 0
@@ -512,153 +507,17 @@ class PlanningAgent:
             async for event in self.agent.stream_async(prompt):
                 event_count += 1
                 # DEBUG: Log all events to see what we're actually getting
-                print(f"[PLAN] Stream event #{event_count} - keys: {list(event.keys())}")
-                # Note: Skipping full event data print to avoid emoji encoding errors
-                # print(f"   Full event data: {event}")
-                logger.info(f"[PLAN] Stream event #{event_count} - keys: {list(event.keys())}")
-                logger.debug(f"   Full event: {event}")
-
-                # Convert Strands events to our expected format
-                event_type = None
-                event_data = {}
-
-                # Handle different event types from Strands
-                # Strands uses Claude's event format, so check for 'event' key first
-                if "event" in event:
-                    # Claude-style streaming events
-                    inner_event = event["event"]
-                    print(f"   [PLAN] Inner event keys: {list(inner_event.keys())}")
-                    # Note: Skipping full inner event print to avoid emoji encoding errors
-                    # print(f"   [PLAN] Inner event: {inner_event}")
-
-                    # Check for content block delta (actual text chunks)
-                    if "contentBlockDelta" in inner_event:
-                        delta = inner_event["contentBlockDelta"].get("delta", {})
-                        if "text" in delta:
-                            event_type = "data"
-                            event_data = {"text": delta["text"]}
-                            logger.debug(f"Text delta: {delta['text']}")
-                    # Tool use events
-                    elif "contentBlockStart" in inner_event:
-                        block = inner_event["contentBlockStart"].get("contentBlock", {})
-                        if "toolUse" in block:
-                            tool_use = block["toolUse"]
-                            event_type = "tool_use"
-                            event_data = {
-                                "tool_name": tool_use.get("name"),
-                                "tool_input": tool_use.get("input", {})
-                            }
-                    # Message start/stop events - we can ignore these
-                    elif "messageStart" in inner_event or "messageStop" in inner_event:
-                        print(f"   [PLAN] Skipping messageStart/Stop event")
-                        continue
-                    else:
-                        print(f"   [PLAN] UNHANDLED inner event keys: {list(inner_event.keys())}")
-                        # Note: Skipping full unhandled event print to avoid emoji encoding errors
-                        # print(f"   [PLAN] UNHANDLED inner event data: {inner_event}")
-                        logger.debug(f"Unhandled inner event: {inner_event}")
-                        continue
-
-                elif "data" in event:
-                    # Skip Strands metadata events (they have agent, event_loop_cycle_id, etc.)
-                    # These are duplicates of the contentBlockDelta events
-                    if "agent" in event or "event_loop_cycle_id" in event:
-                        continue
-                    # Legacy text data streaming (might not be used)
-                    event_type = "data"
-                    event_data = {"text": event["data"]}
-                    logger.debug(f"Data event: {event['data']}")
-                elif "current_tool_use" in event:
-                    # Tool being executed
-                    tool_info = event["current_tool_use"]
-                    event_type = "tool_use"
-                    event_data = {
-                        "tool_name": tool_info.get("name"),
-                        "tool_input": tool_info.get("input", {})
-                    }
-                elif "tool_result" in event:
-                    # Tool execution result
-                    tool_result = event["tool_result"]
-                    event_type = "tool_result"
-                    event_data = {
-                        "tool_name": tool_result.get("name"),
-                        "result": tool_result.get("content", [])
-                    }
-                elif "result" in event:
-                    # Final result - extract and yield end event
-                    result = event["result"]
-                    event_type = "end"
-                    event_data = {
-                        "stop_reason": getattr(result, 'stop_reason', 'end_turn')
-                    }
-
-                    # Include metrics if available (sanitized)
-                    if hasattr(result, 'metrics'):
-                        # Only include basic metrics, not complex objects
-                        try:
-                            metrics = result.metrics
-                            if isinstance(metrics, dict):
-                                event_data["metrics"] = sanitize_event_data(metrics)
-                        except Exception as e:
-                            logger.debug(f"Could not include metrics: {e}")
-                elif "complete" in event and event["complete"]:
-                    # Stream completion marker
-                    continue
-                # Ignore these common events
-                elif "message" in event:
-                    # Check for tool calls in the message (often happens at the end of generation)
-                    msg = event["message"]
-                    tool_calls = []
-                    
-                    # Handle object vs dict
-                    if hasattr(msg, 'tool_calls'):
-                        tool_calls = msg.tool_calls
-                    elif isinstance(msg, dict):
-                        tool_calls = msg.get('tool_calls', [])
-                        
-                    # Yield tool use events if found
-                    if tool_calls:
-                        for tc in tool_calls:
-                            # Handle ToolCall object vs dict
-                            if hasattr(tc, 'name'):
-                                tool_name = tc.name
-                                tool_input = tc.parameters if hasattr(tc, 'parameters') else {}
-                            else:
-                                tool_name = tc.get('name')
-                                tool_input = tc.get('parameters', {})
-                                
-                            event_type = "tool_use"
-                            event_data = {
-                                "tool_name": tool_name,
-                                "tool_input": tool_input
-                            }
-                            print(f"[PLAN] Extracted tool_use from message: {tool_name}")
-                            logger.info(f"[PLAN] Extracted tool_use from message: {tool_name}")
-                            
-                            yield {
-                                "type": event_type,
-                                "data": sanitize_event_data(event_data)
-                            }
-                    continue
-
-                elif "init_event_loop" in event or "start" in event or "start_event_loop" in event:
-                    continue
+                # print(f"[PLAN] Stream event #{event_count} - keys: {list(event.keys())}")
+                
+                # Transform event using shared utility
+                transformed = transform_strands_event(event)
+                
+                if transformed:
+                    print(f"[PLAN] Yielding event: type={transformed['type']}")
+                    yield transformed
                 else:
-                    # Other events - LOG THEM so we can see what we're missing!
-                    logger.warning(f"Unhandled event type with keys: {list(event.keys())}, event: {event}")
-                    continue
-
-                # Sanitize and yield the converted event (MOVED INSIDE LOOP!)
-                if event_type:
-                    sanitized_data = sanitize_event_data(event_data)
-                    print(f"[PLAN] Yielding event: type={event_type}")
-                    logger.info(f"[PLAN] Yielding event: type={event_type}")
-                    yield {
-                        "type": event_type,
-                        "data": sanitized_data
-                    }
-                else:
-                    print(f"[PLAN] Event processed but event_type is None - event skipped")
+                    # print(f"[PLAN] Event processed but skipped (no transformation)")
+                    pass
 
             print(f"[PLAN] Stream loop completed. Total events processed: {event_count}")
             print("="*80 + "\n")

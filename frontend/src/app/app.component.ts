@@ -1,6 +1,7 @@
 import { Component, signal, computed, effect, ViewChild, ElementRef, AfterViewChecked, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { MarkdownComponent } from 'ngx-markdown';
 import { ChatService, Message, Session, ToolCall, ExecutionPlan } from './services/chat.service';
 import { DesktopService } from './services/desktop.service';
 
@@ -8,6 +9,8 @@ interface SessionMetrics {
   totalTokens: number;
   sessionCost: number;
   projectTotalCost: number;
+  toolCalls: number;
+  toolErrors: number;
 }
 
 interface AgentConfig {
@@ -17,12 +20,21 @@ interface AgentConfig {
   showSettings: boolean;
   godotVersion: string;
   godotConnected: boolean;
+  connectionState: 'connected' | 'disconnected' | 'connecting' | 'error';
+  mode: 'planning' | 'fast';
+}
+
+interface GroupedEvent {
+  type: 'text_block' | 'tool';
+  content?: string;
+  toolCall?: ToolCall;
+  sequence: number;
 }
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, MarkdownComponent],
   template: `
     <div class="flex h-screen w-full bg-[#212529] text-slate-200 font-sans overflow-hidden selection:bg-[#478cbf] selection:text-white">
       
@@ -96,14 +108,29 @@ interface AgentConfig {
                <span class="text-[11px] text-slate-400">Project Total</span>
                <span class="font-mono text-sm text-slate-300">\${{ metrics().projectTotalCost.toFixed(2) }}</span>
             </div>
+            
+             <div class="flex justify-between items-baseline">
+               <span class="text-[11px] text-slate-400">Tool Stats</span>
+               <div class="flex gap-2 font-mono text-xs">
+                  <span class="text-green-400" title="Calls">✓ {{ metrics().toolCalls }}</span>
+                  <span class="text-red-400" title="Errors">✗ {{ metrics().toolErrors }}</span>
+               </div>
+            </div>
           </div>
         </div>
         
         <!-- Footer -->
         <div class="p-3 border-t border-[#363d4a] text-[10px] text-slate-500 flex justify-between bg-[#1a1d21]">
            <span [title]="config().projectPath" class="truncate max-w-[150px]">{{ config().projectPath.split('/').pop() || 'No Project' }}</span>
-           <span class="flex items-center gap-1" [title]="config().godotConnected ? 'Connected to Godot' : 'Disconnected'">
-             <span class="w-1.5 h-1.5 rounded-full" [class.bg-green-500]="config().godotConnected" [class.bg-red-500]="!config().godotConnected"></span>
+           <span class="flex items-center gap-1"
+                 [title]="config().connectionState === 'connected' ? 'Connected to Godot' :
+                          config().connectionState === 'connecting' ? 'Connecting to Godot...' :
+                          config().connectionState === 'error' ? 'Connection Error' : 'Disconnected'">
+             <span class="w-1.5 h-1.5 rounded-full"
+                   [class.bg-green-500]="config().connectionState === 'connected'"
+                   [class.bg-yellow-500]="config().connectionState === 'connecting'"
+                   [class.bg-red-500]="config().connectionState === 'disconnected' || config().connectionState === 'error'"
+                   [class.animate-pulse]="config().connectionState === 'connecting'"></span>
              {{ config().godotVersion || 'v4.x' }}
            </span>
         </div>
@@ -148,6 +175,21 @@ interface AgentConfig {
           </div>
           <div class="flex items-center gap-4 text-slate-400">
              <button class="hover:text-white transition-colors text-xs uppercase tracking-wider font-medium">Export</button>
+
+             <!-- Task Sidebar Toggle -->
+             @if (currentPlan()) {
+               <button
+                 (click)="toggleTaskSidebar()"
+                 class="flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all duration-200 hover:bg-[#363d4a]"
+                 [class.bg-[#478cbf]/10]="taskSidebarOpen()"
+                 [class.text-[#478cbf]]="taskSidebarOpen()"
+                 title="Toggle Task List">
+                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                 </svg>
+                 <span class="text-xs font-medium hidden md:inline">Tasks</span>
+               </button>
+             }
           </div>
         </div>
 
@@ -195,69 +237,6 @@ interface AgentConfig {
                      [class.bg-[#3d4452]]="msg.role === 'user'"
                      [class.text-white]="msg.role === 'user'"
                      [class.rounded-tr-none]="msg.role === 'user'">
-                  
-                  <!-- Tool Calls -->
-                  @if (msg.toolCalls && msg.toolCalls.length > 0) {
-                    <div class="mb-3 space-y-2">
-                      @for (tool of msg.toolCalls; track tool.name + $index) {
-                        <div class="bg-[#1a1d21] rounded p-2 border border-[#363d4a] text-xs">
-                          <div class="flex items-center justify-between mb-1">
-                            <span class="font-mono text-[#478cbf]">{{ tool.name }}</span>
-                            <span class="text-[10px] uppercase px-1.5 py-0.5 rounded"
-                                  [class.bg-yellow-500/20]="tool.status === 'running'"
-                                  [class.text-yellow-500]="tool.status === 'running'"
-                                  [class.bg-green-500/20]="tool.status === 'completed'"
-                                  [class.text-green-500]="tool.status === 'completed'"
-                                  [class.bg-red-500/20]="tool.status === 'failed'"
-                                  [class.text-red-500]="tool.status === 'failed'">
-                              {{ tool.status }}
-                            </span>
-                          </div>
-                          <div class="font-mono text-slate-500 truncate opacity-75">
-                            {{ tool.input | json }}
-                          </div>
-                          @if (tool.result) {
-                            <div class="mt-1 pt-1 border-t border-[#363d4a] text-slate-400 font-mono max-h-20 overflow-y-auto">
-                              <span class="text-[10px] text-slate-600 block">RESULT:</span>
-                              {{ tool.result | json }}
-                            </div>
-                          }
-                        </div>
-                      }
-                    </div>
-                  }
-
-                  <!-- Execution Plan -->
-                  @if (msg.plan) {
-                    <div class="mb-4 bg-[#1a1d21] rounded-lg border border-[#363d4a] overflow-hidden">
-                      <div class="bg-[#363d4a]/50 px-3 py-2 border-b border-[#363d4a] flex justify-between items-center">
-                        <span class="font-medium text-slate-200">{{ msg.plan.title }}</span>
-                        <span class="text-[10px] text-slate-400">{{ msg.plan.steps.length }} steps</span>
-                      </div>
-                      <div class="p-2 space-y-1">
-                        @for (step of msg.plan.steps; track step.id) {
-                          <div class="flex items-center gap-2 px-2 py-1.5 rounded text-xs"
-                               [class.bg-[#363d4a]/30]="step.status === 'running'"
-                               [class.text-slate-300]="step.status === 'pending'"
-                               [class.text-white]="step.status === 'running'"
-                               [class.text-slate-400]="step.status === 'completed'">
-                             
-                             @if (step.status === 'completed') {
-                               <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-green-500" viewBox="0 0 20 20" fill="currentColor">
-                                 <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                               </svg>
-                             } @else if (step.status === 'running') {
-                               <span class="w-3.5 h-3.5 border-2 border-[#478cbf] border-t-transparent rounded-full animate-spin"></span>
-                             } @else {
-                               <span class="w-3.5 h-3.5 rounded-full border border-slate-600"></span>
-                             }
-                             
-                             <span>{{ step.title }}</span>
-                          </div>
-                        }
-                      </div>
-                    </div>
-                  }
 
                   <!-- Show thinking indicator when streaming with no content yet -->
                   @if (msg.isStreaming && !msg.content && msg.toolCalls?.length === 0 && !msg.plan) {
@@ -270,10 +249,101 @@ interface AgentConfig {
                       <span>Processing your request...</span>
                     </div>
                   } @else {
-                    <div class="whitespace-pre-wrap font-light">{{ msg.content }}</div>
+                    <!-- Chronological Event Display (if events array exists) -->
+                    @if (msg.events && msg.events.length > 0) {
+                      @for (groupedEvent of getGroupedEvents(msg); track groupedEvent.sequence) {
+                        @if (groupedEvent.type === 'text_block') {
+                          <!-- Text block with markdown support and smooth animation -->
+                          <div class="slide-in-from-bottom">
+                            <markdown class="whitespace-pre-wrap font-light prose prose-invert prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0" [data]="groupedEvent.content"></markdown>
+                          </div>
+                        } @else if (groupedEvent.type === 'tool') {
+                          <!-- Tool call (inline with chronological flow) -->
+                          @if (groupedEvent.toolCall) {
+                            <div class="my-3">
+                              <div class="bg-[#1a1d21] rounded p-2.5 border border-[#363d4a] text-xs">
+                                <div class="flex items-center justify-between mb-1.5">
+                                  <div class="flex items-center gap-1.5">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-[#478cbf]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                                    </svg>
+                                    <span class="font-mono text-[#478cbf] font-medium">{{ groupedEvent.toolCall.name }}</span>
+                                  </div>
+                                  <span class="text-[10px] uppercase px-1.5 py-0.5 rounded font-medium"
+                                        [class.bg-yellow-500/20]="groupedEvent.toolCall.status === 'running'"
+                                        [class.text-yellow-500]="groupedEvent.toolCall.status === 'running'"
+                                        [class.bg-green-500/20]="groupedEvent.toolCall.status === 'completed'"
+                                        [class.text-green-500]="groupedEvent.toolCall.status === 'completed'"
+                                        [class.bg-red-500/20]="groupedEvent.toolCall.status === 'failed'"
+                                        [class.text-red-500]="groupedEvent.toolCall.status === 'failed'">
+                                    {{ groupedEvent.toolCall.status }}
+                                  </span>
+                                </div>
+                                @if (groupedEvent.toolCall.input) {
+                                  <div class="font-mono text-slate-500 text-[10px] opacity-75 mb-1">
+                                    {{ groupedEvent.toolCall.input | json }}
+                                  </div>
+                                }
+                                @if (groupedEvent.toolCall.result) {
+                                  <div class="mt-1.5 pt-1.5 border-t border-[#363d4a] text-slate-400 font-mono text-[10px] max-h-24 overflow-y-auto">
+                                    <span class="text-slate-600 block mb-1 uppercase font-semibold">Result:</span>
+                                    <div class="text-slate-400">{{ groupedEvent.toolCall.result | json }}</div>
+                                  </div>
+                                }
+                              </div>
+                            </div>
+                          }
+                        }
+                      }
+                      <!-- Streaming indicator after all events -->
+                      @if(msg.isStreaming) {
+                        <span class="inline-block w-2 h-4 ml-1 bg-[#478cbf] animate-pulse align-middle"></span>
+                      }
+                    } @else {
+                      <!-- Fallback to old display for backward compatibility -->
+                      <markdown class="whitespace-pre-wrap font-light prose prose-invert prose-sm max-w-none" [data]="filterExecutionPlanBlocks(msg.content)"></markdown>
 
-                    @if(msg.isStreaming) {
-                      <span class="inline-block w-2 h-4 ml-1 bg-[#478cbf] animate-pulse align-middle"></span>
+                      @if(msg.isStreaming) {
+                        <span class="inline-block w-2 h-4 ml-1 bg-[#478cbf] animate-pulse align-middle"></span>
+                      }
+
+                      <!-- Tool Calls - Old display (kept for backward compatibility) -->
+                      @if (msg.toolCalls && msg.toolCalls.length > 0) {
+                        <div class="mt-3 space-y-2">
+                          @for (tool of msg.toolCalls; track tool.name + $index) {
+                            <div class="bg-[#1a1d21] rounded p-2.5 border border-[#363d4a] text-xs">
+                              <div class="flex items-center justify-between mb-1.5">
+                                <div class="flex items-center gap-1.5">
+                                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-[#478cbf]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                                  </svg>
+                                  <span class="font-mono text-[#478cbf] font-medium">{{ tool.name }}</span>
+                                </div>
+                                <span class="text-[10px] uppercase px-1.5 py-0.5 rounded font-medium"
+                                      [class.bg-yellow-500/20]="tool.status === 'running'"
+                                      [class.text-yellow-500]="tool.status === 'running'"
+                                      [class.bg-green-500/20]="tool.status === 'completed'"
+                                      [class.text-green-500]="tool.status === 'completed'"
+                                      [class.bg-red-500/20]="tool.status === 'failed'"
+                                      [class.text-red-500]="tool.status === 'failed'">
+                                  {{ tool.status }}
+                                </span>
+                              </div>
+                              @if (tool.input) {
+                                <div class="font-mono text-slate-500 text-[10px] opacity-75 mb-1">
+                                  {{ tool.input | json }}
+                                </div>
+                              }
+                              @if (tool.result) {
+                                <div class="mt-1.5 pt-1.5 border-t border-[#363d4a] text-slate-400 font-mono text-[10px] max-h-24 overflow-y-auto">
+                                  <span class="text-slate-600 block mb-1 uppercase font-semibold">Result:</span>
+                                  <div class="text-slate-400">{{ tool.result | json }}</div>
+                                </div>
+                              }
+                            </div>
+                          }
+                        </div>
+                      }
                     }
                   }
                 </div>
@@ -298,7 +368,7 @@ interface AgentConfig {
           }
 
           <!-- Spacer for bottom scrolling -->
-          <div class="h-24"></div>
+          <div class="h-32"></div>
         </div>
 
         <!-- Input Area -->
@@ -322,6 +392,32 @@ interface AgentConfig {
                     </svg>
                  </button>
                  <!-- Additional attachment options could go here -->
+               </div>
+
+               <!-- Mode Toggle -->
+               <div class="flex items-center gap-2 mr-auto ml-2">
+                  <button 
+                    (click)="toggleMode()"
+                    class="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors border"
+                    [class.bg-blue-500/10]="config().mode === 'planning'"
+                    [class.text-blue-400]="config().mode === 'planning'"
+                    [class.border-blue-500/30]="config().mode === 'planning'"
+                    [class.bg-purple-500/10]="config().mode === 'fast'"
+                    [class.text-purple-400]="config().mode === 'fast'"
+                    [class.border-purple-500/30]="config().mode === 'fast'">
+                    
+                    @if (config().mode === 'planning') {
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                      <span>Plan</span>
+                    } @else {
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      <span>Fast</span>
+                    }
+                  </button>
                </div>
                
                <div class="flex items-center gap-3">
@@ -357,6 +453,131 @@ interface AgentConfig {
         </div>
 
       </main>
+
+      <!-- Task Sidebar -->
+      @if (currentPlan() && taskSidebarOpen()) {
+        <!-- Backdrop (mobile only) -->
+        <div class="fixed inset-0 bg-black/50 z-40 md:hidden" (click)="toggleTaskSidebar()"></div>
+
+        <!-- Sidebar -->
+        <aside class="w-80 border-l border-[#363d4a] bg-[#212529] flex flex-col overflow-hidden animate-in slide-in-from-right-2 duration-200 fixed md:relative right-0 top-0 h-full z-50 md:z-auto md:flex-shrink-0">
+          <!-- Sidebar Header -->
+          <div class="h-14 border-b border-[#363d4a] flex items-center justify-between px-4 bg-[#212529]/50 backdrop-blur">
+            <div class="flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-[#478cbf]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+              </svg>
+              <h2 class="text-sm font-semibold text-white">Execution Plan</h2>
+            </div>
+            <button
+              (click)="toggleTaskSidebar()"
+              class="p-1 rounded hover:bg-[#363d4a] text-slate-400 hover:text-white transition-colors"
+              title="Close Tasks">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Plan Title & Description -->
+          <div class="px-4 py-3 border-b border-[#363d4a] bg-[#1a1d21]">
+            <h3 class="text-sm font-medium text-white mb-1">{{ currentPlan()!.title }}</h3>
+            @if (currentPlan()!.description) {
+              <p class="text-xs text-slate-400 leading-relaxed">{{ currentPlan()!.description }}</p>
+            }
+            <div class="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
+              <span>{{ currentPlan()!.steps.length }} steps</span>
+              <span class="w-1 h-1 bg-slate-600 rounded-full"></span>
+              <span class="uppercase px-1.5 py-0.5 rounded"
+                    [class.bg-blue-500/20]="currentPlan()!.status === 'pending'"
+                    [class.text-blue-400]="currentPlan()!.status === 'pending'"
+                    [class.bg-yellow-500/20]="currentPlan()!.status === 'running'"
+                    [class.text-yellow-400]="currentPlan()!.status === 'running'"
+                    [class.bg-green-500/20]="currentPlan()!.status === 'completed'"
+                    [class.text-green-400]="currentPlan()!.status === 'completed'">
+                {{ currentPlan()!.status }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Steps List -->
+          <div class="flex-1 overflow-y-auto p-2">
+            <div class="space-y-1">
+              @for (step of currentPlan()!.steps; track step.id; let idx = $index) {
+                <div class="p-3 rounded-lg border transition-all duration-200"
+                     [class.border-[#363d4a]]="step.status === 'pending'"
+                     [class.bg-transparent]="step.status === 'pending'"
+                     [class.border-[#478cbf]/30]="step.status === 'running'"
+                     [class.bg-[#478cbf]/5]="step.status === 'running'"
+                     [class.border-green-500/30]="step.status === 'completed'"
+                     [class.bg-green-500/5]="step.status === 'completed'"
+                     [class.border-red-500/30]="step.status === 'failed'"
+                     [class.bg-red-500/5]="step.status === 'failed'">
+
+                  <!-- Step Header -->
+                  <div class="flex items-start gap-2 mb-2">
+                    <!-- Status Icon -->
+                    <div class="flex-shrink-0 mt-0.5">
+                      @if (step.status === 'completed') {
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-green-500" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                        </svg>
+                      } @else if (step.status === 'running') {
+                        <div class="w-4 h-4 border-2 border-[#478cbf] border-t-transparent rounded-full animate-spin"></div>
+                      } @else if (step.status === 'failed') {
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                        </svg>
+                      } @else {
+                        <div class="w-4 h-4 rounded-full border-2 border-slate-600"></div>
+                      }
+                    </div>
+
+                    <!-- Step Number & Title -->
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-baseline gap-1.5">
+                        <span class="text-[10px] font-mono text-slate-500 font-semibold">{{ idx + 1 }}.</span>
+                        <h4 class="text-xs font-medium text-white truncate">{{ step.title }}</h4>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Step Description -->
+                  @if (step.description) {
+                    <p class="text-[11px] text-slate-400 leading-relaxed ml-6 mb-2">{{ step.description }}</p>
+                  }
+
+                  <!-- Tool Calls (if any) -->
+                  @if (step.tool_calls && step.tool_calls.length > 0) {
+                    <div class="ml-6 mt-2 space-y-1">
+                      @for (tool of step.tool_calls; track tool.name + $index) {
+                        <div class="flex items-center gap-1.5 text-[10px]">
+                          <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                          </svg>
+                          <span class="font-mono text-slate-500">{{ tool.name }}</span>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          </div>
+
+          <!-- Sidebar Footer (optional stats) -->
+          <div class="border-t border-[#363d4a] px-4 py-2 bg-[#1a1d21]">
+            <div class="flex justify-between text-[10px] text-slate-500">
+              <span>Progress</span>
+              <span>{{ getCompletedStepsCount() }} / {{ currentPlan()!.steps.length }}</span>
+            </div>
+            <div class="mt-1 w-full bg-[#2b303b] h-1 rounded-full overflow-hidden">
+              <div class="bg-green-500 h-full rounded-full transition-all duration-300"
+                   [style.width.%]="getProgressPercentage()"></div>
+            </div>
+          </div>
+        </aside>
+      }
     </div>
   `,
   styles: [`
@@ -379,9 +600,13 @@ interface AgentConfig {
     /* Animation utilities */
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes slideDown { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-    
+    @keyframes slideRight { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
     .animate-in { animation: fadeIn 0.2s ease-out; }
     .slide-in-from-top-2 { animation: slideDown 0.2s ease-out; }
+    .slide-in-from-right-2 { animation: slideRight 0.2s ease-out; }
+    .slide-in-from-bottom { animation: slideUp 0.3s ease-out; }
   `]
 })
 export class App implements AfterViewChecked, OnInit {
@@ -401,14 +626,35 @@ export class App implements AfterViewChecked, OnInit {
     status: 'idle',
     showSettings: false,
     godotVersion: '',
-    godotConnected: false
+    godotConnected: false,
+    connectionState: 'disconnected',
+    mode: 'planning'
   });
 
   metrics = signal<SessionMetrics>({
     totalTokens: 0,
     sessionCost: 0.00,
-    projectTotalCost: 0.00
+    projectTotalCost: 0.00,
+    toolCalls: 0,
+    toolErrors: 0
   });
+
+  // Task list sidebar state
+  taskSidebarOpen = signal(false);
+
+  // Computed: Get current active plan from messages
+  currentPlan = computed(() => {
+    const msgs = this.messages();
+    // Find the most recent assistant message with a plan
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant' && msgs[i].plan) {
+        return msgs[i].plan;
+      }
+    }
+    return null;
+  });
+
+  private abortController: AbortController | null = null;
 
   constructor(
     private chatService: ChatService,
@@ -428,6 +674,74 @@ export class App implements AfterViewChecked, OnInit {
     try {
       this.scrollContainer.nativeElement.scrollTop = this.scrollContainer.nativeElement.scrollHeight;
     } catch (err) { }
+  }
+
+  /**
+   * Filter out execution-plan JSON blocks from message content.
+   * These blocks are parsed by the backend and emitted as plan_created events,
+   * so we don't need to display them as raw text.
+   */
+  filterExecutionPlanBlocks(content: string): string {
+    if (!content) return content;
+
+    // Remove ```execution-plan ... ``` code blocks
+    const pattern = /```execution-plan[\s\S]*?```/g;
+    return content.replace(pattern, '').trim();
+  }
+
+  /**
+   * Groups consecutive text events into single text blocks while keeping tool events separate.
+   * This allows text to flow naturally while maintaining chronological tool ordering.
+   * Also filters out execution plan JSON blocks from the grouped text.
+   */
+  getGroupedEvents(msg: Message): GroupedEvent[] {
+    if (!msg.events || msg.events.length === 0) {
+      return [];
+    }
+
+    const grouped: GroupedEvent[] = [];
+    let currentTextBlock = '';
+    let textBlockSequence = 0;
+
+    for (const event of msg.events) {
+      if (event.type === 'text') {
+        // Add to current text block
+        if (currentTextBlock === '') {
+          textBlockSequence = event.sequence;
+        }
+        currentTextBlock += event.content || '';
+      } else {
+        // Tool event - flush current text block if any (with filtering applied)
+        if (currentTextBlock) {
+          grouped.push({
+            type: 'text_block',
+            content: this.filterExecutionPlanBlocks(currentTextBlock),
+            sequence: textBlockSequence
+          });
+          currentTextBlock = '';
+        }
+
+        // Add tool event
+        if (event.toolCall) {
+          grouped.push({
+            type: 'tool',
+            toolCall: event.toolCall,
+            sequence: event.sequence
+          });
+        }
+      }
+    }
+
+    // Flush remaining text block (with filtering applied)
+    if (currentTextBlock) {
+      grouped.push({
+        type: 'text_block',
+        content: this.filterExecutionPlanBlocks(currentTextBlock),
+        sequence: textBlockSequence
+      });
+    }
+
+    return grouped;
   }
 
   loadSystemInfo() {
@@ -468,15 +782,17 @@ export class App implements AfterViewChecked, OnInit {
   }
 
   private updateGodotConfig(status: any) {
-    const isConnected = status.state === 'connected';
+    const connectionState = status.state || 'disconnected';
+    const isConnected = connectionState === 'connected';
     const version = status.godot_version || '';
     const path = status.project_path || '';
 
-    console.log('[App] Updating config - Connected:', isConnected, 'Version:', version, 'Path:', path);
+    console.log('[App] Updating config - State:', connectionState, 'Connected:', isConnected, 'Version:', version, 'Path:', path);
 
     this.config.update(c => ({
       ...c,
       godotConnected: isConnected,
+      connectionState: connectionState,
       godotVersion: version,
       projectPath: path || c.projectPath
     }));
@@ -517,6 +833,26 @@ export class App implements AfterViewChecked, OnInit {
 
   toggleSettings() {
     this.config.update(c => ({ ...c, showSettings: !c.showSettings }));
+  }
+
+  toggleMode() {
+    this.config.update(c => ({ ...c, mode: c.mode === 'planning' ? 'fast' : 'planning' }));
+  }
+
+  toggleTaskSidebar() {
+    this.taskSidebarOpen.update(open => !open);
+  }
+
+  getCompletedStepsCount(): number {
+    const plan = this.currentPlan();
+    if (!plan) return 0;
+    return plan.steps.filter(s => s.status === 'completed').length;
+  }
+
+  getProgressPercentage(): number {
+    const plan = this.currentPlan();
+    if (!plan || plan.steps.length === 0) return 0;
+    return (this.getCompletedStepsCount() / plan.steps.length) * 100;
   }
 
   onEnter(event: Event) {
@@ -566,13 +902,15 @@ export class App implements AfterViewChecked, OnInit {
       tokens: 0,
       cost: 0,
       toolCalls: [],
-      plan: undefined
+      plan: undefined,
+      events: []
     };
     this.messages.update(msgs => [...msgs, aiMsg]);
 
     try {
       // 3. Stream Response (sessionId is guaranteed to be non-null here)
-      for await (const chunk of this.chatService.sendMessageStream(sessionId!, text)) {
+      this.abortController = new AbortController();
+      for await (const chunk of this.chatService.sendMessageStream(sessionId!, text, this.config().mode, this.abortController.signal)) {
         console.log('[AppComponent] Received chunk:', chunk); // DEBUG
 
         this.messages.update(msgs => msgs.map(m => {
@@ -594,15 +932,41 @@ export class App implements AfterViewChecked, OnInit {
             case 'data':
               if (chunk.data?.text) {
                 updatedMsg.content += chunk.data.text;
+                // Add to chronological events
+                if (!updatedMsg.events) updatedMsg.events = [];
+                updatedMsg.events.push({
+                  type: 'text',
+                  timestamp: Date.now(),
+                  sequence: updatedMsg.events.length,
+                  content: chunk.data.text
+                });
+              }
+              break;
+
+            case 'reasoning':
+              if (chunk.data?.text) {
+                // For now, append reasoning to content with a special style or prefix
+                // Or we could add a separate reasoning field to the message model
+                // Let's just append it italicized for now
+                updatedMsg.content += `\n*Thinking: ${chunk.data.text}*\n`;
               }
               break;
 
             case 'tool_use':
               if (!updatedMsg.toolCalls) updatedMsg.toolCalls = [];
-              updatedMsg.toolCalls.push({
+              const newToolCall = {
                 name: chunk.data.tool_name,
                 input: chunk.data.tool_input,
-                status: 'running'
+                status: 'running' as const
+              };
+              updatedMsg.toolCalls.push(newToolCall);
+              // Add to chronological events
+              if (!updatedMsg.events) updatedMsg.events = [];
+              updatedMsg.events.push({
+                type: 'tool_use',
+                timestamp: Date.now(),
+                sequence: updatedMsg.events.length,
+                toolCall: newToolCall
               });
               break;
 
@@ -612,18 +976,33 @@ export class App implements AfterViewChecked, OnInit {
                 if (toolCall) {
                   toolCall.status = 'completed';
                   toolCall.result = chunk.data.result;
+                  // Add to chronological events
+                  if (!updatedMsg.events) updatedMsg.events = [];
+                  updatedMsg.events.push({
+                    type: 'tool_result',
+                    timestamp: Date.now(),
+                    sequence: updatedMsg.events.length,
+                    toolCall: toolCall
+                  });
                 }
               }
               break;
 
             case 'plan_created':
+              // Backend now sends full step details including titles and descriptions
               updatedMsg.plan = {
                 title: chunk.data.title,
-                steps: Array(chunk.data.steps).fill(null).map((_, i) => ({
-                  id: `step-${i}`,
-                  title: `Step ${i + 1}`,
-                  status: 'pending'
-                })),
+                description: chunk.data.description,
+                steps: Array.isArray(chunk.data.steps)
+                  ? chunk.data.steps.map((step: any) => ({
+                    id: step.id,
+                    title: step.title,
+                    description: step.description,
+                    tool_calls: step.tool_calls || [],
+                    depends_on: step.depends_on || [],
+                    status: step.status || 'pending'
+                  }))
+                  : [],
                 status: 'pending'
               };
               break;
@@ -652,28 +1031,46 @@ export class App implements AfterViewChecked, OnInit {
 
             case 'step_started':
               if (updatedMsg.plan) {
-                const stepIndex = updatedMsg.plan.steps.findIndex(s => s.status === 'pending');
-                if (stepIndex !== -1) {
-                  updatedMsg.plan.steps[stepIndex].title = chunk.data.title;
+                // Use step_index from event data to find the exact step
+                const stepIndex = chunk.data.step_index !== undefined
+                  ? chunk.data.step_index
+                  : updatedMsg.plan.steps.findIndex(s => s.id === chunk.data.step_id);
+
+                if (stepIndex !== -1 && stepIndex < updatedMsg.plan.steps.length) {
                   updatedMsg.plan.steps[stepIndex].status = 'running';
+                  // Update title/description if provided in event
+                  if (chunk.data.title) {
+                    updatedMsg.plan.steps[stepIndex].title = chunk.data.title;
+                  }
+                  if (chunk.data.description) {
+                    updatedMsg.plan.steps[stepIndex].description = chunk.data.description;
+                  }
                 }
               }
               break;
 
             case 'step_completed':
               if (updatedMsg.plan) {
-                const step = updatedMsg.plan.steps.find(s => s.status === 'running');
-                if (step) {
-                  step.status = 'completed';
+                // Use step_index or step_id to find the exact step
+                const stepIndex = chunk.data.step_index !== undefined
+                  ? chunk.data.step_index
+                  : updatedMsg.plan.steps.findIndex(s => s.id === chunk.data.step_id);
+
+                if (stepIndex !== -1 && stepIndex < updatedMsg.plan.steps.length) {
+                  updatedMsg.plan.steps[stepIndex].status = chunk.data.status || 'completed';
                 }
               }
               break;
 
             case 'step_failed':
               if (updatedMsg.plan) {
-                const step = updatedMsg.plan.steps.find(s => s.status === 'running');
-                if (step) {
-                  step.status = 'failed';
+                // Use step_index or step_id to find the exact step
+                const stepIndex = chunk.data.step_index !== undefined
+                  ? chunk.data.step_index
+                  : updatedMsg.plan.steps.findIndex(s => s.id === chunk.data.step_id);
+
+                if (stepIndex !== -1 && stepIndex < updatedMsg.plan.steps.length) {
+                  updatedMsg.plan.steps[stepIndex].status = 'failed';
                 }
               }
               break;
@@ -681,10 +1078,19 @@ export class App implements AfterViewChecked, OnInit {
             case 'tool_started':
               // Executor tool started
               if (!updatedMsg.toolCalls) updatedMsg.toolCalls = [];
-              updatedMsg.toolCalls.push({
+              const startedToolCall = {
                 name: chunk.data.tool_name,
                 input: {}, // Input might not be available in start event
-                status: 'running'
+                status: 'running' as const
+              };
+              updatedMsg.toolCalls.push(startedToolCall);
+              // Add to chronological events
+              if (!updatedMsg.events) updatedMsg.events = [];
+              updatedMsg.events.push({
+                type: 'tool_use',
+                timestamp: Date.now(),
+                sequence: updatedMsg.events.length,
+                toolCall: startedToolCall
               });
               break;
 
@@ -695,6 +1101,14 @@ export class App implements AfterViewChecked, OnInit {
                 const toolCall = [...updatedMsg.toolCalls].reverse().find(t => t.name === chunk.data.tool_name && t.status === 'running');
                 if (toolCall) {
                   toolCall.status = chunk.data.success ? 'completed' : 'failed';
+                  // Add to chronological events
+                  if (!updatedMsg.events) updatedMsg.events = [];
+                  updatedMsg.events.push({
+                    type: 'tool_result',
+                    timestamp: Date.now(),
+                    sequence: updatedMsg.events.length,
+                    toolCall: toolCall
+                  });
                 }
               }
               break;
@@ -725,7 +1139,13 @@ export class App implements AfterViewChecked, OnInit {
 
           // Handle metrics if present in any event
           if (chunk.data?.metrics) {
-            // Update metrics logic here if needed
+            const m = chunk.data.metrics;
+            this.updateMetrics(
+              m.total_tokens || 0,
+              m.actual_cost || m.estimated_cost || 0,
+              m.tool_calls || 0,
+              m.tool_errors || 0
+            );
           }
 
           return updatedMsg;
@@ -756,33 +1176,77 @@ export class App implements AfterViewChecked, OnInit {
           }
         });
       }
-
-    } catch (err: any) {
-      console.error('Chat error:', err);
-      const errorMsg: Message = {
-        id: (Date.now() + 2).toString(),
-        role: 'system',
-        content: 'Error: ' + err.message,
-        timestamp: new Date()
-      };
-      this.messages.update(msgs => [...msgs, errorMsg]);
-      // Remove the empty AI message if it failed immediately
-      this.messages.update(msgs => msgs.filter(m => m.id !== aiMsgId || m.content !== ''));
+    } catch (err) {
+      // Check if this is an abort error (user cancelled)
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('[AppComponent] Stream aborted by user');
+        // Don't show error message for user-initiated cancellation
+        // The stopAgent() method will handle updating the message
+        this.messages.update(msgs => msgs.map(m => {
+          if (m.id === aiMsgId) {
+            return { ...m, isStreaming: false };
+          }
+          return m;
+        }));
+      } else {
+        // Real error - show error message
+        console.error('[AppComponent] Error in stream:', err);
+        this.messages.update(msgs => msgs.map(m => {
+          if (m.id === aiMsgId) {
+            return {
+              ...m,
+              isStreaming: false,
+              content: m.content + '\n\n⚠️ Error: ' + (err instanceof Error ? err.message : String(err))
+            };
+          }
+          return m;
+        }));
+      }
     } finally {
       this.config.update(c => ({ ...c, status: 'idle' }));
     }
   }
 
-  stopAgent() {
-    this.config.update(c => ({ ...c, status: 'stopped' }));
-    // Implement stop logic with backend if supported
-  }
 
-  updateMetrics(tokens: number, cost: number) {
+
+  stopAgent() {
+    const sessionId = this.currentSessionId();
+    if (!sessionId) return;
+
+    // 1. Abort the frontend stream immediately
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+
+    this.config.update(c => ({ ...c, status: 'stopped' }));
+
+    // 2. Notify backend to stop processing
+    this.chatService.stopSession(sessionId).subscribe({
+      next: () => {
+        console.log('Agent stopped successfully');
+        // Update the last message to show it was stopped
+        this.messages.update(msgs => {
+          const lastMsg = msgs[msgs.length - 1];
+          if (lastMsg.role === 'assistant' && lastMsg.isStreaming) {
+            return [
+              ...msgs.slice(0, -1),
+              { ...lastMsg, isStreaming: false, content: lastMsg.content + '\n\n[Stopped by user]' }
+            ];
+          }
+          return msgs;
+        });
+      },
+      error: (err) => console.error('Failed to stop agent:', err)
+    });
+  }
+  updateMetrics(tokens: number, cost: number, toolCalls: number = 0, toolErrors: number = 0) {
     this.metrics.update(m => ({
       totalTokens: m.totalTokens + tokens,
       sessionCost: m.sessionCost + cost,
-      projectTotalCost: m.projectTotalCost + cost
+      projectTotalCost: m.projectTotalCost + cost,
+      toolCalls: m.toolCalls + toolCalls,
+      toolErrors: m.toolErrors + toolErrors
     }));
   }
 }

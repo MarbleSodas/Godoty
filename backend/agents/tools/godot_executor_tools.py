@@ -4,39 +4,36 @@ Godot Executor Tools for Agent Automation.
 This module provides specialized tools for executor agents to perform
 actions and make changes in Godot projects. These tools focus on
 execution, modification, and automation capabilities.
+
+Refactored to follow Strands best practices with hybrid approach:
+- GodotExecutorTools class (no @tool decorators on methods)
+- Wrapper functions with @tool decorators using shared instance
 """
 
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union, Tuple
+import time
+from typing import Any, Dict, List, Optional, Union, Tuple, AsyncIterable
 from dataclasses import dataclass
-from pathlib import Path
 
-from strands import tool
+from strands import tool, ToolContext
 from .godot_bridge import get_godot_bridge, ensure_godot_connection, CommandResponse
 from .godot_debug_tools import NodeInfo
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class CreationResult:
-    """Result of a node/scene creation operation."""
-    success: bool
-    created_path: Optional[str] = None
-    created_id: Optional[str] = None
-    error: Optional[str] = None
-
-
-@dataclass
-class ModificationResult:
-    """Result of a modification operation."""
-    success: bool
-    modified_path: Optional[str] = None
-    old_value: Any = None
-    new_value: Any = None
-    error: Optional[str] = None
+# Error type constants
+class ErrorType:
+    """Error type constants for structured error responses."""
+    CONNECTION_ERROR = "ConnectionError"
+    VALIDATION_ERROR = "ValidationError"
+    CREATION_ERROR = "CreationError"
+    MODIFICATION_ERROR = "ModificationError"
+    DELETION_ERROR = "DeletionError"
+    OPERATION_ERROR = "OperationError"
+    UNKNOWN_ERROR = "UnknownError"
 
 
 class GodotExecutorTools:
@@ -45,31 +42,70 @@ class GodotExecutorTools:
 
     These tools are designed for executor agents to perform actions
     and make modifications to Godot projects.
+
+    All tools return Strands-compatible dictionaries with the format:
+    {
+        "status": "success" | "error",
+        "content": [{"text": "..."}],
+        "data": {...}  # Optional additional data
+    }
+
+    Error responses include:
+    {
+        "status": "error",
+        "error_type": "...",
+        "content": [{"text": "..."}],
+        "suggestions": [...]  # Optional recovery suggestions
+    }
     """
 
     def __init__(self):
         """Initialize executor tools with Godot bridge connection."""
         self.bridge = get_godot_bridge()
-        self._operation_history: List[Dict[str, Any]] = []
+        logger.info("🔧 GodotExecutorTools initialized")
 
     async def ensure_connection(self) -> bool:
         """Ensure connection to Godot is active."""
-        return await ensure_godot_connection()
+        logger.info("🔍 Checking Godot connection status...")
+        connected = await ensure_godot_connection()
+        if connected:
+            logger.info("✓ Godot connection verified and ready")
+        else:
+            logger.error("❌ Failed to establish Godot connection")
+        return connected
 
-    def _record_operation(self, operation_type: str, target: str, result: bool, details: Dict[str, Any] = None):
-        """Record an operation in the history for undo/redo tracking."""
-        operation = {
-            "type": operation_type,
-            "target": target,
-            "result": result,
-            "timestamp": asyncio.get_event_loop().time(),
-            "details": details or {}
+    def _create_success_response(
+        self,
+        message: str,
+        data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Create a standardized success response."""
+        response = {
+            "status": "success",
+            "content": [{"text": message}]
         }
-        self._operation_history.append(operation)
+        if data:
+            response["data"] = data
+        return response
 
-        # Keep history manageable
-        if len(self._operation_history) > 100:
-            self._operation_history = self._operation_history[-50:]
+    def _create_error_response(
+        self,
+        message: str,
+        error_type: str = ErrorType.UNKNOWN_ERROR,
+        suggestions: Optional[List[str]] = None,
+        retry_after: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Create a standardized error response."""
+        response = {
+            "status": "error",
+            "error_type": error_type,
+            "content": [{"text": message}]
+        }
+        if suggestions:
+            response["suggestions"] = suggestions
+        if retry_after:
+            response["retry_after"] = retry_after
+        return response
 
     # Node Creation and Management
     async def create_node(
@@ -77,30 +113,29 @@ class GodotExecutorTools:
         node_type: str,
         parent_path: str,
         node_name: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None
-    ) -> CreationResult:
-        """
-        Create a new node in the scene tree.
-
-        Args:
-            node_type: Type of node to create (e.g., "Node2D", "Sprite2D")
-            parent_path: Path to parent node
-            node_name: Name for the new node (optional)
-            properties: Initial properties to set (optional)
-
-        Returns:
-            CreationResult with operation outcome
-        """
+        properties: Optional[Dict[str, Any]] = None,
+        tool_context: Optional[ToolContext] = None
+    ) -> Dict[str, Any]:
+        """Create a new node in the Godot scene tree."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
+            return self._create_error_response(
+                "Failed to connect to Godot plugin",
+                error_type=ErrorType.CONNECTION_ERROR,
+                suggestions=[
+                    "Ensure Godot editor is running",
+                    "Verify Godoty plugin is active",
+                    "Check WebSocket connection settings"
+                ],
+                retry_after=5
+            )
 
         try:
             params = {
-                "node_type": node_type,
-                "parent_path": parent_path
+                "type": node_type,
+                "parent": parent_path
             }
             if node_name:
-                params["node_name"] = node_name
+                params["name"] = node_name
             if properties:
                 params["properties"] = properties
 
@@ -108,1072 +143,801 @@ class GodotExecutorTools:
 
             if response.success:
                 created_path = response.data.get("path")
-                self._record_operation("create_node", created_path, True, params)
+                node_id = response.data.get("id")
+
+                # Record in agent state if context available
+                if tool_context:
+                    try:
+                        state = tool_context.agent.state
+                        if hasattr(state, "get"):
+                            try:
+                                operation_history = state.get("operation_history") or []
+                            except TypeError:
+                                operation_history = state.get("operation_history")
+                                if operation_history is None:
+                                    operation_history = []
+                        else:
+                            operation_history = []
+
+                        operation_history.append({
+                            "type": "create_node",
+                            "target": created_path,
+                            "result": True,
+                            "timestamp": time.time(),
+                            "details": params
+                        })
+                        state.set("operation_history", operation_history)
+                    except Exception as e:
+                        logger.warning(f"Failed to update agent state: {e}")
+
                 logger.info(f"Created node {node_type} at {created_path}")
 
-                return CreationResult(
-                    success=True,
-                    created_path=created_path,
-                    created_id=response.data.get("id")
+                return self._create_success_response(
+                    f"Successfully created {node_type} node at {created_path}",
+                    data={
+                        "created_path": created_path,
+                        "node_id": node_id,
+                        "node_type": node_type
+                    }
                 )
             else:
                 error_msg = response.error or "Unknown error"
-                self._record_operation("create_node", parent_path, False, {"error": error_msg})
                 logger.error(f"Failed to create node: {error_msg}")
 
-                return CreationResult(success=False, error=error_msg)
+                return self._create_error_response(
+                    f"Failed to create node: {error_msg}",
+                    error_type=ErrorType.CREATION_ERROR,
+                    suggestions=[
+                        "Verify parent path exists",
+                        f"Check that '{node_type}' is a valid Godot node type",
+                        "Ensure parent node can have children"
+                    ]
+                )
 
+        except ConnectionError as e:
+            return self._create_error_response(
+                f"Connection to Godot failed: {str(e)}",
+                error_type=ErrorType.CONNECTION_ERROR,
+                suggestions=[
+                    "Check Godot editor is running",
+                    "Verify WebSocket plugin is active"
+                ],
+                retry_after=5
+            )
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error creating node: {error_msg}")
-            self._record_operation("create_node", parent_path, False, {"error": error_msg})
-            return CreationResult(success=False, error=error_msg)
+            return self._create_error_response(
+                f"Unexpected error creating node: {error_msg}",
+                error_type=ErrorType.UNKNOWN_ERROR
+            )
 
-    async def delete_node(self, node_path: str) -> bool:
-        """
-        Delete a node from the scene tree.
-
-        Args:
-            node_path: Path to the node to delete
-
-        Returns:
-            True if successful, False otherwise
-        """
+    async def delete_node(
+        self,
+        node_path: str,
+        tool_context: Optional[ToolContext] = None
+    ) -> Dict[str, Any]:
+        """Delete a node from the Godot scene tree."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
+            return self._create_error_response(
+                "Failed to connect to Godot plugin",
+                error_type=ErrorType.CONNECTION_ERROR,
+                retry_after=5
+            )
 
         try:
-            response = await self.bridge.send_command("delete_node", node_path=node_path)
+            response = await self.bridge.send_command("delete_node", path=node_path)
 
             if response.success:
-                self._record_operation("delete_node", node_path, True)
+                if tool_context:
+                    try:
+                        state = tool_context.agent.state
+                        if hasattr(state, "get"):
+                            try:
+                                operation_history = state.get("operation_history") or []
+                            except TypeError:
+                                operation_history = state.get("operation_history")
+                                if operation_history is None:
+                                    operation_history = []
+                        else:
+                            operation_history = []
+
+                        operation_history.append({
+                            "type": "delete_node",
+                            "target": node_path,
+                            "result": True,
+                            "timestamp": time.time()
+                        })
+                        state.set("operation_history", operation_history)
+                    except Exception as e:
+                        logger.warning(f"Failed to update agent state: {e}")
+
                 logger.info(f"Deleted node at {node_path}")
-                return True
+                return self._create_success_response(
+                    f"Successfully deleted node at {node_path}",
+                    data={"deleted_path": node_path}
+                )
             else:
                 error_msg = response.error or "Unknown error"
-                self._record_operation("delete_node", node_path, False, {"error": error_msg})
                 logger.error(f"Failed to delete node: {error_msg}")
-                return False
+
+                return self._create_error_response(
+                    f"Failed to delete node: {error_msg}",
+                    error_type=ErrorType.DELETION_ERROR,
+                    suggestions=[
+                        f"Verify node exists at path: {node_path}",
+                        "Ensure node is not protected or locked"
+                    ]
+                )
 
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error deleting node: {error_msg}")
-            self._record_operation("delete_node", node_path, False, {"error": error_msg})
-            return False
+            return self._create_error_response(
+                f"Error deleting node: {error_msg}",
+                error_type=ErrorType.OPERATION_ERROR
+            )
 
     async def modify_node_property(
         self,
         node_path: str,
         property_name: str,
-        new_value: Any
-    ) -> ModificationResult:
-        """
-        Modify a property of a node.
-
-        Args:
-            node_path: Path to the target node
-            property_name: Name of the property to modify
-            new_value: New value for the property
-
-        Returns:
-            ModificationResult with operation outcome
-        """
+        new_value: Any,
+        tool_context: Optional[ToolContext] = None
+    ) -> Dict[str, Any]:
+        """Modify a property of a node in the Godot scene tree."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
+            return self._create_error_response(
+                "Failed to connect to Godot plugin",
+                error_type=ErrorType.CONNECTION_ERROR,
+                retry_after=5
+            )
 
         try:
             response = await self.bridge.send_command(
-                "modify_node_property",
-                node_path=node_path,
-                property_name=property_name,
-                new_value=new_value
+                "modify_node",
+                path=node_path,
+                properties={property_name: new_value}
             )
 
             if response.success:
                 old_value = response.data.get("old_value")
-                self._record_operation("modify_property", node_path, True, {
-                    "property": property_name,
-                    "old_value": old_value,
-                    "new_value": new_value
-                })
+
+                if tool_context:
+                    try:
+                        state = tool_context.agent.state
+                        if hasattr(state, "get"):
+                            try:
+                                operation_history = state.get("operation_history") or []
+                            except TypeError:
+                                operation_history = state.get("operation_history")
+                                if operation_history is None:
+                                    operation_history = []
+                        else:
+                            operation_history = []
+
+                        operation_history.append({
+                            "type": "modify_property",
+                            "target": node_path,
+                            "result": True,
+                            "timestamp": time.time(),
+                            "details": {
+                                "property": property_name,
+                                "old_value": old_value,
+                                "new_value": new_value
+                            }
+                        })
+                        state.set("operation_history", operation_history)
+                    except Exception as e:
+                        logger.warning(f"Failed to update agent state: {e}")
+
                 logger.info(f"Modified {property_name} on {node_path} from {old_value} to {new_value}")
 
-                return ModificationResult(
-                    success=True,
-                    modified_path=node_path,
-                    old_value=old_value,
-                    new_value=new_value
+                return self._create_success_response(
+                    f"Successfully modified {property_name} on {node_path}",
+                    data={
+                        "modified_path": node_path,
+                        "property": property_name,
+                        "old_value": old_value,
+                        "new_value": new_value
+                    }
                 )
             else:
                 error_msg = response.error or "Unknown error"
-                self._record_operation("modify_property", node_path, False, {"error": error_msg})
                 logger.error(f"Failed to modify property: {error_msg}")
 
-                return ModificationResult(success=False, error=error_msg)
+                return self._create_error_response(
+                    f"Failed to modify property: {error_msg}",
+                    error_type=ErrorType.MODIFICATION_ERROR,
+                    suggestions=[
+                        f"Verify node exists at path: {node_path}",
+                        f"Check that '{property_name}' is a valid property for this node",
+                        "Ensure the new value type matches the property type"
+                    ]
+                )
 
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error modifying property: {error_msg}")
-            self._record_operation("modify_property", node_path, False, {"error": error_msg})
-            return ModificationResult(success=False, error=error_msg)
+            return self._create_error_response(
+                f"Error modifying property: {error_msg}",
+                error_type=ErrorType.OPERATION_ERROR
+            )
 
-    async def reparent_node(
-        self,
-        node_path: str,
-        new_parent_path: str,
-        new_position: Optional[int] = None
-    ) -> bool:
-        """
-        Move a node to a new parent.
-
-        Args:
-            node_path: Path to the node to move
-            new_parent_path: Path to the new parent
-            new_position: Position in new parent's children (optional)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            params = {
-                "node_path": node_path,
-                "new_parent_path": new_parent_path
-            }
-            if new_position is not None:
-                params["position"] = new_position
-
-            response = await self.bridge.send_command("reparent_node", **params)
-
-            if response.success:
-                self._record_operation("reparent_node", node_path, True, params)
-                logger.info(f"Reparented {node_path} to {new_parent_path}")
-                return True
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("reparent_node", node_path, False, {"error": error_msg})
-                logger.error(f"Failed to reparent node: {error_msg}")
-                return False
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error reparenting node: {error_msg}")
-            self._record_operation("reparent_node", node_path, False, {"error": error_msg})
-            return False
-
-    # Scene Management
     async def create_new_scene(
         self,
         scene_name: str,
         root_node_type: str = "Node",
-        save_path: Optional[str] = None
-    ) -> CreationResult:
-        """
-        Create a new scene.
-
-        Args:
-            scene_name: Name for the new scene
-            root_node_type: Type of root node (default: "Node")
-            save_path: Path to save the scene (optional)
-
-        Returns:
-            CreationResult with operation outcome
-        """
+        save_path: Optional[str] = None,
+        tool_context: Optional[ToolContext] = None
+    ) -> Dict[str, Any]:
+        """Create a new scene in the Godot project."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
+            return self._create_error_response(
+                "Failed to connect to Godot plugin",
+                error_type=ErrorType.CONNECTION_ERROR,
+                retry_after=5
+            )
 
         try:
             params = {
-                "scene_name": scene_name,
-                "root_node_type": root_node_type
+                "name": scene_name,
+                "root_type": root_node_type
             }
             if save_path:
+                if not self.bridge.is_path_safe(save_path):
+                    return self._create_error_response(
+                        f"Save path '{save_path}' is outside the project directory",
+                        error_type=ErrorType.VALIDATION_ERROR
+                    )
                 params["save_path"] = save_path
 
             response = await self.bridge.send_command("create_scene", **params)
 
             if response.success:
                 scene_path = response.data.get("scene_path")
-                self._record_operation("create_scene", scene_name, True, params)
+
+                if tool_context:
+                    try:
+                        state = tool_context.agent.state
+                        if hasattr(state, "get"):
+                            try:
+                                operation_history = state.get("operation_history") or []
+                            except TypeError:
+                                operation_history = state.get("operation_history")
+                                if operation_history is None:
+                                    operation_history = []
+                        else:
+                            operation_history = []
+
+                        operation_history.append({
+                            "type": "create_scene",
+                            "target": scene_name,
+                            "result": True,
+                            "timestamp": time.time(),
+                            "details": params
+                        })
+                        state.set("operation_history", operation_history)
+                        state.set("active_scene", scene_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to update agent state: {e}")
+
                 logger.info(f"Created new scene: {scene_path}")
 
-                return CreationResult(
-                    success=True,
-                    created_path=scene_path
+                return self._create_success_response(
+                    f"Successfully created scene: {scene_path}",
+                    data={
+                        "scene_path": scene_path,
+                        "scene_name": scene_name,
+                        "root_node_type": root_node_type
+                    }
                 )
             else:
                 error_msg = response.error or "Unknown error"
-                self._record_operation("create_scene", scene_name, False, {"error": error_msg})
                 logger.error(f"Failed to create scene: {error_msg}")
 
-                return CreationResult(success=False, error=error_msg)
+                return self._create_error_response(
+                    f"Failed to create scene: {error_msg}",
+                    error_type=ErrorType.CREATION_ERROR,
+                    suggestions=[
+                        f"Check that '{root_node_type}' is a valid Godot node type",
+                        "Verify save path is writable",
+                        "Ensure scene name is valid"
+                    ]
+                )
 
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error creating scene: {error_msg}")
-            self._record_operation("create_scene", scene_name, False, {"error": error_msg})
-            return CreationResult(success=False, error=error_msg)
+            return self._create_error_response(
+                f"Error creating scene: {error_msg}",
+                error_type=ErrorType.OPERATION_ERROR
+            )
 
-    async def open_scene(self, scene_path: str) -> bool:
-        """
-        Open a scene in the editor.
-
-        Args:
-            scene_path: Path to the .tscn file
-
-        Returns:
-            True if successful, False otherwise
-        """
+    async def open_scene(
+        self,
+        scene_path: str,
+        tool_context: Optional[ToolContext] = None
+    ) -> Dict[str, Any]:
+        """Open a scene in the Godot editor."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
+            return self._create_error_response(
+                "Failed to connect to Godot plugin",
+                error_type=ErrorType.CONNECTION_ERROR,
+                retry_after=5
+            )
 
         try:
-            response = await self.bridge.send_command("open_scene", scene_path=scene_path)
+            response = await self.bridge.send_command("open_scene", path=scene_path)
 
             if response.success:
-                self._record_operation("open_scene", scene_path, True)
+                if tool_context:
+                    try:
+                        state = tool_context.agent.state
+                        state.set("active_scene", scene_path)
+                        
+                        if hasattr(state, "get"):
+                            try:
+                                operation_history = state.get("operation_history") or []
+                            except TypeError:
+                                operation_history = state.get("operation_history")
+                                if operation_history is None:
+                                    operation_history = []
+                        else:
+                            operation_history = []
+
+                        operation_history.append({
+                            "type": "open_scene",
+                            "target": scene_path,
+                            "result": True,
+                            "timestamp": time.time()
+                        })
+                        state.set("operation_history", operation_history)
+                    except Exception as e:
+                        logger.warning(f"Failed to update agent state: {e}")
+
                 logger.info(f"Opened scene: {scene_path}")
-                return True
+                return self._create_success_response(
+                    f"Successfully opened scene: {scene_path}",
+                    data={"scene_path": scene_path}
+                )
             else:
                 error_msg = response.error or "Unknown error"
-                self._record_operation("open_scene", scene_path, False, {"error": error_msg})
                 logger.error(f"Failed to open scene: {error_msg}")
-                return False
+
+                return self._create_error_response(
+                    f"Failed to open scene: {error_msg}",
+                    error_type=ErrorType.OPERATION_ERROR,
+                    suggestions=[
+                        f"Verify scene file exists at: {scene_path}",
+                        "Ensure scene file is not corrupted",
+                        "Check file permissions"
+                    ]
+                )
 
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error opening scene: {error_msg}")
-            self._record_operation("open_scene", scene_path, False, {"error": error_msg})
-            return False
+            return self._create_error_response(
+                f"Error opening scene: {error_msg}",
+                error_type=ErrorType.OPERATION_ERROR
+            )
 
-    async def save_current_scene(self) -> bool:
-        """
-        Save the currently active scene.
-
-        Returns:
-            True if successful, False otherwise
-        """
+    async def save_current_scene(
+        self,
+        tool_context: Optional[ToolContext] = None
+    ) -> Dict[str, Any]:
+        """Save the currently active scene in the Godot editor."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
+            return self._create_error_response(
+                "Failed to connect to Godot plugin",
+                error_type=ErrorType.CONNECTION_ERROR,
+                retry_after=5
+            )
 
         try:
             response = await self.bridge.send_command("save_current_scene")
 
             if response.success:
-                self._record_operation("save_scene", "current", True)
-                logger.info("Saved current scene")
-                return True
+                saved_path = response.data.get("scene_path", "current scene")
+
+                if tool_context:
+                    try:
+                        state = tool_context.agent.state
+                        if hasattr(state, "get"):
+                            try:
+                                operation_history = state.get("operation_history") or []
+                            except TypeError:
+                                operation_history = state.get("operation_history")
+                                if operation_history is None:
+                                    operation_history = []
+                        else:
+                            operation_history = []
+
+                        operation_history.append({
+                            "type": "save_scene",
+                            "target": saved_path,
+                            "result": True,
+                            "timestamp": time.time()
+                        })
+                        state.set("operation_history", operation_history)
+                    except Exception as e:
+                        logger.warning(f"Failed to update agent state: {e}")
+
+                logger.info(f"Saved scene: {saved_path}")
+                return self._create_success_response(
+                    f"Successfully saved {saved_path}",
+                    data={"scene_path": saved_path}
+                )
             else:
                 error_msg = response.error or "Unknown error"
-                self._record_operation("save_scene", "current", False, {"error": error_msg})
                 logger.error(f"Failed to save scene: {error_msg}")
-                return False
+
+                return self._create_error_response(
+                    f"Failed to save scene: {error_msg}",
+                    error_type=ErrorType.OPERATION_ERROR,
+                    suggestions=[
+                        "Ensure a scene is currently open",
+                        "Check file permissions for scene file",
+                        "Verify disk space is available"
+                    ]
+                )
 
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error saving scene: {error_msg}")
-            self._record_operation("save_scene", "current", False, {"error": error_msg})
-            return False
-
-    # Selection and Focus
-    async def select_nodes(self, node_paths: List[str]) -> bool:
-        """
-        Select nodes in the editor.
-
-        Args:
-            node_paths: List of node paths to select
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            response = await self.bridge.send_command("select_nodes", node_paths=node_paths)
-
-            if response.success:
-                self._record_operation("select_nodes", str(node_paths), True)
-                logger.info(f"Selected nodes: {node_paths}")
-                return True
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("select_nodes", str(node_paths), False, {"error": error_msg})
-                logger.error(f"Failed to select nodes: {error_msg}")
-                return False
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error selecting nodes: {error_msg}")
-            self._record_operation("select_nodes", str(node_paths), False, {"error": error_msg})
-            return False
-
-    async def focus_node(self, node_path: str) -> bool:
-        """
-        Focus on a specific node in the editor.
-
-        Args:
-            node_path: Path to the node to focus
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            response = await self.bridge.send_command("focus_node", node_path=node_path)
-
-            if response.success:
-                self._record_operation("focus_node", node_path, True)
-                logger.info(f"Focused on node: {node_path}")
-                return True
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("focus_node", node_path, False, {"error": error_msg})
-                logger.error(f"Failed to focus node: {error_msg}")
-                return False
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error focusing node: {error_msg}")
-            self._record_operation("focus_node", node_path, False, {"error": error_msg})
-            return False
-
-    # Project Operations
-    async def play_scene(self) -> bool:
-        """
-        Start playing the current scene.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            response = await self.bridge.send_command("play_scene")
-
-            if response.success:
-                self._record_operation("play_scene", "current", True)
-                logger.info("Started playing scene")
-                return True
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("play_scene", "current", False, {"error": error_msg})
-                logger.error(f"Failed to play scene: {error_msg}")
-                return False
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error playing scene: {error_msg}")
-            self._record_operation("play_scene", "current", False, {"error": error_msg})
-            return False
-
-    async def stop_playing(self) -> bool:
-        """
-        Stop playing the current scene.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            response = await self.bridge.send_command("stop_playing")
-
-            if response.success:
-                self._record_operation("stop_playing", "current", True)
-                logger.info("Stopped playing scene")
-                return True
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("stop_playing", "current", False, {"error": error_msg})
-                logger.error(f"Failed to stop playing: {error_msg}")
-                return False
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error stopping playing: {error_msg}")
-            self._record_operation("stop_playing", "current", False, {"error": error_msg})
-            return False
-
-    # Batch Operations
-    async def create_node_batch(
-        self,
-        creations: List[Dict[str, Any]]
-    ) -> List[CreationResult]:
-        """
-        Create multiple nodes in a batch operation.
-
-        Args:
-            creations: List of creation specifications
-
-        Returns:
-            List of CreationResult objects
-        """
-        results = []
-
-        for creation in creations:
-            result = await self.create_node(**creation)
-            results.append(result)
-
-            # Small delay between operations to prevent overwhelming Godot
-            await asyncio.sleep(0.1)
-
-        return results
-
-    async def modify_properties_batch(
-        self,
-        modifications: List[Dict[str, Any]]
-    ) -> List[ModificationResult]:
-        """
-        Modify multiple properties in a batch operation.
-
-        Args:
-            modifications: List of modification specifications
-
-        Returns:
-            List of ModificationResult objects
-        """
-        results = []
-
-        for modification in modifications:
-            result = await self.modify_node_property(**modification)
-            results.append(result)
-
-            # Small delay between operations
-            await asyncio.sleep(0.1)
-
-        return results
-
-    # Advanced Creation and Deletion Operations
-    async def duplicate_node(self, node_path: str, new_name: Optional[str] = None) -> CreationResult:
-        """
-        Duplicate an existing node in the scene tree.
-
-        Args:
-            node_path: Path to the node to duplicate
-            new_name: Name for the duplicated node (optional)
-
-        Returns:
-            CreationResult with operation outcome
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            params = {"node_path": node_path}
-            if new_name:
-                params["new_name"] = new_name
-
-            response = await self.bridge.send_command("duplicate_node", **params)
-
-            if response.success:
-                duplicated_path = response.data.get("path")
-                self._record_operation("duplicate_node", node_path, True, params)
-                logger.info(f"Duplicated node {node_path} to {duplicated_path}")
-
-                return CreationResult(
-                    success=True,
-                    created_path=duplicated_path,
-                    created_id=response.data.get("id")
-                )
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("duplicate_node", node_path, False, {"error": error_msg})
-                logger.error(f"Failed to duplicate node: {error_msg}")
-
-                return CreationResult(success=False, error=error_msg)
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error duplicating node: {error_msg}")
-            self._record_operation("duplicate_node", node_path, False, {"error": error_msg})
-            return CreationResult(success=False, error=error_msg)
-
-    async def create_resource(
-        self,
-        resource_type: str,
-        resource_path: str,
-        initial_data: Optional[Dict[str, Any]] = None
-    ) -> CreationResult:
-        """
-        Create a new Godot resource file.
-
-        Args:
-            resource_type: Type of resource to create
-            resource_path: Path where to save the resource
-            initial_data: Initial data for the resource (optional)
-
-        Returns:
-            CreationResult with operation outcome
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            params = {
-                "resource_type": resource_type,
-                "resource_path": resource_path
-            }
-            if initial_data:
-                params["initial_data"] = initial_data
-
-            response = await self.bridge.send_command("create_resource", **params)
-
-            if response.success:
-                created_path = response.data.get("path")
-                self._record_operation("create_resource", resource_path, True, params)
-                logger.info(f"Created resource {resource_type} at {created_path}")
-
-                return CreationResult(success=True, created_path=created_path)
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("create_resource", resource_path, False, {"error": error_msg})
-                logger.error(f"Failed to create resource: {error_msg}")
-
-                return CreationResult(success=False, error=error_msg)
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error creating resource: {error_msg}")
-            self._record_operation("create_resource", resource_path, False, {"error": error_msg})
-            return CreationResult(success=False, error=error_msg)
-
-    async def delete_resource(self, resource_path: str) -> bool:
-        """
-        Delete a Godot resource file.
-
-        Args:
-            resource_path: Path to the resource file to delete
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            response = await self.bridge.send_command("delete_resource", resource_path=resource_path)
-
-            if response.success:
-                self._record_operation("delete_resource", resource_path, True)
-                logger.info(f"Deleted resource: {resource_path}")
-                return True
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("delete_resource", resource_path, False, {"error": error_msg})
-                logger.error(f"Failed to delete resource: {error_msg}")
-                return False
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error deleting resource: {error_msg}")
-            self._record_operation("delete_resource", resource_path, False, {"error": error_msg})
-            return False
-
-    async def attach_script_to_node(self, node_path: str, script_path: str) -> bool:
-        """
-        Attach a GDScript to a node.
-
-        Args:
-            node_path: Path to the target node
-            script_path: Path to the GDScript file
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
-        try:
-            response = await self.bridge.send_command(
-                "attach_script_to_node",
-                node_path=node_path,
-                script_path=script_path
+            return self._create_error_response(
+                f"Error saving scene: {error_msg}",
+                error_type=ErrorType.OPERATION_ERROR
             )
 
-            if response.success:
-                self._record_operation("attach_script", node_path, True, {"script_path": script_path})
-                logger.info(f"Attached script {script_path} to {node_path}")
-                return True
-            else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("attach_script", node_path, False, {"error": error_msg})
-                logger.error(f"Failed to attach script: {error_msg}")
-                return False
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error attaching script: {error_msg}")
-            self._record_operation("attach_script", node_path, False, {"error": error_msg})
-            return False
-
-    async def create_and_attach_script(
-        self,
-        node_path: str,
-        script_content: str,
-        script_name: Optional[str] = None
-    ) -> CreationResult:
-        """
-        Create a new GDScript and attach it to a node.
-
-        Args:
-            node_path: Path to the target node
-            script_content: Content of the GDScript
-            script_name: Name for the script file (optional)
-
-        Returns:
-            CreationResult with operation outcome
-        """
+    # Additional methods kept for completeness
+    async def select_nodes(self, node_paths: List[str], tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
+        """Select nodes in the Godot editor."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
+            return self._create_error_response("Failed to connect to Godot plugin", error_type=ErrorType.CONNECTION_ERROR, retry_after=5)
         try:
-            params = {
-                "node_path": node_path,
-                "script_content": script_content
-            }
-            if script_name:
-                params["script_name"] = script_name
-
-            response = await self.bridge.send_command("create_and_attach_script", **params)
-
+            response = await self.bridge.send_command("select_nodes", paths=node_paths)
             if response.success:
-                script_path = response.data.get("script_path")
-                self._record_operation("create_and_attach_script", node_path, True, params)
-                logger.info(f"Created and attached script {script_path} to {node_path}")
-
-                return CreationResult(success=True, created_path=script_path)
+                return self._create_success_response(f"Successfully selected {len(node_paths)} node(s)", data={"selected_nodes": node_paths})
             else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("create_and_attach_script", node_path, False, {"error": error_msg})
-                logger.error(f"Failed to create and attach script: {error_msg}")
-
-                return CreationResult(success=False, error=error_msg)
-
+                return self._create_error_response(f"Failed to select nodes: {response.error or 'Unknown error'}", error_type=ErrorType.OPERATION_ERROR)
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error creating and attaching script: {error_msg}")
-            self._record_operation("create_and_attach_script", node_path, False, {"error": error_msg})
-            return CreationResult(success=False, error=error_msg)
+            return self._create_error_response(f"Error selecting nodes: {str(e)}", error_type=ErrorType.OPERATION_ERROR)
 
-    async def create_node_with_script(
-        self,
-        node_type: str,
-        parent_path: str,
-        script_content: str,
-        node_name: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None
-    ) -> CreationResult:
-        """
-        Create a node with an attached script in one operation.
-
-        Args:
-            node_type: Type of node to create
-            parent_path: Path to parent node
-            script_content: Content of the script to attach
-            node_name: Name for the new node (optional)
-            properties: Initial properties for the node (optional)
-
-        Returns:
-            CreationResult with operation outcome
-        """
+    async def play_scene(self, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
+        """Start playing the current scene in Godot."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
+            return self._create_error_response("Failed to connect to Godot plugin", error_type=ErrorType.CONNECTION_ERROR, retry_after=5)
         try:
-            params = {
-                "node_type": node_type,
-                "parent_path": parent_path,
-                "script_content": script_content
-            }
-            if node_name:
-                params["node_name"] = node_name
-            if properties:
-                params["properties"] = properties
-
-            response = await self.bridge.send_command("create_node_with_script", **params)
-
+            response = await self.bridge.send_command("play", mode="current")
             if response.success:
-                created_path = response.data.get("path")
-                script_path = response.data.get("script_path")
-                self._record_operation("create_node_with_script", parent_path, True, params)
-                logger.info(f"Created node {node_type} with script at {created_path}")
-
-                return CreationResult(
-                    success=True,
-                    created_path=created_path,
-                    created_id=response.data.get("id")
-                )
+                return self._create_success_response("Successfully started playing scene")
             else:
-                error_msg = response.error or "Unknown error"
-                self._record_operation("create_node_with_script", parent_path, False, {"error": error_msg})
-                logger.error(f"Failed to create node with script: {error_msg}")
-
-                return CreationResult(success=False, error=error_msg)
-
+                return self._create_error_response(f"Failed to play scene: {response.error or 'Unknown error'}", error_type=ErrorType.OPERATION_ERROR)
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error creating node with script: {error_msg}")
-            self._record_operation("create_node_with_script", parent_path, False, {"error": error_msg})
-            return CreationResult(success=False, error=error_msg)
+            return self._create_error_response(f"Error playing scene: {str(e)}", error_type=ErrorType.OPERATION_ERROR)
 
-    async def delete_node_batch(self, node_paths: List[str]) -> List[bool]:
-        """
-        Delete multiple nodes in a batch operation.
-
-        Args:
-            node_paths: List of node paths to delete
-
-        Returns:
-            List of bool indicating success for each deletion
-        """
-        results = []
-
-        for node_path in node_paths:
-            result = await self.delete_node(node_path)
-            results.append(result)
-            await asyncio.sleep(0.1)  # Small delay between operations
-
-        return results
-
-    # Utility Methods
-    async def get_operation_history(self) -> List[Dict[str, Any]]:
-        """
-        Get the history of performed operations.
-
-        Returns:
-            List of operation records
-        """
-        return self._operation_history.copy()
-
-    async def clear_operation_history(self):
-        """Clear the operation history."""
-        self._operation_history.clear()
-
-    async def undo_last_operation(self) -> bool:
-        """
-        Attempt to undo the last operation using Godot's undo system.
-
-        Returns:
-            True if undo was successful, False otherwise
-        """
+    async def stop_playing(self, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
+        """Stop playing the current scene in Godot."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
+            return self._create_error_response("Failed to connect to Godot plugin", error_type=ErrorType.CONNECTION_ERROR, retry_after=5)
         try:
-            response = await self.bridge.send_command("undo")
-
+            response = await self.bridge.send_command("stop_playing")
             if response.success:
-                logger.info("Successfully undid last operation")
-                return True
+                return self._create_success_response("Successfully stopped playing scene")
             else:
-                logger.error(f"Failed to undo: {response.error}")
-                return False
-
+                return self._create_error_response(f"Failed to stop playing: {response.error or 'Unknown error'}", error_type=ErrorType.OPERATION_ERROR)
         except Exception as e:
-            logger.error(f"Error during undo: {e}")
-            return False
+            return self._create_error_response(f"Error stopping playing: {str(e)}", error_type=ErrorType.OPERATION_ERROR)
 
-    async def redo_last_operation(self) -> bool:
-        """
-        Attempt to redo the last undone operation using Godot's redo system.
-
-        Returns:
-            True if redo was successful, False otherwise
-        """
+    async def reparent_node(self, node_path: str, new_parent_path: str, new_position: Optional[int] = None, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
+        """Move a node to a new parent in the scene tree."""
         if not await self.ensure_connection():
-            raise ConnectionError("Failed to connect to Godot plugin")
-
+            return self._create_error_response("Failed to connect to Godot plugin", error_type=ErrorType.CONNECTION_ERROR, retry_after=5)
         try:
-            response = await self.bridge.send_command("redo")
-
+            params = {"path": node_path, "new_parent_path": new_parent_path}
+            if new_position is not None:
+                params["index"] = new_position
+            response = await self.bridge.send_command("reparent_node", **params)
             if response.success:
-                logger.info("Successfully redid last operation")
-                return True
+                return self._create_success_response(f"Successfully moved {node_path} to {new_parent_path}", data={"node_path": node_path, "new_parent_path": new_parent_path, "position": new_position})
             else:
-                logger.error(f"Failed to redo: {response.error}")
-                return False
-
+                return self._create_error_response(f"Failed to reparent node: {response.error or 'Unknown error'}", error_type=ErrorType.OPERATION_ERROR)
         except Exception as e:
-            logger.error(f"Error during redo: {e}")
-            return False
+            return self._create_error_response(f"Error reparenting node: {str(e)}", error_type=ErrorType.OPERATION_ERROR)
 
 
-# Convenience functions for direct tool access
-@tool
-async def create_node(node_type: str, parent_path: str, **kwargs) -> CreationResult:
+# ============================================================================
+# Global Shared Instance
+# ============================================================================
+
+_godot_executor_tools_instance = None
+
+
+def get_godot_executor_tools() -> GodotExecutorTools:
+    """Get or create the shared GodotExecutorTools instance."""
+    global _godot_executor_tools_instance
+    if _godot_executor_tools_instance is None:
+        _godot_executor_tools_instance = GodotExecutorTools()
+    return _godot_executor_tools_instance
+
+
+# ============================================================================
+# Tool Wrapper Functions (Top Essential Tools for Start Menu Creation)
+# ============================================================================
+
+@tool(context="tool_context")
+async def create_node(
+    node_type: str,
+    parent_path: str,
+    node_name: Optional[str] = None,
+    properties: Optional[Dict[str, Any]] = None,
+    tool_context: Any = None
+) -> Dict[str, Any]:
     """Create a new node in the Godot scene tree.
 
     Args:
-        node_type: Type of node to create (e.g., 'Node2D', 'Sprite2D', 'Camera2D')
-        parent_path: Path to the parent node where the new node will be added
-        **kwargs: Additional node properties to set
-
+        node_type: Type of node to create (e.g., 'Node2D', 'Sprite2D', 'Camera2D') (Required)
+        parent_path: Path to parent node where the new node will be added (Required)
+        node_name: Name for the new node (optional)
+        properties: Initial properties to set (optional)
     Returns:
-        CreationResult containing success status and created node information
+        Strands-compatible dictionary with operation outcome
+
+    Example:
+        await create_node(
+            node_type="Sprite2D",
+            parent_path="Root/Player",
+            node_name="WeaponSprite",
+            properties={"position": {"x": 10, "y": 0}}
+        )
     """
-    tools = GodotExecutorTools()
-    return await tools.create_node(node_type, parent_path, **kwargs)
+    logger.info(f"🛠️ TOOL CALL: create_node(node_type='{node_type}', parent_path='{parent_path}', node_name='{node_name}', properties={properties})")
+    
+    if not node_type or not parent_path:
+         # This check is technically redundant if types are enforced, but kept for safety
+        return {
+            "status": "error",
+            "error_type": "ValidationError",
+            "content": [{
+                "text": "Both 'node_type' and 'parent_path' are REQUIRED parameters. Please provide them (e.g., node_type='Node2D', parent_path='/root/Main')."
+            }]
+        }
+
+    tools = get_godot_executor_tools()
+    return await tools.create_node(node_type, parent_path, node_name, properties, tool_context)
 
 
-@tool
-async def modify_node_property(node_path: str, property_name: str, new_value: Any) -> ModificationResult:
-    """Modify a property of a node in the Godot scene tree.
-
-    Args:
-        node_path: Path to the node whose property will be modified
-        property_name: Name of the property to modify
-        new_value: New value for the property
-
-    Returns:
-        ModificationResult containing success status and modification details
-    """
-    tools = GodotExecutorTools()
-    return await tools.modify_node_property(node_path, property_name, new_value)
-
-
-@tool
-async def create_scene(scene_name: str, **kwargs) -> CreationResult:
-    """Create a new scene in the Godot project.
-
-    Args:
-        scene_name: Name for the new scene
-        **kwargs: Additional scene configuration options
-
-    Returns:
-        CreationResult containing success status and created scene information
-    """
-    tools = GodotExecutorTools()
-    return await tools.create_new_scene(scene_name, **kwargs)
-
-
-@tool
-async def open_scene(scene_path: str) -> bool:
-    """Open a scene in the Godot editor.
-
-    Args:
-        scene_path: Path to the scene file to open
-
-    Returns:
-        bool: True if scene was opened successfully, False otherwise
-    """
-    tools = GodotExecutorTools()
-    return await tools.open_scene(scene_path)
-
-
-@tool
-async def select_nodes(node_paths: List[str]) -> bool:
-    """Select nodes in the Godot editor.
-
-    Args:
-        node_paths: List of node paths to select
-
-    Returns:
-        bool: True if nodes were selected successfully, False otherwise
-    """
-    tools = GodotExecutorTools()
-    return await tools.select_nodes(node_paths)
-
-
-@tool
-async def play_scene() -> bool:
-    """Start playing the current scene in Godot.
-
-    Returns:
-        bool: True if scene started playing successfully, False otherwise
-    """
-    tools = GodotExecutorTools()
-    return await tools.play_scene()
-
-
-@tool
-async def stop_playing() -> bool:
-    """Stop playing the current scene in Godot.
-
-    Returns:
-        bool: True if scene stopped playing successfully, False otherwise
-    """
-    tools = GodotExecutorTools()
-    return await tools.stop_playing()
-
-
-@tool
-async def delete_node(node_path: str) -> bool:
+@tool(context="tool_context")
+async def delete_node(
+    node_path: str,
+    tool_context: Any = None
+) -> Dict[str, Any]:
     """Delete a node from the Godot scene tree.
 
     Args:
-        node_path: Path to the node to delete (e.g., "Root/Player/Sprite")
-
+        node_path: Path to the node to delete (e.g., "Root/Player/Sprite") (Required)
     Returns:
-        bool: True if node was deleted successfully, False otherwise
+        Strands-compatible dictionary with operation outcome
+
+    Example:
+        await delete_node(node_path="Root/Player/OldWeapon")
     """
-    tools = GodotExecutorTools()
-    return await tools.delete_node(node_path)
+    logger.info(f"🛠️ TOOL CALL: delete_node(node_path='{node_path}')")
+    
+    if not node_path:
+        return {
+            "status": "error",
+            "error_type": "ValidationError",
+            "content": [{"text": "The 'node_path' parameter is REQUIRED. Please specify which node to delete."}]
+        }
+
+    tools = get_godot_executor_tools()
+    return await tools.delete_node(node_path, tool_context)
 
 
-@tool
-async def reparent_node(node_path: str, new_parent_path: str, **kwargs) -> bool:
+@tool(context="tool_context")
+async def modify_node_property(
+    node_path: str,
+    property_name: str,
+    new_value: Any,
+    tool_context: Any = None
+) -> Dict[str, Any]:
+    """Modify a property of a node in the Godot scene tree.
+
+    Args:
+        node_path: Path to the node whose property will be modified (Required)
+        property_name: Name of the property to modify (Required)
+        new_value: New value for the property (Required)
+    Returns:
+        Strands-compatible dictionary with operation outcome
+
+    Example:
+        await modify_node_property(
+            node_path="Root/Player",
+            property_name="position",
+            new_value={"x": 100, "y": 200}
+        )
+    """
+    logger.info(f"🛠️ TOOL CALL: modify_node_property(node_path='{node_path}', property_name='{property_name}', new_value={new_value})")
+    
+    if not node_path or not property_name:
+        return {
+            "status": "error",
+            "error_type": "ValidationError",
+            "content": [{
+                "text": "Parameters 'node_path', 'property_name', and 'new_value' are all REQUIRED. Please provide them."
+            }]
+        }
+
+    tools = get_godot_executor_tools()
+    return await tools.modify_node_property(node_path, property_name, new_value, tool_context)
+
+
+@tool(context="tool_context")
+async def create_scene(
+    scene_name: str,
+    root_node_type: str = "Node",
+    save_path: Optional[str] = None,
+    tool_context: Any = None
+) -> Dict[str, Any]:
+    """Create a new scene in the Godot project.
+
+    Args:
+        scene_name: Name for the new scene (Required)
+        root_node_type: Type of root node (default: "Node")
+        save_path: Path to save the scene (optional)
+    Returns:
+        Strands-compatible dictionary with operation outcome
+
+    Example:
+        await create_scene(
+            scene_name="MainMenu",
+            root_node_type="Control",
+            save_path="res://scenes/main_menu.tscn"
+        )
+    """
+    logger.info(f"🛠️ TOOL CALL: create_scene(scene_name='{scene_name}', root_node_type='{root_node_type}', save_path='{save_path}')")
+    
+    if not scene_name:
+        return {
+            "status": "error",
+            "error_type": "ValidationError",
+            "content": [{
+                "text": "The 'scene_name' parameter is REQUIRED. You must provide a name for the scene (e.g., 'MainMenu', 'GameLevel'). Please retry with a valid 'scene_name'."
+            }]
+        }
+
+    tools = get_godot_executor_tools()
+    return await tools.create_new_scene(scene_name, root_node_type, save_path, tool_context)
+
+
+@tool(context="tool_context")
+async def open_scene(
+    scene_path: str,
+    tool_context: Any = None
+) -> Dict[str, Any]:
+    """Open a scene in the Godot editor.
+
+    Args:
+        scene_path: Path to the .tscn file to open (Required)
+    Returns:
+        Strands-compatible dictionary with operation outcome
+
+    Example:
+        await open_scene(scene_path="res://scenes/level_01.tscn")
+    """
+    if not scene_path:
+        return {
+            "status": "error",
+            "error_type": "ValidationError",
+            "content": [{"text": "The 'scene_path' parameter is REQUIRED. Please specify which scene file to open."}]
+        }
+
+    tools = get_godot_executor_tools()
+    return await tools.open_scene(scene_path, tool_context)
+
+
+@tool(context="tool_context")
+async def save_current_scene(
+    tool_context: Any = None
+) -> Dict[str, Any]:
+    """Save the currently active scene in the Godot editor.
+
+    Args:
+    Returns:
+        Strands-compatible dictionary with operation outcome
+    """
+    tools = get_godot_executor_tools()
+    return await tools.save_current_scene(tool_context)
+
+
+@tool(context="tool_context")
+async def select_nodes(
+    node_paths: List[str],
+    tool_context: Any = None
+) -> Dict[str, Any]:
+    """Select nodes in the Godot editor.
+
+    Args:
+        node_paths: List of node paths to select (Required)
+    Returns:
+        Strands-compatible dictionary with operation outcome
+
+    Example:
+        await select_nodes(node_paths=["Root/Player", "Root/Enemy"])
+    """
+    if not node_paths:
+        return {
+            "status": "error",
+            "error_type": "ValidationError",
+            "content": [{"text": "The 'node_paths' parameter is REQUIRED. Please provide a list of node paths to select."}]
+        }
+
+    tools = get_godot_executor_tools()
+    return await tools.select_nodes(node_paths, tool_context)
+
+
+@tool(context="tool_context")
+async def play_scene(
+    tool_context: Any = None
+) -> Dict[str, Any]:
+    """Start playing the current scene in Godot.
+
+    Args:
+    Returns:
+        Strands-compatible dictionary with operation outcome
+    """
+    tools = get_godot_executor_tools()
+    return await tools.play_scene(tool_context)
+
+
+@tool(context="tool_context")
+async def stop_playing(
+    tool_context: Any = None
+) -> Dict[str, Any]:
+    """Stop playing the current scene in Godot.
+
+    Args:
+    Returns:
+        Strands-compatible dictionary with operation outcome
+    """
+    tools = get_godot_executor_tools()
+    return await tools.stop_playing(tool_context)
+
+
+@tool(context="tool_context")
+async def reparent_node(
+    node_path: str,
+    new_parent_path: str,
+    new_position: Optional[int] = None,
+    tool_context: Any = None
+) -> Dict[str, Any]:
     """Move a node to a new parent in the scene tree.
 
     Args:
-        node_path: Path to the node to move
-        new_parent_path: Path to the new parent node
-        **kwargs: Additional options like position index
-
+        node_path: Path to the node to move (Required)
+        new_parent_path: Path to the new parent node (Required)
+        new_position: Position in new parent's children (optional)
     Returns:
-        bool: True if node was reparented successfully, False otherwise
+        Strands-compatible dictionary with operation outcome
+
+    Example:
+        await reparent_node(
+            node_path="Root/TempItem",
+            new_parent_path="Root/Inventory",
+            new_position=0
+        )
     """
-    tools = GodotExecutorTools()
-    return await tools.reparent_node(node_path, new_parent_path, **kwargs)
+    if not node_path or not new_parent_path:
+        return {
+            "status": "error",
+            "error_type": "ValidationError",
+            "content": [{
+                "text": "Both 'node_path' and 'new_parent_path' are REQUIRED parameters. Please specify which node to move and where."
+            }]
+        }
 
-
-@tool
-async def duplicate_node(node_path: str, new_name: Optional[str] = None) -> CreationResult:
-    """Duplicate an existing node in the scene tree.
-
-    Args:
-        node_path: Path to the node to duplicate
-        new_name: Name for the duplicated node (optional)
-
-    Returns:
-        CreationResult with operation outcome
-    """
-    tools = GodotExecutorTools()
-    return await tools.duplicate_node(node_path, new_name)
-
-
-@tool
-async def create_resource(
-    resource_type: str,
-    resource_path: str,
-    initial_data: Optional[Dict[str, Any]] = None
-) -> CreationResult:
-    """Create a new Godot resource file.
-
-    Args:
-        resource_type: Type of resource to create (e.g., "ShaderMaterial", "GDScript")
-        resource_path: Path where to save the resource
-        initial_data: Initial data for the resource (optional)
-
-    Returns:
-        CreationResult with operation outcome
-    """
-    tools = GodotExecutorTools()
-    return await tools.create_resource(resource_type, resource_path, initial_data)
-
-
-@tool
-async def delete_resource(resource_path: str) -> bool:
-    """Delete a Godot resource file.
-
-    Args:
-        resource_path: Path to the resource file to delete
-
-    Returns:
-        bool: True if resource was deleted successfully, False otherwise
-    """
-    tools = GodotExecutorTools()
-    return await tools.delete_resource(resource_path)
-
-
-@tool
-async def attach_script_to_node(node_path: str, script_path: str) -> bool:
-    """Attach a GDScript to a node.
-
-    Args:
-        node_path: Path to the target node
-        script_path: Path to the GDScript file
-
-    Returns:
-        bool: True if script was attached successfully, False otherwise
-    """
-    tools = GodotExecutorTools()
-    return await tools.attach_script_to_node(node_path, script_path)
-
-
-@tool
-async def create_and_attach_script(node_path: str, script_content: str, script_name: Optional[str] = None) -> CreationResult:
-    """Create a new GDScript and attach it to a node.
-
-    Args:
-        node_path: Path to the target node
-        script_content: Content of the GDScript
-        script_name: Name for the script file (optional)
-
-    Returns:
-        CreationResult with operation outcome
-    """
-    tools = GodotExecutorTools()
-    return await tools.create_and_attach_script(node_path, script_content, script_name)
-
-
-@tool
-async def create_node_with_script(
-    node_type: str,
-    parent_path: str,
-    script_content: str,
-    node_name: Optional[str] = None,
-    properties: Optional[Dict[str, Any]] = None
-) -> CreationResult:
-    """Create a node with an attached script in one operation.
-
-    Args:
-        node_type: Type of node to create
-        parent_path: Path to parent node
-        script_content: Content of the script to attach
-        node_name: Name for the new node (optional)
-        properties: Initial properties for the node (optional)
-
-    Returns:
-        CreationResult with operation outcome
-    """
-    tools = GodotExecutorTools()
-    return await tools.create_node_with_script(node_type, parent_path, script_content, node_name, properties)
-
-
-@tool
-async def batch_create_nodes(creations: List[Dict[str, Any]]) -> List[CreationResult]:
-    """Create multiple nodes in a batch operation.
-
-    Args:
-        creations: List of node creation specifications
-
-    Returns:
-        List of CreationResult objects
-    """
-    tools = GodotExecutorTools()
-    return await tools.create_node_batch(creations)
-
-
-@tool
-async def batch_delete_nodes(node_paths: List[str]) -> List[bool]:
-    """Delete multiple nodes in a batch operation.
-
-    Args:
-        node_paths: List of node paths to delete
-
-    Returns:
-        List of bool indicating success for each deletion
-    """
-    tools = GodotExecutorTools()
-    return await tools.delete_node_batch(node_paths)
-
-
-@tool
-async def batch_modify_properties(modifications: List[Dict[str, Any]]) -> List[ModificationResult]:
-    """Modify multiple properties in a batch operation.
-
-    Args:
-        modifications: List of property modification specifications
-
-    Returns:
-        List of ModificationResult objects
-    """
-    tools = GodotExecutorTools()
-    return await tools.modify_properties_batch(modifications)
+    tools = get_godot_executor_tools()
+    return await tools.reparent_node(node_path, new_parent_path, new_position, tool_context)

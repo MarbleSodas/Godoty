@@ -51,6 +51,22 @@ def create_app():
     warnings.simplefilter("ignore", UserWarning)
     warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
 
+    # Configure logging
+    import logging
+    import sys
+    
+    # Setup basic logging configuration if not already set
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True  # Force reconfiguration to ensure our settings apply
+    )
+    
+    # Ensure specific loggers are set to INFO
+    logging.getLogger("agents").setLevel(logging.INFO)
+    logging.getLogger("backend.agents").setLevel(logging.INFO)
+
     from fastapi.middleware.cors import CORSMiddleware
     from api import agent_router
     from api.health_routes import router as health_router
@@ -260,7 +276,7 @@ class UvicornServer(multiprocessing.Process):
                 app,
                 host=self.host,
                 port=self.port,
-                log_level="warning"
+                log_level="info"
             )
             server = uvicorn.Server(config=config)
             server.run()

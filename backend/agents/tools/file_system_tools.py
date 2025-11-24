@@ -19,6 +19,7 @@ from typing import Optional
 import aiofiles
 
 from strands import tool
+from .godot_bridge import get_godot_bridge
 
 from ..types.tool_types import (
     ToolResponse,
@@ -38,6 +39,30 @@ from ..utils.error_handlers import (
 
 # Configure module logger
 logger = logging.getLogger(__name__)
+
+
+def _resolve_to_project(path_str: str) -> Path:
+    """Resolve a path string to an absolute path within the project."""
+    # Handle Godot resource paths
+    if path_str.startswith("res://"):
+        path_str = path_str[6:]
+        
+    path = Path(path_str)
+    if path.is_absolute():
+        return path.resolve()
+
+    bridge = get_godot_bridge()
+    if bridge.project_info and bridge.project_info.project_path:
+        return (Path(bridge.project_info.project_path) / path).resolve()
+    
+    # Fallback: detect project.godot
+    current = Path.cwd()
+    while current != current.parent:
+        if (current / "project.godot").exists():
+            return (current / path).resolve()
+        current = current.parent
+        
+    return path.resolve()
 
 
 @tool
@@ -72,13 +97,24 @@ async def read_file(file_path: FilePath) -> ToolResponse:
         - Binary files are read but may contain unreadable characters
     """
     try:
+        # Resolve path relative to project
+        resolved_path = _resolve_to_project(file_path)
+
         # Validate and resolve path with security checks
         path = validate_path(
-            file_path,
+            str(resolved_path),
             operation_name="file reading",
             must_exist=True,
             must_be_file=True
         )
+
+        # Check path safety with GodotBridge
+        bridge = get_godot_bridge()
+        if not bridge.is_path_safe(path):
+            return create_error_response(
+                f"Access denied: Path '{path}' is outside the project directory",
+                "PathValidationError"
+            )
 
         # Read file content asynchronously with proper encoding handling
         async with aiofiles.open(
@@ -154,12 +190,21 @@ async def list_files(
         - Uses emoji indicators for visual clarity
     """
     # Validate and resolve directory path
+    resolved_path = _resolve_to_project(directory)
     dir_path = validate_path(
-        directory,
+        str(resolved_path),
         operation_name="directory listing",
         must_exist=True,
         must_be_file=False
     )
+
+    # Check path safety with GodotBridge
+    bridge = get_godot_bridge()
+    if not bridge.is_path_safe(dir_path):
+        return create_error_response(
+            f"Access denied: Path '{dir_path}' is outside the project directory",
+            "PathValidationError"
+        )
 
     # Initialize collections for organized output
     files: list[str] = []
@@ -311,12 +356,21 @@ async def search_codebase(
         ValueError: If the regex pattern is invalid
     """
     # Validate and resolve search directory
+    resolved_path = _resolve_to_project(directory)
     dir_path = validate_path(
-        directory,
+        str(resolved_path),
         operation_name="codebase searching",
         must_exist=True,
         must_be_file=False
     )
+
+    # Check path safety with GodotBridge
+    bridge = get_godot_bridge()
+    if not bridge.is_path_safe(dir_path):
+        return create_error_response(
+            f"Access denied: Path '{dir_path}' is outside the project directory",
+            "PathValidationError"
+        )
 
     # Compile and validate regex pattern
     try:

@@ -67,6 +67,8 @@ func execute_command(command: Dictionary):
 			return _get_debug_output(command)
 		"get_project_path":
 			return _get_project_path(command)
+		"get_project_info":
+			return _get_project_info(command)
 		# Visual context commands
 		"capture_visual_context":
 			return await _capture_visual_context(command)
@@ -76,11 +78,61 @@ func execute_command(command: Dictionary):
 			return _enable_auto_visual_capture(command)
 		"disable_auto_visual_capture":
 			return _disable_auto_visual_capture(command)
+		"save_current_scene":
+			return _save_current_scene(command)
+		"stop_playing":
+			return _stop_playing(command)
+		"create_resource":
+			return _create_resource(command)
+		"delete_resource":
+			return _delete_resource(command)
+		"create_and_attach_script":
+			return _create_and_attach_script(command)
+		"create_node_with_script":
+			return _create_node_with_script(command)
 		_:
 			return {
 				"status": "error",
 				"message": "Unknown action: %s" % action
 			}
+
+# Helper function to resolve node paths smartly
+func _resolve_node(path_str: String) -> Node:
+	if path_str.is_empty():
+		return null
+
+	var editor_interface = editor_plugin.get_editor_interface()
+	var edited_scene = editor_interface.get_edited_scene_root()
+
+	if not edited_scene:
+		return null
+
+	# Case 1: Special markers for root
+	if path_str == "/" or path_str == ".":
+		return edited_scene
+
+	# Case 2: Try as relative path first (standard behavior)
+	var node = edited_scene.get_node_or_null(path_str)
+	if node:
+		return node
+
+	# Case 3: Try resolving if path starts with scene root name (user convenience)
+	var root_name := str(edited_scene.name)
+	if path_str == root_name:
+		return edited_scene
+	elif path_str.begins_with(root_name + "/"):
+		var stripped := path_str.substr(root_name.length() + 1)
+		node = edited_scene.get_node_or_null(stripped)
+		if node:
+			return node
+
+	# Case 4: Try absolute path but ensure it's inside edited scene
+	if path_str.begins_with("/root/"):
+		node = editor_plugin.get_tree().get_root().get_node_or_null(path_str)
+		if node and (node == edited_scene or edited_scene.is_ancestor_of(node)):
+			return node
+		
+	return null
 
 func _create_node(command: Dictionary) -> Dictionary:
 	var node_type = command.get("type", "")
@@ -111,32 +163,15 @@ func _create_node(command: Dictionary) -> Dictionary:
 
 	new_node.name = node_name
 
-	# Resolve parent node (supports relative paths, "/" or "." for root, root-name-prefixed paths, and absolute paths inside edited scene)
+	# Resolve parent node
 	var parent_node: Node = edited_scene
 	if parent_path and not String(parent_path).is_empty():
-		var p_str := str(parent_path)
-		if p_str == "/" or p_str == ".":
-			parent_node = edited_scene
+		var resolved = _resolve_node(str(parent_path))
+		if resolved:
+			parent_node = resolved
 		else:
-			# Try relative to edited scene first
-			var np: NodePath = parent_path if typeof(parent_path) == TYPE_NODE_PATH else NodePath(p_str)
-			parent_node = edited_scene.get_node_or_null(np)
-			if not parent_node:
-				# Convenience: allow paths that start with the scene root name (e.g. "Root/..." or exactly "Root")
-				var root_name := str(edited_scene.name)
-				if p_str == root_name:
-					parent_node = edited_scene
-				elif p_str.begins_with(root_name + "/"):
-					var stripped := p_str.substr(root_name.length() + 1)
-					parent_node = edited_scene.get_node_or_null(stripped)
-			if not parent_node:
-				# If absolute, try resolving from the SceneTree root, but ensure it's inside the edited scene
-				var from_root := editor_plugin.get_tree().get_root().get_node_or_null(np)
-				if from_root and (from_root == edited_scene or edited_scene.is_ancestor_of(from_root)):
-					parent_node = from_root
-			if not parent_node:
-				new_node.free()
-				return {"status": "error", "message": "Parent node not found or not in edited scene: %s" % p_str, "suggestion": "If referring to the scene root ('%s'), use '/' or '.' or omit the parent. If your path starts with '%s/', drop that prefix." % [edited_scene.name, edited_scene.name]}
+			new_node.free()
+			return {"status": "error", "message": "Parent node not found: %s" % parent_path, "suggestion": "Check parent path"}
 
 	# Determine correct owner for saving (match parent's owner, fallback to scene root)
 	var owner_for_save: Node = parent_node.owner if parent_node.owner else edited_scene
@@ -188,7 +223,7 @@ func _delete_node(command: Dictionary) -> Dictionary:
 			"suggestion": "Use create_scene or open an existing scene"
 		}
 
-	var node: Node = edited_scene.get_node_or_null(node_path)
+	var node: Node = _resolve_node(node_path)
 	if not node:
 		return {"status": "error", "message": "Node not found: %s" % node_path}
 
@@ -234,7 +269,7 @@ func _modify_node(command: Dictionary) -> Dictionary:
 			"suggestion": "Use create_scene or open an existing scene"
 		}
 
-	var node = edited_scene.get_node_or_null(node_path)
+	var node = _resolve_node(node_path)
 	if not node:
 		return {"status": "error", "message": "Node not found: %s" % node_path}
 
@@ -244,13 +279,24 @@ func _modify_node(command: Dictionary) -> Dictionary:
 	for prop_name in properties:
 		# Verify property exists on the node
 		var exists := false
+		var prop_type = TYPE_NIL
 		for p in node.get_property_list():
 			if p.get("name", "") == prop_name:
 				exists = true
+				prop_type = p.get("type")
 				break
 		if exists:
 			var old_val = node.get(prop_name)
 			var new_val = properties[prop_name]
+			
+			# Handle Resource loading for Object types (like Script)
+			if prop_type == TYPE_OBJECT and typeof(new_val) == TYPE_STRING and new_val.begins_with("res://"):
+				var res = load(new_val)
+				if res:
+					new_val = res
+				else:
+					push_warning("Failed to load resource from path: %s" % new_val)
+			
 			ur.add_do_property(node, prop_name, new_val)
 			ur.add_undo_property(node, prop_name, old_val)
 			modified_props.append(prop_name)
@@ -288,7 +334,7 @@ func _attach_script(command: Dictionary) -> Dictionary:
 			"suggestion": "Use create_scene or open an existing scene"
 		}
 
-	var node = edited_scene.get_node_or_null(node_path)
+	var node = _resolve_node(node_path)
 	if not node:
 		return {"status": "error", "message": "Node not found: %s" % node_path}
 
@@ -449,8 +495,6 @@ func _instantiate_node_by_type(type_name: String) -> Node:
 			push_error("Unknown node type: %s" % type_name)
 			return null
 
-
-
 	# === Editor integration commands ===
 func _select_nodes(command: Dictionary) -> Dictionary:
 		var paths: Array = command.get("paths", [])
@@ -466,8 +510,7 @@ func _select_nodes(command: Dictionary) -> Dictionary:
 			selection.clear()
 		var added := []
 		for p in paths:
-			var np: NodePath = p if typeof(p) == TYPE_NODE_PATH else NodePath(str(p))
-			var n = edited_scene.get_node_or_null(np)
+			var n = _resolve_node(str(p))
 			if n:
 				selection.add_node(n)
 				added.append(str(edited_scene.get_path_to(n)))
@@ -482,7 +525,7 @@ func _focus_node(command: Dictionary) -> Dictionary:
 		var edited_scene = editor_interface.get_edited_scene_root()
 		if not edited_scene:
 			return {"status": "error", "message": "No scene is currently open."}
-		var node = edited_scene.get_node_or_null(path)
+		var node = _resolve_node(path)
 		if not node:
 			return {"status": "error", "message": "Node not found: %s" % path}
 		editor_interface.edit_node(node)
@@ -535,7 +578,6 @@ func _add_command_palette_command(command: Dictionary) -> Dictionary:
 		var callable := Callable(self, "_on_palette_command").bind(action_to_execute, payload)
 		cp.add_command(display_name, key, callable)
 		return {"status": "success", "message": "Command added to palette", "data": {"key": key, "display_name": display_name}}
-
 
 	# === Search commands ===
 func _search_nodes_by_type(command: Dictionary) -> Dictionary:
@@ -691,7 +733,7 @@ func _duplicate_node(command: Dictionary) -> Dictionary:
 		var edited_scene: Node = editor_interface.get_edited_scene_root()
 		if not edited_scene:
 			return {"status": "error", "message": "No scene is currently open."}
-		var node: Node = edited_scene.get_node_or_null(path)
+		var node: Node = _resolve_node(path)
 		if not node:
 			return {"status": "error", "message": "Node not found: %s" % path}
 		var current_parent: Node = node.get_parent()
@@ -700,27 +742,9 @@ func _duplicate_node(command: Dictionary) -> Dictionary:
 		var target_parent: Node = current_parent
 		if parent_path_val and not String(parent_path_val).is_empty():
 			var p_str := str(parent_path_val)
-			var np: NodePath = parent_path_val if typeof(parent_path_val) == TYPE_NODE_PATH else NodePath(p_str)
-			if p_str == "/" or p_str == ".":
-				target_parent = edited_scene
-			else:
-				# Try relative to edited scene first
-				target_parent = edited_scene.get_node_or_null(np)
-				if not target_parent:
-					# Convenience: allow paths that start with the scene root name (e.g. "Root/..." or exactly "Root")
-					var root_name := str(edited_scene.name)
-					if p_str == root_name:
-						target_parent = edited_scene
-					elif p_str.begins_with(root_name + "/"):
-						var stripped := p_str.substr(root_name.length() + 1)
-						target_parent = edited_scene.get_node_or_null(stripped)
-				if not target_parent:
-					# Try resolving from the SceneTree root, but keep within edited scene subtree
-					var from_root := editor_plugin.get_tree().get_root().get_node_or_null(np)
-					if from_root and (from_root == edited_scene or edited_scene.is_ancestor_of(from_root)):
-						target_parent = from_root
+			target_parent = _resolve_node(p_str)
 			if not target_parent:
-				return {"status": "error", "message": "Parent node not found or not in edited scene: %s" % p_str, "suggestion": "If referring to the scene root ('%s'), use '/' or '.' or omit the parent. If your path starts with '%s/', drop that prefix." % [edited_scene.name, edited_scene.name]}
+				return {"status": "error", "message": "Parent node not found: %s" % p_str}
 		# Duplicate with scripts, groups, and signals
 		var flags: int = Node.DUPLICATE_SIGNALS | Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
 		var dup: Node = node.duplicate(flags)
@@ -767,28 +791,15 @@ func _reparent_node(command: Dictionary) -> Dictionary:
 		var edited_scene: Node = editor_interface.get_edited_scene_root()
 		if not edited_scene:
 			return {"status": "error", "message": "No scene is currently open."}
-		var node: Node = edited_scene.get_node_or_null(path)
+		var node: Node = _resolve_node(path)
 		if not node:
 			return {"status": "error", "message": "Node not found: %s" % path}
 		var old_parent: Node = node.get_parent()
 		if old_parent == null:
 			return {"status": "error", "message": "Node has no parent (can't reparent rootless node)"}
-		var np: NodePath = NodePath(new_parent_path)
-		var dest_parent: Node = edited_scene.get_node_or_null(np)
+		var dest_parent: Node = _resolve_node(new_parent_path)
 		if not dest_parent:
-			# Convenience: allow root-name-prefixed paths
-			var root_name := str(edited_scene.name)
-			if new_parent_path == root_name:
-				dest_parent = edited_scene
-			elif String(new_parent_path).begins_with(root_name + "/"):
-				var stripped := String(new_parent_path).substr(root_name.length() + 1)
-				dest_parent = edited_scene.get_node_or_null(stripped)
-		if not dest_parent:
-			var from_root := editor_plugin.get_tree().get_root().get_node_or_null(np)
-			if from_root and (from_root == edited_scene or edited_scene.is_ancestor_of(from_root)):
-				dest_parent = from_root
-		if not dest_parent:
-			return {"status": "error", "message": "Destination parent not found or not in edited scene: %s" % new_parent_path, "suggestion": "If referring to the scene root ('%s'), use '/' or '.' or omit the root name prefix." % edited_scene.name}
+			return {"status": "error", "message": "Destination parent not found: %s" % new_parent_path}
 		if node == dest_parent or node.is_ancestor_of(dest_parent):
 			return {"status": "error", "message": "Cannot reparent a node under itself or its descendant"}
 		if not keep_param_present:
@@ -839,7 +850,7 @@ func _rename_node(command: Dictionary) -> Dictionary:
 		var edited_scene: Node = editor_interface.get_edited_scene_root()
 		if not edited_scene:
 			return {"status": "error", "message": "No scene is currently open."}
-		var node: Node = edited_scene.get_node_or_null(path)
+		var node: Node = _resolve_node(path)
 		if not node:
 			return {"status": "error", "message": "Node not found: %s" % path}
 		var parent := node.get_parent()
@@ -867,7 +878,7 @@ func _add_to_group(command: Dictionary) -> Dictionary:
 		var edited_scene: Node = editor_interface.get_edited_scene_root()
 		if not edited_scene:
 			return {"status": "error", "message": "No scene is currently open."}
-		var node: Node = edited_scene.get_node_or_null(path)
+		var node: Node = _resolve_node(path)
 		if not node:
 			return {"status": "error", "message": "Node not found: %s" % path}
 		if node.is_in_group(group):
@@ -889,7 +900,7 @@ func _remove_from_group(command: Dictionary) -> Dictionary:
 		var edited_scene: Node = editor_interface.get_edited_scene_root()
 		if not edited_scene:
 			return {"status": "error", "message": "No scene is currently open."}
-		var node: Node = edited_scene.get_node_or_null(path)
+		var node: Node = _resolve_node(path)
 		if not node:
 			return {"status": "error", "message": "Node not found: %s" % path}
 		if not node.is_in_group(group):
@@ -1003,7 +1014,7 @@ func _capture_game_screenshot(command: Dictionary) -> Dictionary:
 	file.close()
 
 	# Return relative path from project root
-	var relative_path = filepath.replace(project_path, "").trim_prefix("/").trim_prefix("\\")
+	var relative_path = filepath.replace(project_path, "").trim_prefix("/").trim_prefix("\થી")
 
 	return {
 		"status": "success",
@@ -1095,7 +1106,7 @@ func _extract_basic_properties(node: Node) -> Dictionary:
 		if _has_property(node, "rotation_degrees"): props["rotation_degrees"] = node.get("rotation_degrees")
 		if _has_property(node, "scale"): props["scale"] = node.get("scale")
 		if _has_property(node, "visible"): props["visible"] = node.get("visible")
-	elif node is Control:
+elif node is Control:
 		if _has_property(node, "position"): props["position"] = node.get("position")
 		if _has_property(node, "size"): props["size"] = node.get("size")
 		for an in ["anchor_left", "anchor_top", "anchor_right", "anchor_bottom"]:
@@ -1178,6 +1189,38 @@ func _get_project_path(command: Dictionary) -> Dictionary:
 		"message": "Retrieved project path",
 		"data": {
 			"project_path": project_path
+		}
+	}
+
+func _get_project_info(command: Dictionary) -> Dictionary:
+	var project_path := ProjectSettings.globalize_path("res://")
+	
+	# Get Godot version info
+	var version_info := Engine.get_version_info()
+	var godot_version := "%d.%d.%d" % [version_info.major, version_info.minor, version_info.patch]
+	if version_info.status:
+		godot_version += "-%s" % version_info.status
+
+	# Get project settings
+	var project_name := ProjectSettings.get_setting("application/config/name", "Unknown")
+	var project_settings := {
+		"name": project_name,
+		"main_scene": ProjectSettings.get_setting("application/run/main_scene", ""),
+		"viewport_width": ProjectSettings.get_setting("display/window/size/viewport_width", 1920),
+		"viewport_height": ProjectSettings.get_setting("display/window/size/viewport_height", 1080),
+		"renderer": ProjectSettings.get_setting("rendering/renderer/rendering_method", "forward_plus")
+	}
+
+	return {
+		"status": "success",
+		"message": "Project info retrieved",
+		"data": {
+			"project_path": project_path,
+			"project_name": project_name,
+			"godot_version": godot_version,
+			"plugin_version": "0.1.0",
+			"is_ready": true,
+			"project_settings": project_settings
 		}
 	}
 
@@ -1469,3 +1512,111 @@ func _extract_node_properties(node: Node) -> Dictionary:
 
 	return props
 
+
+func _save_current_scene(command: Dictionary) -> Dictionary:
+	var editor_interface = editor_plugin.get_editor_interface()
+	var err = editor_interface.save_scene()
+	if err != OK:
+		return {"status": "error", "message": "Failed to save scene: %s" % error_string(err)}
+	return {"status": "success", "message": "Saved current scene"}
+
+func _stop_playing(command: Dictionary) -> Dictionary:
+	var editor_interface = editor_plugin.get_editor_interface()
+	editor_interface.stop_playing_scene()
+	return {"status": "success", "message": "Stopped playing scene"}
+
+func _create_resource(command: Dictionary) -> Dictionary:
+	var type = command.get("resource_type", "")
+	var path = command.get("resource_path", "")
+	var data = command.get("initial_data", {})
+
+	if type.is_empty() or path.is_empty():
+		return {"status": "error", "message": "resource_type and resource_path are required"}
+
+	if not ClassDB.class_exists(type) or not ClassDB.is_parent_class(type, "Resource"):
+		return {"status": "error", "message": "Invalid resource type: %s" % type}
+
+	var res = ClassDB.instantiate(type)
+	for key in data:
+		res.set(key, data[key])
+
+	var err = ResourceSaver.save(res, path)
+	if err != OK:
+		return {"status": "error", "message": "Failed to save resource: %s" % error_string(err)}
+
+	return {"status": "success", "message": "Created resource: %s" % path, "data": {"path": path}}
+
+func _delete_resource(command: Dictionary) -> Dictionary:
+	var path = command.get("resource_path", "")
+	if path.is_empty():
+		return {"status": "error", "message": "resource_path is required"}
+
+	var dir = DirAccess.open("res://")
+	if dir.file_exists(path):
+		var err = dir.remove(path)
+		if err != OK:
+			return {"status": "error", "message": "Failed to delete resource: %s" % error_string(err)}
+		return {"status": "success", "message": "Deleted resource: %s" % path}
+	else:
+		return {"status": "error", "message": "Resource not found: %s" % path}
+
+func _create_and_attach_script(command: Dictionary) -> Dictionary:
+	var node_path = command.get("node_path", "")
+	var script_content = command.get("script_content", "")
+	var script_name = command.get("script_name", "")
+
+	if node_path.is_empty() or script_content.is_empty():
+		return {"status": "error", "message": "node_path and script_content are required"}
+
+	var editor_interface = editor_plugin.get_editor_interface()
+	var edited_scene = editor_interface.get_edited_scene_root()
+	if not edited_scene:
+		return {"status": "error", "message": "No scene is currently open"}
+
+	var node = _resolve_node(node_path)
+	if not node:
+		return {"status": "error", "message": "Node not found: %s" % node_path}
+
+	var script = GDScript.new()
+	script.source_code = script_content
+	var err = script.reload()
+	if err != OK:
+		return {"status": "error", "message": "Script compilation failed: %s" % error_string(err)}
+
+	var script_path = ""
+	if not script_name.is_empty():
+		script_path = "res://%s" % script_name
+		if not script_path.ends_with(".gd"):
+			script_path += ".gd"
+		var save_err = ResourceSaver.save(script, script_path)
+		if save_err != OK:
+			return {"status": "error", "message": "Failed to save script: %s" % error_string(save_err)}
+
+	var ur = editor_plugin.get_undo_redo()
+	ur.create_action("Attach Script to %s" % node.name)
+	ur.add_do_method(node, "set_script", script)
+	ur.add_undo_method(node, "set_script", node.get_script())
+	ur.commit_action()
+
+	editor_interface.mark_scene_as_unsaved()
+
+	return {"status": "success", "message": "Created and attached script", "data": {"script_path": script_path}}
+
+func _create_node_with_script(command: Dictionary) -> Dictionary:
+	# First create node
+	var create_res = _create_node(command)
+	if create_res.status == "error":
+		return create_res
+
+	var node_path = create_res.data.node_path
+
+	# Then attach script
+	var attach_cmd = command.duplicate()
+	attach_cmd["node_path"] = node_path
+	# script_content should be in command
+
+	var attach_res = _create_and_attach_script(attach_cmd)
+	if attach_res.status == "error":
+		return attach_res
+
+	return {"status": "success", "message": "Created node with script", "data": {"node_path": node_path, "script_path": attach_res.data.script_path}}

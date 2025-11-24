@@ -5,6 +5,8 @@ signal client_connected(ws: WebSocketPeer)
 
 var server: TCPServer
 var peers: Array[StreamPeerTCP] = []
+# Mapping from StreamPeerTCP (instance id or ref) to the pending WebSocketPeer
+var pending_handshakes: Dictionary = {} 
 var websocket_peers: Array[WebSocketPeer] = []
 var ws_open_emitted: Dictionary = {}
 var port: int = 9001
@@ -28,6 +30,9 @@ func _close_all_connections() -> void:
 	for ws in websocket_peers:
 		ws.close()
 	websocket_peers.clear()
+	
+	# Clear pending handshakes
+	pending_handshakes.clear()
 
 	for peer in peers:
 		peer.disconnect_from_host()
@@ -60,13 +65,18 @@ func _process_tcp_peers() -> void:
 		var peer = peers[i]
 
 		if not _is_tcp_connected(peer):
-			print("Godoty: TCP connection closed")
+			print("Godoty: TCP connection closed during handshake/wait")
+			# Cleanup pending handshake if exists
+			if pending_handshakes.has(peer):
+				pending_handshakes.erase(peer)
 			peers.remove_at(i)
 			continue
 
-		if peer.get_available_bytes() > 0:
-			if _try_upgrade_to_websocket(peer, i):
-				continue
+		# Try to upgrade or continue handshake
+		if _try_upgrade_to_websocket(peer, i):
+			# If returns true, the peer was removed from 'peers' list and moved to 'websocket_peers'
+			# So we don't increment i, as the array shifted
+			continue
 
 		i += 1
 
@@ -91,14 +101,39 @@ func _is_tcp_connected(peer: StreamPeerTCP) -> bool:
 	return peer.get_status() == StreamPeerTCP.STATUS_CONNECTED
 
 func _try_upgrade_to_websocket(peer: StreamPeerTCP, index: int) -> bool:
-	var ws = WebSocketPeer.new()
+	var ws: WebSocketPeer
+	
+	# Check if we already have a pending handshake for this peer
+	if pending_handshakes.has(peer):
+		ws = pending_handshakes[peer]
+	else:
+		# Start new handshake
+		ws = WebSocketPeer.new()
+		pending_handshakes[peer] = ws
+	
+	# Attempt/Continue handshake
+	# accept_stream needs to be called repeatedly until it returns OK (connected) or Error
+	# It returns ERR_UNAVAILABLE if it needs more data/time
 	var err = ws.accept_stream(peer)
+	
 	if err == OK:
+		# Handshake complete!
 		websocket_peers.append(ws)
+		pending_handshakes.erase(peer)
 		peers.remove_at(index)
 		print("Godoty: WebSocket connection established")
 		return true
-	return false
+		
+	elif err == ERR_UNAVAILABLE:
+		# Still negotiating, keep in pending
+		return false
+		
+	else:
+		# Handshake failed
+		print("Godoty: WebSocket upgrade failed: ", error_string(err))
+		pending_handshakes.erase(peer)
+		peers.remove_at(index)
+		return true
 
 func _handle_websocket_open(ws: WebSocketPeer) -> void:
 	var id := ws.get_instance_id()
@@ -152,4 +187,3 @@ func _send_error_response(ws: WebSocketPeer, message: String) -> void:
 		"status": "error",
 		"message": message
 	})
-

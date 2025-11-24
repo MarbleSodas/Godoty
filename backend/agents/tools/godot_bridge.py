@@ -38,7 +38,7 @@ class GodotProjectInfo:
     godot_version: str = ""
     plugin_version: str = ""
     project_settings: Dict[str, Any] = field(default_factory=dict)
-    is_ready: bool = False
+    is_ready: bool = True
 
 
 @dataclass
@@ -86,10 +86,13 @@ class GodotBridge:
         self.connection_state = ConnectionState.DISCONNECTED
         self.project_info: Optional[GodotProjectInfo] = None
 
-  
+
         # Command management
         self._command_id_counter = 0
         self._pending_commands: Dict[str, asyncio.Future] = {}
+
+        # Message listener task tracking
+        self._message_listener_task: Optional[asyncio.Task] = None
 
         # Event handling
         self._message_handlers: Dict[str, callable] = {}
@@ -131,10 +134,12 @@ class GodotBridge:
                 )
 
                 self.connection_state = ConnectionState.CONNECTED
-                logger.info(f"Successfully connected to Godot plugin (attempt {attempt + 1})")
+                logger.info(f"✓ Successfully connected to Godot plugin at {uri} (attempt {attempt + 1})")
 
-                # Start message listener task
-                asyncio.create_task(self._message_listener())
+                # Start message listener task and track it
+                logger.info("🎧 Starting WebSocket message listener")
+                self._message_listener_task = asyncio.create_task(self._message_listener())
+                self._message_listener_task.add_done_callback(self._on_listener_done)
 
                 # Notify connection callbacks
                 for callback in self._connection_callbacks:
@@ -160,6 +165,16 @@ class GodotBridge:
 
     async def disconnect(self):
         """Close WebSocket connection and cleanup resources."""
+        # Cancel message listener task
+        if self._message_listener_task and not self._message_listener_task.done():
+            logger.info("🛑 Cancelling message listener task")
+            self._message_listener_task.cancel()
+            try:
+                await self._message_listener_task
+            except asyncio.CancelledError:
+                pass
+            self._message_listener_task = None
+
         if self.websocket:
             try:
                 await self.websocket.close()
@@ -177,7 +192,7 @@ class GodotBridge:
                 future.set_exception(ConnectionError("Connection closed"))
 
         self._pending_commands.clear()
-        logger.info("Disconnected from Godot plugin")
+        logger.info("🔌 Disconnected from Godot plugin")
 
     async def is_connected(self) -> bool:
         """Check if WebSocket connection is active and healthy."""
@@ -204,10 +219,19 @@ class GodotBridge:
             CommandResponse with execution result
         """
         if not await self.is_connected():
+            logger.info(f"🔌 Not connected, attempting to connect to Godot for command: {command_type}")
             if not await self.connect():
+                logger.error(f"❌ Failed to establish connection to Godot for command: {command_type}")
                 raise ConnectionError("Failed to connect to Godot plugin")
 
-    
+        # Verify WebSocket is actually open (not just state check)
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(f"⚠️ WebSocket is not open despite connected state, reconnecting...")
+            self.connection_state = ConnectionState.DISCONNECTED
+            if not await self.connect():
+                logger.error(f"❌ Failed to reconnect WebSocket for command: {command_type}")
+                raise ConnectionError("WebSocket not open and reconnection failed")
+
         # Generate unique command ID
         self._command_id_counter += 1
         command_id = f"cmd_{self._command_id_counter}"
@@ -215,7 +239,7 @@ class GodotBridge:
         # Prepare command message
         command = {
             "id": command_id,
-            "type": command_type,
+            "action": command_type,
             "timestamp": asyncio.get_event_loop().time(),
             **kwargs
         }
@@ -227,22 +251,25 @@ class GodotBridge:
         try:
             # Send command
             message = json.dumps(command)
+            # logger.info(f"📤 Sending command {command_id}: {command_type} with params: {list(kwargs.keys())}")
+            logger.info(f"📤 SENDING RAW WEBSOCKET MESSAGE: {message}")
             await self.websocket.send(message)
-            logger.debug(f"Sent command {command_id}: {command_type}")
+            logger.info(f"✓ Sent command {command_id}: {command_type} to Godot, waiting for response...")
 
             # Wait for response with timeout
             response = await asyncio.wait_for(response_future, timeout=self.command_timeout)
+            logger.info(f"✓ Received response for command {command_id}")
             return response
 
         except asyncio.TimeoutError:
-            logger.error(f"Command {command_id} timed out")
+            logger.warning(f"⏱ Command {command_id} ({command_type}) timed out after {self.command_timeout}s - Godot may not be responding")
             self._pending_commands.pop(command_id, None)
             return CommandResponse(
                 success=False,
                 error=f"Command {command_id} timed out after {self.command_timeout} seconds"
             )
         except Exception as e:
-            logger.error(f"Error sending command {command_id}: {e}")
+            logger.error(f"❌ Error sending command {command_id} ({command_type}): {e}")
             self._pending_commands.pop(command_id, None)
             return CommandResponse(
                 success=False,
@@ -285,11 +312,41 @@ class GodotBridge:
             self.project_info.is_ready
         )
 
+    def is_path_safe(self, path: Union[str, pathlib.Path]) -> bool:
+        """
+        Check if a path is safe (within the project directory).
+
+        Args:
+            path: Path to check
+
+        Returns:
+            True if path is safe, False otherwise
+        """
+        if not self.project_info or not self.project_info.project_path:
+            # If no project info, we can't validate against it.
+            # Fallback: Check against cwd if project info is missing.
+            try:
+                cwd = pathlib.Path.cwd().resolve()
+                target = pathlib.Path(path).resolve()
+                return target.is_relative_to(cwd)
+            except Exception:
+                return False
+
+        try:
+            project_root = pathlib.Path(self.project_info.project_path).resolve()
+            target = pathlib.Path(path).resolve()
+            return target.is_relative_to(project_root)
+        except Exception:
+            return False
+
     async def _message_listener(self):
         """Background task to listen for WebSocket messages."""
+        logger.info("🎧 Message listener started and listening...")
         try:
             async for message in self.websocket:
                 try:
+                    # logger.debug(f"📥 RAW WEBSOCKET MESSAGE: {message}")
+                    logger.info(f"📥 RECEIVED RAW WEBSOCKET MESSAGE: {message[:1000]}...") # Truncate to avoid spamming too much if it's an image
                     data = json.loads(message)
                     await self._handle_message(data)
                 except json.JSONDecodeError as e:
@@ -298,53 +355,76 @@ class GodotBridge:
                     logger.error(f"Error handling message: {e}")
 
         except ConnectionClosed:
-            logger.warning("WebSocket connection closed")
+            logger.warning("⚠️ WebSocket connection closed, message listener stopping")
             self.connection_state = ConnectionState.DISCONNECTED
         except Exception as e:
-            logger.error(f"Error in message listener: {e}")
+            logger.error(f"❌ Error in message listener: {e}")
             self.connection_state = ConnectionState.ERROR
+
+    def _on_listener_done(self, task: asyncio.Task):
+        """Callback when message listener task completes."""
+        try:
+            task.result()  # Raise any exception that occurred
+            logger.info("🛑 Message listener task completed normally")
+        except asyncio.CancelledError:
+            logger.info("🛑 Message listener task was cancelled")
+        except Exception as e:
+            logger.error(f"❌ Message listener task failed with error: {e}")
 
     async def _handle_message(self, data: Dict[str, Any]):
         """Handle incoming WebSocket message."""
         message_type = data.get("type")
 
         if not message_type:
-            logger.warning("Received message without type")
+            logger.warning("⚠️ Received message without type field")
             return
 
+        logger.info(f"📨 Received message type: {message_type}")
         handler = self._message_handlers.get(message_type)
         if handler:
             try:
                 await handler(data)
             except Exception as e:
-                logger.error(f"Error in message handler for {message_type}: {e}")
+                logger.error(f"❌ Error in message handler for {message_type}: {e}")
         else:
-            logger.debug(f"No handler for message type: {message_type}")
+            logger.warning(f"⚠️ No handler for message type: {message_type}")
 
     async def _handle_project_info(self, data: Dict[str, Any]):
         """Handle project_info message from Godot."""
         project_data = data.get("data", {})
         self.project_info = GodotProjectInfo(**project_data)
 
-      
-        logger.info(f"Received project info: {self.project_info.project_path}")
+        logger.info(
+            f"Received project info - Path: {self.project_info.project_path}, "
+            f"Version: {self.project_info.godot_version}, "
+            f"Ready: {self.project_info.is_ready}"
+        )
 
     async def _handle_command_response(self, data: Dict[str, Any]):
         """Handle command response message."""
         command_id = data.get("id")
         if not command_id or command_id not in self._pending_commands:
-            logger.warning(f"Received response for unknown command: {command_id}")
+            logger.warning(f"⚠️ Received response for unknown command: {command_id}")
             return
 
         future = self._pending_commands.pop(command_id)
 
         if not future.done():
+            # Determine success from 'success' bool or 'status' string
+            is_success = data.get("success", False)
+            if "success" not in data and "status" in data:
+                is_success = (data["status"] == "success")
+
             response = CommandResponse(
-                success=data.get("success", False),
+                success=is_success,
                 data=data.get("data"),
-                error=data.get("error"),
+                error=data.get("error") or (data.get("message") if not is_success else None),
                 command_id=command_id
             )
+            if response.success:
+                logger.info(f"✓ Received successful response for command {command_id}")
+            else:
+                logger.warning(f"⚠️ Received error response for command {command_id}: {response.error}")
             future.set_result(response)
 
     async def _handle_error(self, data: Dict[str, Any]):

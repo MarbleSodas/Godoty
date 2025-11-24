@@ -19,8 +19,8 @@ class ModelConfig:
     FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "anthropic/claude-3.5-sonnet")
     
     # Executor Agent Models
-    DEFAULT_EXECUTOR_MODEL = os.getenv("DEFAULT_EXECUTOR_MODEL", "openrouter/sherlock-dash-alpha")
-    EXECUTOR_FALLBACK_MODEL = os.getenv("EXECUTOR_FALLBACK_MODEL", "minimax/minimax-m2")
+    DEFAULT_EXECUTOR_MODEL = os.getenv("DEFAULT_EXECUTOR_MODEL", "anthropic/claude-3.5-sonnet")
+    EXECUTOR_FALLBACK_MODEL = os.getenv("EXECUTOR_FALLBACK_MODEL", "openai/gpt-4-turbo")
     
     # Model Parameters
     AGENT_TEMPERATURE = float(os.getenv("AGENT_TEMPERATURE", "0.7"))

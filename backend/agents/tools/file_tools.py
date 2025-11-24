@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from strands import tool
+from .godot_bridge import get_godot_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,11 @@ class FileTools:
 
     async def _is_safe_path(self, file_path: Path, project_root: Optional[Path] = None) -> bool:
         """Check if a file path is safe for modification."""
+        # First check with bridge if available
+        bridge = get_godot_bridge()
+        if bridge.is_path_safe(file_path):
+            return True
+
         if project_root is None:
             # Try to detect project root
             current = Path.cwd()
@@ -124,6 +130,47 @@ class FileTools:
             logger.warning(f"Path {file_path} is outside project root {project_root}")
             return False
 
+    async def _get_project_root(self) -> Path:
+        """Get the project root path."""
+        # Check with bridge first
+        bridge = get_godot_bridge()
+        if bridge.project_info and bridge.project_info.project_path:
+             return Path(bridge.project_info.project_path)
+        
+        # Fallback to detecting project.godot
+        current = Path.cwd()
+        while current != current.parent:
+            if (current / "project.godot").exists():
+                return current
+            current = current.parent
+            
+        # If no project root found, default to CWD
+        return Path.cwd()
+
+    async def _resolve_path(self, file_path: str) -> Path:
+        """
+        Resolve file path relative to project root if not absolute.
+        Handles res:// format by stripping the prefix.
+        
+        Args:
+            file_path: The file path to resolve
+            
+        Returns:
+            Resolved Path object (absolute)
+        """
+        # Handle Godot resource paths
+        if file_path.startswith("res://"):
+            project_root = await self._get_project_root()
+            relative_path = file_path[6:] # Strip res://
+            return project_root / relative_path
+
+        path = Path(file_path)
+        if path.is_absolute():
+            return path
+            
+        project_root = await self._get_project_root()
+        return project_root / path
+
     # Basic File Operations
     async def read_file_safe(self, file_path: str, encoding: str = "utf-8") -> FileOperationResult:
         """
@@ -136,9 +183,9 @@ class FileTools:
         Returns:
             FileOperationResult with file content
         """
-        path = Path(file_path)
-
         try:
+            path = await self._resolve_path(file_path)
+
             if not path.exists():
                 return FileOperationResult(
                     success=False,
@@ -150,7 +197,7 @@ class FileTools:
                 content = await f.read()
 
             self._record_operation("read_file", file_path, True, {"encoding": encoding})
-            logger.info(f"Successfully read file: {file_path}")
+            logger.info(f"Successfully read file: {file_path} (resolved: {path})")
 
             return FileOperationResult(
                 success=True,
@@ -191,10 +238,12 @@ class FileTools:
         Returns:
             FileOperationResult with operation details
         """
-        path = Path(file_path)
         root = Path(project_root) if project_root else None
 
         try:
+            # Resolve path
+            path = await self._resolve_path(file_path)
+
             # Safety check
             if not await self._is_safe_path(path, root):
                 return FileOperationResult(
@@ -206,9 +255,12 @@ class FileTools:
             # Read old content if file exists
             old_content = None
             if path.exists():
-                old_result = await self.read_file_safe(file_path, encoding)
-                if old_result.success:
-                    old_content = old_result.new_content
+                # Direct read since we already resolved the path
+                try:
+                    async with aiofiles.open(path, 'r', encoding=encoding) as f:
+                        old_content = await f.read()
+                except Exception:
+                    pass # Ignore read errors for backup/old_content purposes
 
             # Create backup if requested and file exists
             backup_path = None
@@ -225,11 +277,12 @@ class FileTools:
             details = {
                 "encoding": encoding,
                 "backup_created": backup_path is not None,
-                "backup_path": str(backup_path) if backup_path else None
+                "backup_path": str(backup_path) if backup_path else None,
+                "resolved_path": str(path)
             }
 
             self._record_operation("write_file", file_path, True, details)
-            logger.info(f"Successfully wrote file: {file_path}")
+            logger.info(f"Successfully wrote file: {file_path} (resolved: {path})")
 
             return FileOperationResult(
                 success=True,
@@ -268,10 +321,12 @@ class FileTools:
         Returns:
             FileOperationResult with operation details
         """
-        path = Path(file_path)
         root = Path(project_root) if project_root else None
 
         try:
+            # Resolve path
+            path = await self._resolve_path(file_path)
+
             # Safety check
             if not await self._is_safe_path(path, root):
                 return FileOperationResult(
@@ -290,9 +345,14 @@ class FileTools:
             # Read content before deletion for backup
             old_content = None
             if create_backup:
-                old_result = await self.read_file_safe(file_path)
-                if old_result.success:
-                    old_content = old_result.new_content
+                # read_file_safe handles resolution internally, so we can pass file_path
+                # OR we can just read 'path' directly since we have it.
+                # Let's use direct read to be safe and efficient
+                try:
+                    async with aiofiles.open(path, 'r', encoding='utf-8') as f:
+                        old_content = await f.read()
+                except Exception:
+                    pass
 
             # Create backup if requested
             backup_path = None
@@ -304,11 +364,12 @@ class FileTools:
 
             details = {
                 "backup_created": backup_path is not None,
-                "backup_path": str(backup_path) if backup_path else None
+                "backup_path": str(backup_path) if backup_path else None,
+                "resolved_path": str(path)
             }
 
             self._record_operation("delete_file", file_path, True, details)
-            logger.info(f"Successfully deleted file: {file_path}")
+            logger.info(f"Successfully deleted file: {file_path} (resolved: {path})")
 
             return FileOperationResult(
                 success=True,
@@ -802,16 +863,31 @@ class FileTools:
                     error=f"Backup file not found: {backup_file}"
                 )
 
-            # Copy backup to original location
-            shutil.copy2(backup_file, path)
+            # Read backup content
+            async with aiofiles.open(backup_file, 'r', encoding="utf-8") as f:
+                content = await f.read()
 
-            self._record_operation("restore_backup", file_path, True, {"backup_file": str(backup_file)})
-            logger.info(f"Successfully restored {file_path} from backup")
+            # Write to original location
+            write_result = await self.write_file_safe(
+                file_path,
+                content,
+                create_backup=True  # Backup current state before restore
+            )
 
+            if not write_result.success:
+                return FileOperationResult(
+                    success=False,
+                    file_path=file_path,
+                    error=write_result.error
+                )
+
+            logger.info(f"Successfully restored {file_path} from backup {backup_file}")
             return FileOperationResult(
                 success=True,
                 file_path=file_path,
-                operation_type="restore_backup"
+                backup_path=str(backup_file),
+                new_content=content,
+                operation_type="restore"
             )
 
         except Exception as e:
@@ -821,11 +897,10 @@ class FileTools:
                 success=False,
                 file_path=file_path,
                 error=error_msg,
-                operation_type="restore_backup"
+                operation_type="restore"
             )
 
 
-# Convenience functions for direct tool access
 @tool
 async def write_file(file_path: str, content: str, **kwargs) -> FileOperationResult:
     """Write content to a file safely with backup.
@@ -838,8 +913,25 @@ async def write_file(file_path: str, content: str, **kwargs) -> FileOperationRes
     Returns:
         FileOperationResult containing success status and operation details
     """
+    # Handle case where LLM passes 'kwargs' as a string parameter
+    if 'kwargs' in kwargs:
+        extra_args = kwargs.pop('kwargs')
+        if isinstance(extra_args, str):
+            try:
+                extra_args = json.loads(extra_args)
+                if isinstance(extra_args, dict):
+                    kwargs.update(extra_args)
+            except json.JSONDecodeError:
+                pass
+        elif isinstance(extra_args, dict):
+            kwargs.update(extra_args)
+
     tools = FileTools()
-    return await tools.write_file_safe(file_path, content, **kwargs)
+    # Filter kwargs to only allow valid arguments for write_file_safe
+    valid_args = ['encoding', 'create_backup', 'project_root']
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_args}
+    
+    return await tools.write_file_safe(file_path, content, **filtered_kwargs)
 
 
 @tool

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS message_metrics (
     -- Additional metadata
     stop_reason TEXT,
     tool_calls_count INTEGER DEFAULT 0,
+    tool_errors_count INTEGER DEFAULT 0,
     
     FOREIGN KEY (session_id) REFERENCES session_metrics(session_id) ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES project_metrics(project_id) ON DELETE CASCADE
@@ -52,6 +53,9 @@ CREATE TABLE IF NOT EXISTS session_metrics (
     total_estimated_cost REAL NOT NULL DEFAULT 0.0,
     total_actual_cost REAL,
     
+    -- Error tracking
+    total_tool_errors INTEGER NOT NULL DEFAULT 0,
+
     -- Session information
     message_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -13,13 +13,25 @@ export interface ToolCall {
 export interface ExecutionStep {
   id: string;
   title: string;
+  description?: string;
+  tool_calls?: Array<{ name: string; parameters: any }>;
+  depends_on?: string[];
   status: 'pending' | 'running' | 'completed' | 'failed';
 }
 
 export interface ExecutionPlan {
   title: string;
+  description?: string;
   steps: ExecutionStep[];
   status: 'pending' | 'running' | 'completed' | 'failed';
+}
+
+export interface MessageEvent {
+  type: 'text' | 'tool_use' | 'tool_result';
+  timestamp: number;
+  sequence: number;
+  content?: string;
+  toolCall?: ToolCall;
 }
 
 export interface Message {
@@ -34,6 +46,7 @@ export interface Message {
   // Extended fields for agentic flow
   toolCalls?: ToolCall[];
   plan?: ExecutionPlan;
+  events?: MessageEvent[];
 }
 
 export interface Session {
@@ -86,17 +99,22 @@ export class ChatService {
   }
 
   // Chat Interaction
-  sendMessage(sessionId: string, message: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/chat`, { message });
+  sendMessage(sessionId: string, message: string, mode: 'planning' | 'fast' = 'planning'): Observable<any> {
+    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/chat`, { message, mode });
   }
 
-  async *sendMessageStream(sessionId: string, message: string): AsyncGenerator<any> {
+  stopSession(sessionId: string): Observable<any> {
+    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/stop`, {});
+  }
+
+  async *sendMessageStream(sessionId: string, message: string, mode: 'planning' | 'fast' = 'planning', signal?: AbortSignal): AsyncGenerator<any> {
     const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/chat/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, mode }),
+      signal
     });
 
     if (!response.ok) {
@@ -197,8 +215,16 @@ export class ChatService {
         }
       }
     } catch (error) {
+      // Check if this is an abort error (user cancelled)
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[SSE] Stream aborted by user');
+        // Don't yield error event for user-initiated cancellation
+        // Just exit cleanly
+        return;
+      }
+
       console.error('[SSE] Stream error:', error);
-      // Yield error event
+      // Yield error event for real errors
       yield {
         type: 'error',
         data: {

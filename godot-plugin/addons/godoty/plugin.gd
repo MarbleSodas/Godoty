@@ -115,8 +115,9 @@ func _send_project_info(ws: WebSocketPeer) -> void:
 		godot_version += "-%s" % version_info.status
 
 	# Get project settings
+	var project_name := ProjectSettings.get_setting("application/config/name", "Unknown")
 	var project_settings := {
-		"name": ProjectSettings.get_setting("application/config/name", "Unknown"),
+		"name": project_name,
 		"main_scene": ProjectSettings.get_setting("application/run/main_scene", ""),
 		"viewport_width": ProjectSettings.get_setting("display/window/size/viewport_width", 1920),
 		"viewport_height": ProjectSettings.get_setting("display/window/size/viewport_height", 1080),
@@ -128,8 +129,10 @@ func _send_project_info(ws: WebSocketPeer) -> void:
 		"status": "success",
 		"data": {
 			"project_path": project_path,
+			"project_name": project_name,
 			"godot_version": godot_version,
 			"plugin_version": "0.1.0",
+			"is_ready": true,
 			"project_settings": project_settings
 		}
 	}

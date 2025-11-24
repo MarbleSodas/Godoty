@@ -48,6 +48,7 @@ class MessageMetrics(Base):
     # Additional metadata
     stop_reason = Column(String)
     tool_calls_count = Column(Integer, default=0)
+    tool_errors_count = Column(Integer, default=0)
     
     # Relationships
     session = relationship("SessionMetrics", back_populates="messages")
@@ -71,6 +72,7 @@ class MessageMetrics(Base):
             "response_time_ms": self.response_time_ms,
             "stop_reason": self.stop_reason,
             "tool_calls_count": self.tool_calls_count,
+            "tool_errors_count": self.tool_errors_count,
         }
 
 
@@ -95,6 +97,9 @@ class SessionMetrics(Base):
     total_estimated_cost = Column(Float, nullable=False, default=0.0)
     total_actual_cost = Column(Float)
     
+    # Error tracking
+    total_tool_errors = Column(Integer, nullable=False, default=0)
+    
     # Session information
     message_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
@@ -118,6 +123,7 @@ class SessionMetrics(Base):
             "total_tokens": self.total_tokens,
             "total_estimated_cost": self.total_estimated_cost,
             "total_actual_cost": self.total_actual_cost,
+            "total_tool_errors": self.total_tool_errors,
             "message_count": self.message_count,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

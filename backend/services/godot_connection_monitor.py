@@ -18,17 +18,31 @@ logger = logging.getLogger(__name__)
 class ConnectionEvent:
     """Connection state change event."""
 
-    def __init__(self, state: ConnectionState, timestamp: datetime, error: Optional[str] = None):
+    def __init__(
+        self,
+        state: ConnectionState,
+        timestamp: datetime,
+        error: Optional[str] = None,
+        project_path: Optional[str] = None,
+        godot_version: Optional[str] = None,
+        plugin_version: Optional[str] = None
+    ):
         self.state = state
         self.timestamp = timestamp
         self.error = error
+        self.project_path = project_path
+        self.godot_version = godot_version
+        self.plugin_version = plugin_version
 
     def to_dict(self):
         """Convert to dictionary for serialization."""
         return {
             "state": self.state.value,
             "timestamp": self.timestamp.isoformat(),
-            "error": self.error
+            "error": self.error,
+            "project_path": self.project_path,
+            "godot_version": self.godot_version,
+            "plugin_version": self.plugin_version
         }
 
 
@@ -95,7 +109,17 @@ class GodotConnectionMonitor:
     async def _notify_state_change(self, state: ConnectionState, error: Optional[str] = None):
         """Notify all listeners of a state change."""
         if state != self._last_state:
-            event = ConnectionEvent(state, datetime.now(), error)
+            # Get project info from bridge
+            project_info = self.bridge.project_info
+
+            event = ConnectionEvent(
+                state=state,
+                timestamp=datetime.now(),
+                error=error,
+                project_path=project_info.project_path if project_info else None,
+                godot_version=project_info.godot_version if project_info else None,
+                plugin_version=project_info.plugin_version if project_info else None
+            )
             self._last_state = state
 
             logger.info(f"Godot connection state changed: {state.value}")
@@ -240,7 +264,7 @@ class GodotConnectionMonitor:
         """
         project_info = self.bridge.project_info
 
-        return {
+        status = {
             "running": self._running,
             "state": self._last_state.value,
             "last_attempt": self._last_connection_attempt.isoformat() if self._last_connection_attempt else None,
@@ -250,6 +274,14 @@ class GodotConnectionMonitor:
             "plugin_version": project_info.plugin_version if project_info else None,
             "project_settings": project_info.project_settings if project_info else {}
         }
+
+        logger.debug(
+            f"get_status() - State: {status['state']}, "
+            f"Path: {status['project_path']}, "
+            f"Version: {status['godot_version']}"
+        )
+
+        return status
 
 
 # Global monitor instance

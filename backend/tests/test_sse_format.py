@@ -16,7 +16,7 @@ async def test_chat_session_stream_sse_format():
     mock_manager.get_session.return_value = {"id": "test_session"}
     
     # Mock process_message_stream to yield events
-    async def mock_stream(session_id, message):
+    async def mock_stream(session_id, message, *args, **kwargs):
         yield {"type": "tool_use", "data": {"tool_name": "test_tool", "tool_input": {}}}
         yield {"type": "data", "data": {"text": "Hello"}}
     

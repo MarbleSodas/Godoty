@@ -7,10 +7,11 @@ Provides endpoints for interacting with the planning agent:
 - Session management
 """
 
+import asyncio
 import json
 import logging
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -251,6 +252,7 @@ class SessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     """Request model for chat message."""
     message: str = Field(..., description="User message", min_length=1)
+    mode: str = Field("planning", description="Execution mode: 'planning' or 'fast'")
 
 
 @router.post("/sessions", response_model=dict)
@@ -381,12 +383,12 @@ async def chat_session(session_id: str, request: ChatRequest):
         
         # Auto-create session if it doesn't exist (lazy creation)
         if not manager.get_session(session_id):
-            logger.info(f"Auto-creating session {session_id} with title: {request.message[:50]}...")
-            manager.create_session(session_id, title=request.message)
+            logger.info(f"Auto-creating session {session_id} with title: {chat_request.message[:50]}...")
+            manager.create_session(session_id, title=chat_request.message)
         
         # Process message
         # Note: This might take time, so in a real app we might want streaming or background tasks
-        result = await manager.process_message(session_id, request.message)
+        result = await manager.process_message(session_id, request.message, mode=request.mode)
         
         # Format result
         response_text = str(result)
@@ -405,15 +407,52 @@ async def chat_session(session_id: str, request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/sessions/{session_id}/chat/stream")
-async def chat_session_stream(session_id: str, request: ChatRequest):
+@router.post("/sessions/{session_id}/stop", response_model=dict)
+async def stop_session(session_id: str):
     """
-    Send a message to a session and stream the response.
+    Stop a running session.
     
     Args:
         session_id: Session ID
-        request: ChatRequest with message
         
+    Returns:
+        Status message
+    """
+    try:
+        from agents.multi_agent_manager import get_multi_agent_manager
+        manager = get_multi_agent_manager()
+        
+        stopped = manager.stop_session(session_id)
+        
+        if stopped:
+            return {
+                "status": "success",
+                "message": "Session stopped successfully"
+            }
+        else:
+            return {
+                "status": "success",
+                "message": "No running task found for session"
+            }
+    except Exception as e:
+        logger.error(f"Error stopping session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/chat/stream")
+async def chat_session_stream(
+    session_id: str,
+    chat_request: ChatRequest,
+    request: Request
+):
+    """
+    Send a message to a session and stream the response.
+
+    Args:
+        session_id: Session ID
+        chat_request: ChatRequest with message
+        request: FastAPI Request object for disconnection detection
+
     Returns:
         StreamingResponse with Server-Sent Events
     """
@@ -458,14 +497,20 @@ async def chat_session_stream(session_id: str, request: ChatRequest):
         
         # Auto-create session if it doesn't exist (lazy creation)
         if not manager.get_session(session_id):
-            logger.info(f"Auto-creating session {session_id} with title: {request.message[:50]}...")
-            manager.create_session(session_id, title=request.message)
+            logger.info(f"Auto-creating session {session_id} with title: {chat_request.message[:50]}...")
+            manager.create_session(session_id, title=chat_request.message)
         
         # Create streaming generator
         async def event_generator():
             """Generate Server-Sent Events from agent stream."""
             try:
-                async for event in manager.process_message_stream(session_id, request.message):
+                async for event in manager.process_message_stream(session_id, chat_request.message, mode=chat_request.mode):
+                    # Check if client has disconnected
+                    if await request.is_disconnected():
+                        logger.info(f"Client disconnected for session {session_id}, stopping stream")
+                        manager.stop_session(session_id)
+                        break
+
                     # Format as SSE
                     event_type = event.get("type", "data")
                     event_data = event.get("data", {})
@@ -496,7 +541,14 @@ async def chat_session_stream(session_id: str, request: ChatRequest):
                 # Send done event
                 yield "event: done\n"
                 yield "data: {}\n\n"
-                
+
+            except asyncio.CancelledError:
+                logger.info(f"Stream cancelled for session {session_id}")
+                manager.stop_session(session_id)
+                yield "event: cancelled\n"
+                yield 'data: {"message": "Stream cancelled by client"}\n\n'
+                raise
+
             except Exception as e:
                 logger.error(f"Error in chat stream: {e}")
                 import traceback

@@ -12,40 +12,38 @@ class MockAgent:
         self._session_manager = None
 
     async def stream_async(self, prompt):
-        """Simulate streaming events including a tool call."""
+        """Simulate streaming events including plan output."""
         # 1. Yield start event
         yield {"type": "start", "data": {"message": "Starting..."}}
-        
-        # 2. Yield tool use event for submit_execution_plan
+
+        # 2. Yield text with plan explanation
         yield {
-            "type": "tool_use",
-            "data": {
-                "tool_name": "submit_execution_plan",
-                "tool_input": {
-                    "title": "Test Plan",
-                    "description": "A test plan",
-                    "steps": [
-                        {
-                            "title": "Step 1",
-                            "description": "Do something",
-                            "tool_calls": [
-                                {"name": "create_node", "parameters": {"type": "Node2D"}}
-                            ]
-                        }
-                    ]
-                }
-            }
+            "type": "data",
+            "data": {"text": "Here's my plan to help you:\n\n"}
         }
-        
-        # 3. Yield tool result (simulated)
+
+        # 3. Yield text with execution plan in structured format
+        plan_json = '''```execution-plan
+{
+  "title": "Test Plan",
+  "description": "A test plan",
+  "steps": [
+    {
+      "title": "Step 1",
+      "description": "Do something",
+      "tool_calls": [
+        {"name": "create_node", "parameters": {"type": "Node2D"}}
+      ],
+      "depends_on": []
+    }
+  ]
+}
+```'''
         yield {
-            "type": "tool_result",
-            "data": {
-                "tool_name": "submit_execution_plan",
-                "result": "Plan submitted."
-            }
+            "type": "data",
+            "data": {"text": plan_json}
         }
-        
+
         # 4. Yield end event
         yield {"type": "end", "data": {"stop_reason": "end_turn"}}
 

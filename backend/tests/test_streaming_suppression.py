@@ -23,18 +23,26 @@ async def test_suppress_input_stream_error_with_plan():
         mock_get_executor.return_value = mock_executor
         
         # Setup mock planner stream
-        # It yields a tool_use (plan submission) THEN raises the error
+        # It yields plan text output THEN raises the error
         async def mock_plan_stream(message):
-            # 1. Yield plan submission
+            # 1. Yield plan text with structured format
+            plan_text = '''```execution-plan
+{
+  "title": "Test Plan",
+  "description": "Test description",
+  "steps": [
+    {
+      "title": "Step 1",
+      "description": "Do something",
+      "tool_calls": [],
+      "depends_on": []
+    }
+  ]
+}
+```'''
             yield {
-                "type": "tool_use",
-                "data": {
-                    "tool_name": "submit_execution_plan",
-                    "tool_input": {
-                        "title": "Test Plan",
-                        "steps": [{"title": "Step 1", "tool_calls": []}]
-                    }
-                }
+                "type": "data",
+                "data": {"text": plan_text}
             }
             # 2. Yield the error that should be suppressed
             raise Exception("Error in input stream: connection closed")

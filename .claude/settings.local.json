@@ -22,7 +22,12 @@
       "Bash(test:*)",
       "Bash(powershell -Command \"Start-Sleep -Seconds 5\")",
       "Bash(powershell:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill -9)",
+      "Bash(git checkout:*)",
+      "Bash(chmod:*)",
+      "Bash(npm install:*)"
     ],
     "deny": [],
     "ask": []
