@@ -223,3 +223,40 @@ class ProjectDB:
             "session_cost": row[0] if row[0] else 0.0,
             "session_tokens": row[1] if row[1] else 0
         }
+
+    def get_metrics_for_sessions(self, session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Get metrics for multiple sessions.
+        
+        Args:
+            session_ids: List of session IDs
+            
+        Returns:
+            Dictionary of session_id -> metrics
+        """
+        if not session_ids:
+            return {}
+            
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        placeholders = ','.join(['?'] * len(session_ids))
+        query = f"""
+            SELECT session_id, SUM(cost), SUM(tokens) 
+            FROM metrics 
+            WHERE session_id IN ({placeholders})
+            GROUP BY session_id
+        """
+        
+        cursor.execute(query, session_ids)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = {}
+        for row in rows:
+            result[row[0]] = {
+                "session_cost": row[1] if row[1] else 0.0,
+                "session_tokens": row[2] if row[2] else 0
+            }
+            
+        return result

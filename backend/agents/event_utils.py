@@ -304,6 +304,14 @@ def transform_strands_event(event: Any) -> Optional[Dict[str, Any]]:
             "tool_name": tool_info.get("name"),
             "tool_input": tool_info.get("input", {})
         }
+    elif "toolResult" in event:
+        # Tool execution result (CamelCase from Strands/Claude)
+        tool_result = event["toolResult"]
+        event_type = "tool_result"
+        event_data = {
+            "tool_name": tool_result.get("name"),
+            "result": tool_result.get("content", [])
+        }
     elif "tool_result" in event:
         # Tool execution result
         tool_result = event["tool_result"]

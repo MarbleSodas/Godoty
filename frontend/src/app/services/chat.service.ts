@@ -64,6 +64,10 @@ export interface Session {
   title: string;
   date: Date;
   active: boolean;
+  metrics?: {
+    session_cost: number;
+    session_tokens: number;
+  };
 }
 
 @Injectable({
@@ -120,7 +124,8 @@ export class ChatService {
                     id: s.id,
                     title: s.title || `Session ${s.id.substring(0, 8)}`,
                     date: new Date(timestamp),
-                    active: false
+                    active: false,
+                    metrics: s.metrics
                 };
              }).sort((a: any, b: any) => b.date.getTime() - a.date.getTime());
            }
@@ -130,7 +135,8 @@ export class ChatService {
             id: id,
             title: data.metadata?.title || `Session ${id}`,
             date: new Date(data.metadata?.created_at || Date.now()),
-            active: false
+            active: false,
+            metrics: data.metrics
           })).sort((a, b) => b.date.getTime() - a.date.getTime()); // Sort by date, newest first
         }
         return [];
@@ -154,6 +160,10 @@ export class ChatService {
     return this.http.delete(url);
   }
   
+  hideSession(sessionId: string): Observable<any> {
+    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/hide`, {});
+  }
+
   restoreSession(sessionId: string): Observable<any> {
     if (!this.currentProjectPath) throw new Error("Project path not set");
     return this.http.post(`${this.apiUrl}/sessions/${sessionId}/restore?path=${encodeURIComponent(this.currentProjectPath)}`, {});

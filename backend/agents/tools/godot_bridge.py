@@ -11,7 +11,7 @@ import json
 import logging
 import pathlib
 from typing import Any, Dict, Optional, Tuple, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
@@ -391,14 +391,22 @@ class GodotBridge:
 
     async def _handle_project_info(self, data: Dict[str, Any]):
         """Handle project_info message from Godot."""
-        project_data = data.get("data", {})
-        self.project_info = GodotProjectInfo(**project_data)
+        try:
+            project_data = data.get("data", {})
+            
+            # Robustly handle data by filtering for known fields
+            valid_keys = {f.name for f in fields(GodotProjectInfo)}
+            filtered_data = {k: v for k, v in project_data.items() if k in valid_keys}
+            
+            self.project_info = GodotProjectInfo(**filtered_data)
 
-        logger.info(
-            f"Received project info - Path: {self.project_info.project_path}, "
-            f"Version: {self.project_info.godot_version}, "
-            f"Ready: {self.project_info.is_ready}"
-        )
+            logger.info(
+                f"Received project info - Path: {self.project_info.project_path}, "
+                f"Version: {self.project_info.godot_version}, "
+                f"Ready: {self.project_info.is_ready}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to process project info: {e}")
 
     async def _handle_command_response(self, data: Dict[str, Any]):
         """Handle command response message."""

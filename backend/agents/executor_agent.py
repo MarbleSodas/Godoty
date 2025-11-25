@@ -385,22 +385,6 @@ class ExecutorAgent:
                                 "timestamp": time.time()
                             }
                             tool_calls.append(tool_call)
-
-                    # Track tool completion
-                    if "toolResult" in event:
-                        tool_result = event["toolResult"]
-                        tool_id = tool_result.get("toolUseId")
-                        # Find the corresponding tool call and add completion time
-                        for tc in tool_calls:
-                            if tc.get("id") == tool_id:
-                                tc["completion_time"] = time.time()
-                                tc["duration"] = tc["completion_time"] - tc["timestamp"]
-                                break
-
-                    # Collect token metrics from metadata
-                    if "metadata" in event:
-                        usage = event["metadata"].get("usage", {})
-                        accumulated_metrics["inputTokens"] += usage.get("inputTokens", 0)
                         accumulated_metrics["outputTokens"] += usage.get("outputTokens", 0)
                         accumulated_metrics["totalTokens"] += usage.get("totalTokens", 0)
 

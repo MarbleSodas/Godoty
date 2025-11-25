@@ -153,9 +153,35 @@ class MultiAgentManager:
                 if filename.endswith(".json") and not filename.endswith("_metadata.json"):
                     session_id = filename[:-5]
                     session = self.get_session(session_id)
-                    if session:
+                    # Filter hidden sessions
+                    if session and not session.get("metadata", {}).get("is_hidden", False):
                         sessions[session_id] = session
         return sessions
+
+    def hide_session(self, session_id: str) -> bool:
+        """
+        Hide a session from the list without deleting data.
+        
+        Args:
+            session_id: Session ID
+            
+        Returns:
+            True if hidden, False otherwise
+        """
+        # Stop any running task
+        self.stop_session(session_id)
+        
+        # Remove from active graphs
+        if session_id in self._active_graphs:
+            del self._active_graphs[session_id]
+            
+        # Update metadata
+        metadata = self._load_session_metadata(session_id)
+        metadata["is_hidden"] = True
+        self._save_session_metadata(session_id, metadata)
+        
+        logger.info(f"Hidden session {session_id}")
+        return True
 
     def delete_session(self, session_id: str) -> bool:
         """

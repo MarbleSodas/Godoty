@@ -337,31 +337,32 @@ async def list_sessions(path: Optional[str] = Query(None)):
         List of sessions
     """
     try:
-        if path:
-            try:
-                db = ProjectDB(path)
-                sessions = db.get_all_sessions()
-                return {
-                    "status": "success",
-                    "sessions": sessions
-                }
-            except Exception as e:
-                logger.error(f"Error listing sessions from ProjectDB: {e}")
-                # Fallback or re-raise? 
-                # If path provided but failed, maybe return empty or error?
-                # Let's fall back to manager if it might have info? 
-                # But manager likely doesn't know about path-scoped DB sessions unless synced.
-                # Let's continue to fallback for backward compatibility if DB fails?
-                pass
-
         from agents.multi_agent_manager import get_multi_agent_manager
         manager = get_multi_agent_manager()
         
-        sessions = manager.list_sessions()
+        sessions_dict = manager.list_sessions()
+        
+        # Enhance with metrics
+        try:
+            # Use a dummy path if none provided, just to access the global DB file
+            # The get_metrics_for_sessions method doesn't filter by project hash
+            db_path = path if path else "." 
+            db = ProjectDB(db_path)
+            
+            session_ids = list(sessions_dict.keys())
+            metrics_map = db.get_metrics_for_sessions(session_ids)
+            
+            for session_id, session_data in sessions_dict.items():
+                if session_id in metrics_map:
+                    session_data["metrics"] = metrics_map[session_id]
+                    
+        except Exception as e:
+            logger.error(f"Error fetching metrics for sessions: {e}")
+            # Continue without metrics if DB fails
         
         return {
             "status": "success",
-            "sessions": sessions
+            "sessions": sessions_dict
         }
     except Exception as e:
         logger.error(f"Error listing sessions: {e}")
@@ -528,6 +529,37 @@ async def delete_session(session_id: str, path: Optional[str] = Query(None)):
         raise
     except Exception as e:
         logger.error(f"Error deleting session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/hide", response_model=dict)
+async def hide_session(session_id: str):
+    """
+    Hide a session from the list (soft delete).
+    
+    Args:
+        session_id: Session ID
+        
+    Returns:
+        Status message
+    """
+    try:
+        from agents.multi_agent_manager import get_multi_agent_manager
+        manager = get_multi_agent_manager()
+        
+        hidden = manager.hide_session(session_id)
+        
+        if not hidden:
+             raise HTTPException(status_code=404, detail="Session not found")
+             
+        return {
+            "status": "success",
+            "message": "Session hidden successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error hiding session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

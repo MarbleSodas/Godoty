@@ -1,7 +1,6 @@
 import { Component, signal, computed, effect, ViewChild, ElementRef, AfterViewChecked, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MarkdownComponent } from 'ngx-markdown';
 import { ChatService, Message, Session, ToolCall, ExecutionPlan } from './services/chat.service';
 import { DesktopService } from './services/desktop.service';
 
@@ -39,7 +38,7 @@ interface GroupedEvent {
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, FormsModule, MarkdownComponent],
+  imports: [CommonModule, FormsModule],
   template: `
     <div class="flex h-screen w-full bg-[#212529] text-slate-200 font-sans overflow-hidden selection:bg-[#478cbf] selection:text-white">
       
@@ -72,7 +71,7 @@ interface GroupedEvent {
           <div class="space-y-1">
             @for (session of sessions(); track session.id) {
               <button 
-                class="w-full text-left px-3 py-3 rounded-lg text-sm transition-all duration-200 group flex flex-col gap-1"
+                class="w-full text-left px-3 py-3 rounded-lg text-sm transition-all duration-200 group flex flex-col gap-1 relative pr-8"
                 [class.bg-[#363d4a]]="session.active"
                 [class.text-white]="session.active"
                 [class.text-slate-400]="!session.active"
@@ -81,7 +80,26 @@ interface GroupedEvent {
                 (click)="selectSession(session.id)">
                 
                 <span class="font-medium truncate">{{ session.title }}</span>
-                <span class="text-[10px] opacity-60">{{ session.date | date:'shortTime' }}</span>
+                <div class="flex items-center justify-between w-full">
+                    <span class="text-[10px] opacity-60">{{ session.date | date:'shortTime' }}</span>
+                    @if (session.metrics) {
+                        <div class="flex items-center gap-2 text-[10px] font-mono opacity-60">
+                           <span>{{ session.metrics.session_tokens | number }}t</span>
+                           <span>\${{ session.metrics.session_cost.toFixed(3) }}</span>
+                        </div>
+                    }
+                </div>
+                
+                <!-- Remove Button -->
+                <div class="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+                   <div (click)="$event.stopPropagation(); removeSession(session.id)" 
+                        class="p-1.5 rounded hover:bg-red-500/20 hover:text-red-400 text-slate-500 transition-colors cursor-pointer"
+                        title="Remove from history">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                   </div>
+                </div>
               </button>
             }
           </div>
@@ -107,14 +125,7 @@ interface GroupedEvent {
                <span class="font-mono text-sm text-[#478cbf]">{{ metrics().totalTokens | number }}</span>
             </div>
 
-            <!-- Token breakdown -->
-            <div class="flex justify-between items-baseline">
-               <span class="text-[11px] text-slate-400">Tool Stats</span>
-               <div class="flex gap-2 font-mono text-xs">
-                  <span class="text-green-400" title="Calls">✓ {{ metrics().toolCalls }}</span>
-                  <span class="text-red-400" title="Errors">✗ {{ metrics().toolErrors }}</span>
-               </div>
-            </div>
+
           </div>
 
           <!-- Project Metrics -->
@@ -303,7 +314,7 @@ interface GroupedEvent {
 
               <!-- Content -->
               <div class="flex flex-col max-w-[85%]" [class.items-end]="msg.role === 'user'">
-                <div class="relative px-5 py-2 rounded-2xl text-sm leading-relaxed shadow-sm"
+                <div class="relative px-4 py-4 rounded-2xl text-sm shadow-sm"
                      [class.bg-[#2b303b]]="msg.role === 'assistant'"
                      [class.text-slate-200]="msg.role === 'assistant'"
                      [class.rounded-tl-none]="msg.role === 'assistant'"
@@ -319,17 +330,14 @@ interface GroupedEvent {
                         <span class="w-2 h-2 bg-[#478cbf] rounded-full animate-bounce" style="animation-delay: 150ms"></span>
                         <span class="w-2 h-2 bg-[#478cbf] rounded-full animate-bounce" style="animation-delay: 300ms"></span>
                       </div>
-                      <span>Processing your request...</span>
                     </div>
                   } @else {
                     <!-- Chronological Event Display (if events array exists) -->
                     @if (msg.events && msg.events.length > 0) {
                       @for (groupedEvent of getGroupedEvents(msg); track groupedEvent.sequence) {
                         @if (groupedEvent.type === 'text_block') {
-                          <!-- Text block with markdown support and smooth animation -->
-                          <div class="slide-in-from-bottom">
-                            <markdown class="whitespace-pre-wrap font-light prose prose-invert prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 prose-p:my-0 !important prose-headings:my-1 !important prose-ul:my-0 !important prose-ol:my-0 !important prose-li:my-0 !important [&_li>p]:my-0 !important" [data]="groupedEvent.content"></markdown>
-                          </div>
+                          <!-- Text block with simple formatting -->
+                          <div class="whitespace-pre-wrap text-sm">{{ groupedEvent.content }}</div>
                         } @else if (groupedEvent.type === 'tool') {
                           <!-- Tool call (inline with chronological flow) -->
                           @if (groupedEvent.toolCall) {
@@ -352,8 +360,8 @@ interface GroupedEvent {
                                     {{ groupedEvent.toolCall.status }}
                                   </span>
                                 </div>
-                                @if (groupedEvent.toolCall.input) {
-                                  <div class="font-mono text-slate-500 text-[10px] opacity-75 mb-1">
+                                @if (groupedEvent.toolCall.input && (groupedEvent.toolCall.input | json) !== '{}') {
+                                  <div class="font-mono text-slate-500 text-[10px] opacity-75 mb-2">
                                     {{ groupedEvent.toolCall.input | json }}
                                   </div>
                                 }
@@ -374,7 +382,7 @@ interface GroupedEvent {
                       }
                     } @else {
                       <!-- Fallback to old display for backward compatibility -->
-                      <markdown class="whitespace-pre-wrap font-light prose prose-invert prose-sm max-w-none" [data]="filterExecutionPlanBlocks(msg.content)"></markdown>
+                      <div class="whitespace-pre-wrap text-sm">{{ filterExecutionPlanBlocks(msg.content) }}</div>
 
                       @if(msg.isStreaming) {
                         <span class="inline-block w-2 h-4 ml-1 bg-[#478cbf] animate-pulse align-middle"></span>
@@ -402,7 +410,7 @@ interface GroupedEvent {
                                   {{ tool.status }}
                                 </span>
                               </div>
-                              @if (tool.input) {
+                              @if (tool.input && (tool.input | json) !== '{}') {
                                 <div class="font-mono text-slate-500 text-[10px] opacity-75 mb-1">
                                   {{ tool.input | json }}
                                 </div>
@@ -712,12 +720,12 @@ interface GroupedEvent {
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes slideDown { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
     @keyframes slideRight { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-    @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    @keyframes textFadeUp { from { transform: translateY(4px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
     .animate-in { animation: fadeIn 0.2s ease-out; }
     .slide-in-from-top-2 { animation: slideDown 0.2s ease-out; }
     .slide-in-from-right-2 { animation: slideRight 0.2s ease-out; }
-    .slide-in-from-bottom { animation: slideUp 0.3s ease-out; }
+    .slide-in-from-bottom { animation: textFadeUp 0.25s ease-out; }
   `]
 })
 export class App implements AfterViewChecked, OnInit {
@@ -767,7 +775,7 @@ export class App implements AfterViewChecked, OnInit {
     toolErrors: 0,
     generationTimeMs: undefined
   });
-  
+
   projectMetrics = signal<any>(null);
 
   // Task list sidebar state
@@ -802,7 +810,7 @@ export class App implements AfterViewChecked, OnInit {
   ngAfterViewChecked() {
     this.scrollToBottom();
   }
-  
+
   // ...
 
   private updateGodotConfig(status: any) {
@@ -815,10 +823,10 @@ export class App implements AfterViewChecked, OnInit {
 
     // Check if project path changed
     if (path && path !== this.config().projectPath) {
-        console.log(`[App] Project path changed: ${path}`);
-        this.chatService.setProjectPath(path);
-        // Reload sessions for the new project
-        this.loadSessions();
+      console.log(`[App] Project path changed: ${path}`);
+      this.chatService.setProjectPath(path);
+      // Reload sessions for the new project
+      this.loadSessions();
     }
 
     this.config.update(c => ({
@@ -830,18 +838,30 @@ export class App implements AfterViewChecked, OnInit {
     }));
   }
 
+  removeSession(sessionId: string) {
+    if (confirm('Are you sure you want to remove this session from history?')) {
+      this.chatService.hideSession(sessionId).subscribe(() => {
+        this.sessions.update(list => list.filter(s => s.id !== sessionId));
+        if (this.currentSessionId() === sessionId) {
+          this.currentSessionId.set(null);
+          this.messages.set([]);
+        }
+      });
+    }
+  }
+
 
   loadSessions() {
     this.chatService.listSessions().subscribe(sessions => {
       const currentId = this.currentSessionId();
-      
+
       // If we have an active session that isn't in the new list (e.g. just switched project),
       // keep it visible so we don't lose context. It will be saved to the project DB on next message.
       if (currentId && !sessions.find(s => s.id === currentId)) {
         const existing = this.sessions().find(s => s.id === currentId);
         if (existing) {
-           console.log(`[App] Preserving active session ${currentId} in list despite project switch`);
-           sessions.unshift(existing);
+          console.log(`[App] Preserving active session ${currentId} in list despite project switch`);
+          sessions.unshift(existing);
         }
       }
 
@@ -1017,18 +1037,38 @@ export class App implements AfterViewChecked, OnInit {
 
             case 'tool_result':
               if (updatedMsg.toolCalls) {
-                const toolCall = updatedMsg.toolCalls.find(t => t.name === chunk.data.tool_name && t.status === 'running');
-                if (toolCall) {
-                  toolCall.status = 'completed';
-                  toolCall.result = chunk.data.result;
-                  // Add to chronological events
-                  if (!updatedMsg.events) updatedMsg.events = [];
-                  updatedMsg.events.push({
-                    type: 'tool_result',
-                    timestamp: Date.now(),
-                    sequence: updatedMsg.events.length,
-                    toolCall: toolCall
-                  });
+                const toolCallIndex = updatedMsg.toolCalls.findIndex(t => t.name === chunk.data.tool_name && t.status === 'running');
+                if (toolCallIndex !== -1) {
+                  const oldToolCall = updatedMsg.toolCalls[toolCallIndex];
+                  // Create a new toolCall object to trigger change detection
+                  const newToolCall = {
+                    ...oldToolCall,
+                    status: 'completed' as const,
+                    result: chunk.data.result,
+                    input: (chunk.data.tool_input && (!oldToolCall.input || Object.keys(oldToolCall.input).length === 0))
+                      ? chunk.data.tool_input
+                      : oldToolCall.input
+                  };
+                  // Create new arrays to trigger change detection
+                  updatedMsg.toolCalls = [
+                    ...updatedMsg.toolCalls.slice(0, toolCallIndex),
+                    newToolCall,
+                    ...updatedMsg.toolCalls.slice(toolCallIndex + 1)
+                  ];
+                  // Update the existing tool_use event in the events array
+                  if (updatedMsg.events) {
+                    const toolEventIndex = updatedMsg.events.findIndex(e => e.type === 'tool_use' && e.toolCall?.name === chunk.data.tool_name);
+                    if (toolEventIndex !== -1) {
+                      updatedMsg.events = [
+                        ...updatedMsg.events.slice(0, toolEventIndex),
+                        {
+                          ...updatedMsg.events[toolEventIndex],
+                          toolCall: newToolCall
+                        },
+                        ...updatedMsg.events.slice(toolEventIndex + 1)
+                      ];
+                    }
+                  }
                 }
               }
               break;
@@ -1120,40 +1160,38 @@ export class App implements AfterViewChecked, OnInit {
               }
               break;
 
-            case 'tool_started':
-              // Executor tool started
-              if (!updatedMsg.toolCalls) updatedMsg.toolCalls = [];
-              const startedToolCall = {
-                name: chunk.data.tool_name,
-                input: {}, // Input might not be available in start event
-                status: 'running' as const
-              };
-              updatedMsg.toolCalls.push(startedToolCall);
-              // Add to chronological events
-              if (!updatedMsg.events) updatedMsg.events = [];
-              updatedMsg.events.push({
-                type: 'tool_use',
-                timestamp: Date.now(),
-                sequence: updatedMsg.events.length,
-                toolCall: startedToolCall
-              });
-              break;
-
             case 'tool_completed':
               // Executor tool completed
               if (updatedMsg.toolCalls) {
-                // Find the last running tool with this name
-                const toolCall = [...updatedMsg.toolCalls].reverse().find(t => t.name === chunk.data.tool_name && t.status === 'running');
-                if (toolCall) {
-                  toolCall.status = chunk.data.success ? 'completed' : 'failed';
-                  // Add to chronological events
-                  if (!updatedMsg.events) updatedMsg.events = [];
-                  updatedMsg.events.push({
-                    type: 'tool_result',
-                    timestamp: Date.now(),
-                    sequence: updatedMsg.events.length,
-                    toolCall: toolCall
-                  });
+                const toolCallIndex = updatedMsg.toolCalls.findIndex(t => t.name === chunk.data.tool_name && t.status === 'running');
+                if (toolCallIndex !== -1) {
+                  const oldToolCall = updatedMsg.toolCalls[toolCallIndex];
+                  const newStatus: 'completed' | 'failed' = chunk.data.success ? 'completed' : 'failed';
+                  // Create a new toolCall object to trigger change detection
+                  const newToolCall = {
+                    ...oldToolCall,
+                    status: newStatus
+                  };
+                  // Create new arrays to trigger change detection
+                  updatedMsg.toolCalls = [
+                    ...updatedMsg.toolCalls.slice(0, toolCallIndex),
+                    newToolCall,
+                    ...updatedMsg.toolCalls.slice(toolCallIndex + 1)
+                  ];
+                  // Update the existing tool_use event in the events array
+                  if (updatedMsg.events) {
+                    const toolEventIndex = updatedMsg.events.findIndex(e => e.type === 'tool_use' && e.toolCall?.name === chunk.data.tool_name);
+                    if (toolEventIndex !== -1) {
+                      updatedMsg.events = [
+                        ...updatedMsg.events.slice(0, toolEventIndex),
+                        {
+                          ...updatedMsg.events[toolEventIndex],
+                          toolCall: newToolCall
+                        },
+                        ...updatedMsg.events.slice(toolEventIndex + 1)
+                      ];
+                    }
+                  }
                 }
               }
               break;
@@ -1316,5 +1354,157 @@ export class App implements AfterViewChecked, OnInit {
       toolCalls: m.toolCalls + toolCalls,
       toolErrors: m.toolErrors + toolErrors
     }));
+  }
+
+  updateConfigField(field: keyof AgentConfig, value: any) {
+    this.config.update(c => ({ ...c, [field]: value }));
+  }
+
+  saveSettings() {
+    localStorage.setItem('godoty_agent_config', JSON.stringify(this.config()));
+    this.toggleSettings();
+  }
+
+  loadAgentConfig() {
+    const saved = localStorage.getItem('godoty_agent_config');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // Ensure we don't overwrite status if it was 'working' (shouldn't be on reload but good practice)
+        // Also reset showSettings to false
+        this.config.update(c => ({
+          ...c,
+          ...parsed,
+          status: 'idle',
+          showSettings: false
+        }));
+      } catch (e) {
+        console.error('Failed to load config', e);
+      }
+    }
+  }
+
+  loadSystemInfo() {
+    this.desktopService.getSystemInfo().subscribe({
+      next: (info) => console.log('System Info:', info),
+      error: (err) => console.error('Failed to load system info', err)
+    });
+
+    // Also start monitoring Godot status
+    this.desktopService.streamGodotStatus().subscribe(status => {
+      this.updateGodotConfig(status);
+    });
+  }
+
+  scrollToBottom() {
+    if (this.scrollContainer) {
+      try {
+        this.scrollContainer.nativeElement.scrollTop = this.scrollContainer.nativeElement.scrollHeight;
+      } catch (err) { }
+    }
+  }
+
+  getGroupedEvents(msg: Message): GroupedEvent[] {
+    if (msg.events && msg.events.length > 0) {
+      const groupedEvents: GroupedEvent[] = [];
+      let currentTextBlock: { content: string; sequence: number } | null = null;
+      const toolMap = new Map<string, { toolCall: ToolCall; sequence: number }>();
+
+      for (const event of msg.events) {
+        if (event.type === 'text' && event.content) {
+          // If we're already building a text block, append to it
+          if (currentTextBlock) {
+            currentTextBlock.content += event.content;
+          } else {
+            // Start a new text block
+            currentTextBlock = {
+              content: event.content,
+              sequence: event.sequence
+            };
+          }
+        } else if (event.type !== 'text') {
+          // Non-text event encountered - flush current text block if exists
+          if (currentTextBlock) {
+            groupedEvents.push({
+              type: 'text_block',
+              content: currentTextBlock.content,
+              sequence: currentTextBlock.sequence
+            });
+            currentTextBlock = null;
+          }
+
+          // Handle tool events - consolidate by tool name
+          if (event.type === 'tool_use' || event.type === 'tool_result') {
+            const toolName = event.toolCall?.name;
+            if (toolName && event.toolCall) {
+              // Update or add the tool in the map (always keeps the latest version)
+              toolMap.set(toolName, {
+                toolCall: event.toolCall,
+                sequence: event.sequence
+              });
+            }
+          }
+        }
+      }
+
+      // Flush any remaining text block
+      if (currentTextBlock) {
+        groupedEvents.push({
+          type: 'text_block',
+          content: currentTextBlock.content,
+          sequence: currentTextBlock.sequence
+        });
+      }
+
+      // Add all tools from the map (deduplicated, with latest status)
+      toolMap.forEach((tool) => {
+        groupedEvents.push({
+          type: 'tool',
+          toolCall: tool.toolCall,
+          sequence: tool.sequence
+        });
+      });
+
+      // Sort by sequence to maintain chronological order
+      groupedEvents.sort((a, b) => a.sequence - b.sequence);
+
+      return groupedEvents;
+    }
+
+    // Fallback for messages without events array
+    const events: GroupedEvent[] = [];
+    if (msg.content) {
+      events.push({ type: 'text_block', content: this.filterExecutionPlanBlocks(msg.content), sequence: 0 });
+    }
+    if (msg.toolCalls) {
+      msg.toolCalls.forEach((tc, idx) => {
+        events.push({ type: 'tool', toolCall: tc, sequence: idx + 1 });
+      });
+    }
+    return events;
+  }
+
+  filterExecutionPlanBlocks(content: string): string {
+    if (!content) return '';
+
+    let filtered = content;
+
+    // Remove <plan>...</plan> blocks
+    filtered = filtered.replace(/<plan>[\s\S]*?<\/plan>/g, '');
+
+    // Remove JSON execution plan blocks (common patterns)
+    // Pattern 1: JSON objects with "steps" or "plan" keys
+    filtered = filtered.replace(/\{[\s\S]*?"(?:steps|plan|execution_plan)"[\s\S]*?\}/g, '');
+
+    // Pattern 2: Markdown code blocks containing JSON with plan/steps
+    filtered = filtered.replace(/```(?:json)?\s*\{[\s\S]*?"(?:steps|plan|execution_plan)"[\s\S]*?\}\s*```/g, '');
+
+    // Pattern 3: Remove any remaining empty code blocks
+    filtered = filtered.replace(/```\s*```/g, '');
+
+    // Clean up excessive whitespace that might result from filtering
+    filtered = filtered.replace(/\n{3,}/g, '\n\n').trim();
+
+    return filtered;
   }
 }
