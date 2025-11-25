@@ -30,7 +30,8 @@
       "Bash(npm install:*)",
       "mcp__desktop-commander__list_directory",
       "mcp__desktop-commander__read_file",
-      "mcp__desktop-commander__write_file"
+      "mcp__desktop-commander__write_file",
+      "mcp__context7__resolve-library-id"
     ],
     "deny": [],
     "ask": []

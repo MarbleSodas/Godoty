@@ -164,12 +164,43 @@ class ProjectDB:
         conn = self._get_connection()
         cursor = conn.cursor()
         now = time.time()
-        
+
         cursor.execute("""
             INSERT INTO metrics (project_hash, session_id, cost, tokens, timestamp, model_name)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (self.project_hash, session_id, cost, tokens, now, model_name))
-        
+
+        conn.commit()
+        conn.close()
+
+    def record_workflow_metrics(self, session_id: str, workflow_metrics: Dict[str, Any]):
+        """
+        Record aggregated workflow metrics for a session.
+
+        Args:
+            session_id: The session ID
+            workflow_metrics: Dictionary containing aggregated workflow metrics with keys:
+                - total_tokens: Total tokens for the workflow
+                - total_cost: Total cost for the workflow
+                - planning_tokens: Tokens used during planning phase
+                - execution_tokens: Tokens used during execution phase
+                - planning_cost: Cost during planning phase
+                - execution_cost: Cost during execution phase
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        now = time.time()
+
+        # Record the total workflow metrics as a single entry
+        # Use a special model name to indicate this is a workflow aggregation
+        model_name = "workflow_aggregated"
+
+        cursor.execute("""
+            INSERT INTO metrics (project_hash, session_id, cost, tokens, timestamp, model_name)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (self.project_hash, session_id, workflow_metrics.get('total_cost', 0.0),
+              workflow_metrics.get('total_tokens', 0), now, model_name))
+
         conn.commit()
         conn.close()
 
@@ -211,52 +242,103 @@ class ProjectDB:
     def get_session_metrics(self, session_id: str) -> Dict[str, Any]:
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
+        # Get detailed breakdown of metrics by model_name to distinguish individual vs workflow
         cursor.execute("""
-            SELECT SUM(cost), SUM(tokens) FROM metrics WHERE session_id = ?
+            SELECT model_name, SUM(cost), SUM(tokens)
+            FROM metrics
+            WHERE session_id = ?
+            GROUP BY model_name
         """, (session_id,))
-        
-        row = cursor.fetchone()
+
+        rows = cursor.fetchall()
         conn.close()
-        
+
+        total_cost = 0.0
+        total_tokens = 0
+        individual_cost = 0.0
+        individual_tokens = 0
+        workflow_cost = 0.0
+        workflow_tokens = 0
+
+        for row in rows:
+            model_name, cost, tokens = row
+            cost = cost if cost else 0.0
+            tokens = tokens if tokens else 0
+
+            total_cost += cost
+            total_tokens += tokens
+
+            if model_name == "workflow_aggregated":
+                workflow_cost += cost
+                workflow_tokens += tokens
+            else:
+                individual_cost += cost
+                individual_tokens += tokens
+
         return {
-            "session_cost": row[0] if row[0] else 0.0,
-            "session_tokens": row[1] if row[1] else 0
+            "session_cost": total_cost,
+            "session_tokens": total_tokens,
+            "individual_cost": individual_cost,
+            "individual_tokens": individual_tokens,
+            "workflow_cost": workflow_cost,
+            "workflow_tokens": workflow_tokens
         }
 
     def get_metrics_for_sessions(self, session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """
         Get metrics for multiple sessions.
-        
+
         Args:
             session_ids: List of session IDs
-            
+
         Returns:
-            Dictionary of session_id -> metrics
+            Dictionary of session_id -> metrics (including workflow breakdown)
         """
         if not session_ids:
             return {}
-            
+
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         placeholders = ','.join(['?'] * len(session_ids))
         query = f"""
-            SELECT session_id, SUM(cost), SUM(tokens) 
-            FROM metrics 
+            SELECT session_id, model_name, SUM(cost), SUM(tokens)
+            FROM metrics
             WHERE session_id IN ({placeholders})
-            GROUP BY session_id
+            GROUP BY session_id, model_name
         """
-        
+
         cursor.execute(query, session_ids)
         rows = cursor.fetchall()
         conn.close()
-        
+
+        # Aggregate results by session_id
         result = {}
         for row in rows:
-            result[row[0]] = {
-                "session_cost": row[1] if row[1] else 0.0,
-                "session_tokens": row[2] if row[2] else 0
-            }
-            
+            session_id, model_name, cost, tokens = row
+            cost = cost if cost else 0.0
+            tokens = tokens if tokens else 0
+
+            if session_id not in result:
+                result[session_id] = {
+                    "session_cost": 0.0,
+                    "session_tokens": 0,
+                    "individual_cost": 0.0,
+                    "individual_tokens": 0,
+                    "workflow_cost": 0.0,
+                    "workflow_tokens": 0
+                }
+
+            session_metrics = result[session_id]
+            session_metrics["session_cost"] += cost
+            session_metrics["session_tokens"] += tokens
+
+            if model_name == "workflow_aggregated":
+                session_metrics["workflow_cost"] += cost
+                session_metrics["workflow_tokens"] += tokens
+            else:
+                session_metrics["individual_cost"] += cost
+                session_metrics["individual_tokens"] += tokens
+
         return result

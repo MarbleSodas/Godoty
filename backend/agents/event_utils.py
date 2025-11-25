@@ -44,13 +44,15 @@ def sanitize_event_data(data: Any) -> Any:
         except (TypeError, ValueError):
             return str(data)
 
-def transform_strands_event(event: Any) -> Optional[Dict[str, Any]]:
+def transform_strands_event(event: Any, agent_type: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Transform a Strands event into a frontend-compatible format.
-    
+
     Args:
         event: The raw event from Strands (dict or object)
-        
+        agent_type: Optional agent type ("planning", "execution") for metrics tracking
+        session_id: Optional session ID for workflow metrics tracking
+
     Returns:
         Dict with 'type' and 'data' keys, or None if event should be skipped.
     """
@@ -107,8 +109,12 @@ def transform_strands_event(event: Any) -> Optional[Dict[str, Any]]:
             return None
             
         # Check if this is already a transformed event (has 'type' and 'data')
-        # This allows passing through events we constructed ourselves (like plan_created)
+        # This allows passing through events we constructed ourselves
         if "data" in event:
+            # Pass through workflow metrics events and other custom events
+            if event["type"] == "workflow_metrics_complete":
+                return event
+            # Also pass through other custom events like plan_created, execution_started, etc.
             return event
 
         # If it has a type but no data, and we haven't handled it above,
@@ -220,7 +226,10 @@ def transform_strands_event(event: Any) -> Optional[Dict[str, Any]]:
                 "estimated_cost": estimated_cost,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
-                "model_id": model_id
+                "model_id": model_id,
+                "agent_type": agent_type,
+                "session_id": session_id,
+                "cost": estimated_cost  # Add 'cost' field for consistency with database schema
             }
 
             return {
@@ -270,7 +279,10 @@ def transform_strands_event(event: Any) -> Optional[Dict[str, Any]]:
                  "estimated_cost": estimated_cost,
                  "input_tokens": input_tokens,
                  "output_tokens": output_tokens,
-                 "model_id": model_id
+                 "model_id": model_id,
+                 "agent_type": agent_type,
+                 "session_id": session_id,
+                 "cost": estimated_cost  # Add 'cost' field for consistency
              }
 
              return {
@@ -379,5 +391,61 @@ def transform_strands_event(event: Any) -> Optional[Dict[str, Any]]:
             "type": event_type,
             "data": sanitize_event_data(event_data)
         }
-    
+
     return None
+
+
+def accumulate_workflow_metrics(
+    session_id: str,
+    metrics_event: Dict[str, Any],
+    multi_agent_manager: Any,
+    agent_type: str
+) -> None:
+    """
+    Accumulate metrics for a workflow session.
+
+    Args:
+        session_id: The session ID
+        metrics_event: The metrics event data
+        multi_agent_manager: The multi-agent manager instance
+        agent_type: "planning" or "execution"
+    """
+    try:
+        if session_id not in multi_agent_manager._workflow_metrics:
+            multi_agent_manager._workflow_metrics[session_id] = WorkflowMetricsAccumulator(session_id)
+
+        accumulator = multi_agent_manager._workflow_metrics[session_id]
+        metrics = metrics_event.get("data", {}).get("metrics", {})
+
+        if agent_type == "planning":
+            accumulator.add_planning_metrics(metrics)
+        elif agent_type == "execution":
+            accumulator.add_execution_metrics(metrics)
+
+        logger.debug(f"Accumulated {agent_type} metrics for {session_id}: "
+                    f"tokens={metrics.get('total_tokens', 0)}, "
+                    f"cost=${metrics.get('cost', 0):.4f}")
+
+    except Exception as e:
+        logger.error(f"Failed to accumulate workflow metrics: {e}")
+
+
+def get_workflow_metrics_summary(session_id: str, multi_agent_manager: Any) -> Optional[Dict[str, Any]]:
+    """
+    Get workflow metrics summary for a session.
+
+    Args:
+        session_id: The session ID
+        multi_agent_manager: The multi-agent manager instance
+
+    Returns:
+        Workflow metrics summary or None if not available
+    """
+    try:
+        if session_id not in multi_agent_manager._workflow_metrics:
+            return None
+
+        return multi_agent_manager._workflow_metrics[session_id].get_aggregated_metrics()
+    except Exception as e:
+        logger.error(f"Failed to get workflow metrics summary: {e}")
+        return None

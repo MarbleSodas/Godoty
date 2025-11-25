@@ -32,6 +32,21 @@ export interface ExecutionPlan {
   status: 'pending' | 'running' | 'completed' | 'failed';
 }
 
+export interface WorkflowMetrics {
+  workflowId: string;
+  planningTokens: number;
+  executionTokens: number;
+  totalTokens: number;
+  planningCost: number;
+  executionCost: number;
+  totalCost: number;
+  agentTypes: string[];
+  planningMetrics: any;
+  executionMetrics: any;
+  startTime: string;
+  completionTime: string;
+}
+
 export interface MessageEvent {
   type: 'text' | 'tool_use' | 'tool_result';
   timestamp: number;
@@ -57,6 +72,7 @@ export interface Message {
   toolCalls?: ToolCall[];
   plan?: ExecutionPlan;
   events?: MessageEvent[];
+  workflowMetrics?: WorkflowMetrics;
 }
 
 export interface Session {

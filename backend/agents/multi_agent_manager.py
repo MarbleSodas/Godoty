@@ -32,6 +32,79 @@ from .db import ProjectDB
 logger = logging.getLogger(__name__)
 
 
+class WorkflowMetricsAccumulator:
+    """
+    Accumulates and aggregates metrics across planning and execution phases
+    of multi-agent workflows.
+    """
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.planning_metrics = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0
+        }
+        self.execution_metrics = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0
+        }
+        self.start_time = datetime.now()
+
+    def add_planning_metrics(self, metrics: Dict[str, Any]) -> None:
+        """Add metrics from the planning phase."""
+        self.planning_metrics["input_tokens"] += metrics.get("input_tokens", 0)
+        self.planning_metrics["output_tokens"] += metrics.get("output_tokens", 0)
+        self.planning_metrics["total_tokens"] += metrics.get("total_tokens", 0)
+        self.planning_metrics["cost"] += metrics.get("cost", 0.0)
+
+    def add_execution_metrics(self, metrics: Dict[str, Any]) -> None:
+        """Add metrics from the execution phase."""
+        self.execution_metrics["input_tokens"] += metrics.get("input_tokens", 0)
+        self.execution_metrics["output_tokens"] += metrics.get("output_tokens", 0)
+        self.execution_metrics["total_tokens"] += metrics.get("total_tokens", 0)
+        self.execution_metrics["cost"] += metrics.get("cost", 0.0)
+
+    def get_aggregated_metrics(self) -> Dict[str, Any]:
+        """Get aggregated workflow metrics."""
+        total_tokens = self.planning_metrics["total_tokens"] + self.execution_metrics["total_tokens"]
+        total_cost = self.planning_metrics["cost"] + self.execution_metrics["cost"]
+
+        return {
+            "workflow_id": self.session_id,
+            "planning_tokens": self.planning_metrics["total_tokens"],
+            "execution_tokens": self.execution_metrics["total_tokens"],
+            "total_tokens": total_tokens,
+            "planning_cost": self.planning_metrics["cost"],
+            "execution_cost": self.execution_metrics["cost"],
+            "total_cost": total_cost,
+            "agent_types": ["planning", "execution"],
+            "planning_metrics": self.planning_metrics,
+            "execution_metrics": self.execution_metrics,
+            "start_time": self.start_time.isoformat(),
+            "completion_time": datetime.now().isoformat()
+        }
+
+    def reset(self) -> None:
+        """Reset all metrics for a new workflow."""
+        self.planning_metrics = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0
+        }
+        self.execution_metrics = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0
+        }
+        self.start_time = datetime.now()
+
+
 class MultiAgentManager:
     """
     Manages multi-agent sessions and execution.
@@ -50,6 +123,8 @@ class MultiAgentManager:
         self._active_graphs: Dict[str, Dict[str, Graph]] = {}
         # Store active asyncio tasks: session_id -> asyncio.Task
         self._active_tasks: Dict[str, asyncio.Task] = {}
+        # Store workflow metrics accumulators: session_id -> WorkflowMetricsAccumulator
+        self._workflow_metrics: Dict[str, WorkflowMetricsAccumulator] = {}
         logger.info(f"MultiAgentManager initialized with storage: {self.storage_dir}")
 
     def create_session(self, session_id: str, title: Optional[str] = None) -> str:
@@ -354,21 +429,28 @@ class MultiAgentManager:
             self._active_tasks[session_id] = current_task
 
         graphs = self._active_graphs[session_id]
-        
+
+        # Initialize workflow metrics accumulator for planning mode
+        if mode == "planning":
+            self._workflow_metrics[session_id] = WorkflowMetricsAccumulator(session_id)
+
         try:
             # Import shared event utility
-            from .event_utils import transform_strands_event
-            
+            from .event_utils import transform_strands_event, accumulate_workflow_metrics
+
             if mode == "fast":
                 # --- Fast Mode: Execute directly (Bypass Graph) ---
                 # This reduces overhead and allows direct interaction with the agent
                 executor_agent = get_executor_agent()
-                
+
                 # Stream directly from the agent
                 async for event in executor_agent.agent.stream_async(message):
-                    # Transform event
-                    transformed = transform_strands_event(event)
+                    # Transform event with execution agent type
+                    transformed = transform_strands_event(event, agent_type="execution", session_id=session_id)
                     if transformed:
+                        # Accumulate metrics if this is a metrics event
+                        if transformed["type"] == "metrics":
+                            accumulate_workflow_metrics(session_id, transformed, self, "execution")
                         yield transformed
                     
             else:
@@ -379,8 +461,11 @@ class MultiAgentManager:
 
                 # 1. Run Planning Graph
                 async for event in planning_graph.stream_async(message):
-                    transformed = transform_strands_event(event)
+                    transformed = transform_strands_event(event, agent_type="planning", session_id=session_id)
                     if transformed:
+                        # Accumulate metrics if this is a metrics event
+                        if transformed["type"] == "metrics":
+                            accumulate_workflow_metrics(session_id, transformed, self, "planning")
                         # yield transformed  <-- REMOVED (Handled below with filtering)
 
                         # Collect text output to detect execution plan
@@ -497,8 +582,11 @@ class MultiAgentManager:
                     current_step_index = 0
 
                     async for event in fast_graph.stream_async(plan_prompt):
-                        transformed = transform_strands_event(event)
+                        transformed = transform_strands_event(event, agent_type="execution", session_id=session_id)
                         if transformed:
+                            # Accumulate metrics if this is a metrics event
+                            if transformed["type"] == "metrics":
+                                accumulate_workflow_metrics(session_id, transformed, self, "execution")
                             yield transformed
 
                             # Track tool completions to potentially advance to next step
@@ -547,6 +635,41 @@ class MultiAgentManager:
                         "type": "execution_completed",
                         "data": {"message": "Plan execution completed."}
                     }
+
+                # Emit aggregated workflow metrics for planning mode
+                if mode == "planning" and session_id in self._workflow_metrics:
+                    try:
+                        # Get accumulated metrics from planning and execution phases
+                        aggregated_metrics = self._workflow_metrics[session_id].get_aggregated_metrics()
+
+                        # Persist workflow metrics to database if project_path is available
+                        if project_path:
+                            try:
+                                db = ProjectDB(project_path)
+                                db.record_workflow_metrics(session_id, aggregated_metrics)
+                                logger.info(f"Persisted workflow metrics to database for {session_id}")
+                            except Exception as db_error:
+                                logger.error(f"Failed to persist workflow metrics to database: {db_error}")
+
+                        # Emit workflow metrics complete event
+                        yield {
+                            "type": "workflow_metrics_complete",
+                            "data": {
+                                "workflow_id": session_id,
+                                "metrics": aggregated_metrics,
+                                "phase_breakdown": {
+                                    "planning": self._workflow_metrics[session_id].planning_metrics,
+                                    "execution": self._workflow_metrics[session_id].execution_metrics
+                                }
+                            }
+                        }
+
+                        logger.info(f"Emitted aggregated workflow metrics for {session_id}: "
+                                 f"Total tokens: {aggregated_metrics['total_tokens']}, "
+                                 f"Total cost: ${aggregated_metrics['total_cost']:.4f}")
+
+                    except Exception as e:
+                        logger.error(f"Failed to emit aggregated workflow metrics: {e}")
 
             # Track session-level metrics if enabled
             self._track_metrics(session_id, project_path)

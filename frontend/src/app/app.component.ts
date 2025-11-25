@@ -1,7 +1,7 @@
 import { Component, signal, computed, effect, ViewChild, ElementRef, AfterViewChecked, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ChatService, Message, Session, ToolCall, ExecutionPlan } from './services/chat.service';
+import { ChatService, Message, Session, ToolCall, ExecutionPlan, WorkflowMetrics } from './services/chat.service';
 import { DesktopService } from './services/desktop.service';
 
 interface SessionMetrics {
@@ -85,7 +85,7 @@ interface GroupedEvent {
                     @if (session.metrics) {
                         <div class="flex items-center gap-2 text-[10px] font-mono opacity-60">
                            <span>{{ session.metrics.session_tokens | number }}t</span>
-                           <span>\${{ session.metrics.session_cost.toFixed(3) }}</span>
+                           <span>$ {{ session.metrics.session_cost.toFixed(3) }}</span>
                         </div>
                     }
                 </div>
@@ -465,12 +465,25 @@ interface GroupedEvent {
                             </div>
                             <div class="flex justify-between">
                               <span class="text-slate-500">Cost:</span>
-                              <span class="text-green-400 font-mono">\${{ msg.cost.toFixed(6) }}</span>
+                              <span class="text-green-400 font-mono">$ {{ msg.cost.toFixed(6) }}</span>
                             </div>
                             @if (msg.generationTimeMs) {
                               <div class="flex justify-between">
                                 <span class="text-slate-500">Time:</span>
                                 <span class="text-slate-300 font-mono">{{ msg.generationTimeMs }}ms</span>
+                              </div>
+                            }
+                            @if (msg.workflowMetrics) {
+                              <div class="pt-2 border-t border-[#363d4a]">
+                                <div class="text-slate-400 font-semibold text-xs mb-2">Workflow Total</div>
+                                <div class="flex justify-between">
+                                  <span class="text-slate-500">Total:</span>
+                                  <span class="text-white font-mono font-semibold">{{ msg.workflowMetrics.totalTokens }} tokens</span>
+                                </div>
+                                <div class="flex justify-between">
+                                  <span class="text-slate-500">Cost:</span>
+                                  <span class="text-green-400 font-mono">$ {{ msg.workflowMetrics.totalCost.toFixed(4) }}</span>
+                                </div>
                               </div>
                             }
                           </div>
@@ -1193,6 +1206,27 @@ export class App implements AfterViewChecked, OnInit {
                     }
                   }
                 }
+              }
+              break;
+
+            case 'workflow_metrics_complete':
+              // Workflow metrics complete - aggregated planning + execution metrics
+              console.log('[AppComponent] Workflow metrics complete:', chunk.data);
+              if (chunk.data?.metrics) {
+                const workflowMetrics: WorkflowMetrics = chunk.data.metrics;
+
+                // Update the message with workflow metrics for display on hover
+                updatedMsg.workflowMetrics = workflowMetrics;
+
+                // Also update session metrics with the total workflow cost
+                this.updateMetrics(
+                  workflowMetrics.totalTokens,
+                  0, // Don't break down prompt/completion for workflow metrics
+                  0,
+                  workflowMetrics.totalCost,
+                  0, // Tool calls already tracked individually
+                  0
+                );
               }
               break;
 

@@ -25,7 +25,11 @@ class MessageMetrics(Base):
     message_id = Column(String, unique=True, nullable=False, index=True)
     session_id = Column(String, ForeignKey("session_metrics.session_id", ondelete="CASCADE"), index=True)
     project_id = Column(String, ForeignKey("project_metrics.project_id", ondelete="CASCADE"), index=True)
-    
+
+    # Agent information for multi-agent workflows
+    agent_type = Column(String, nullable=True, index=True)  # "planning", "execution", "unknown"
+    workflow_session_id = Column(String, nullable=True, index=True)  # For correlating planning+execution phases
+
     # Model information
     model_id = Column(String, nullable=False, index=True)
     
@@ -61,6 +65,8 @@ class MessageMetrics(Base):
             "message_id": self.message_id,
             "session_id": self.session_id,
             "project_id": self.project_id,
+            "agent_type": self.agent_type,
+            "workflow_session_id": self.workflow_session_id,
             "model_id": self.model_id,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
