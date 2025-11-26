@@ -15,10 +15,47 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agents import get_planning_agent, close_planning_agent
+from agents import get_planning_agent, close_planning_agent, AgentConfig
+from agents.executor_agent import close_executor_agent
 from agents.db import ProjectDB
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_title_from_chat_history(chat_history: list) -> str:
+    """
+    Extract a meaningful title from the chat history.
+
+    Priority order:
+    1. First user message (trimmed to reasonable length)
+    2. If no user messages, fall back to "Session {id}"
+
+    Args:
+        chat_history: List of chat messages from the database
+
+    Returns:
+        A meaningful title string
+    """
+    if not chat_history:
+        return "New Session"
+
+    # Find the first user message
+    for message in chat_history:
+        if isinstance(message, dict) and message.get("role") == "user":
+            content = message.get("content", "")
+            if content:
+                # Clean up the content for display
+                # Remove excessive whitespace and truncate
+                content = content.strip()
+                # Replace newlines with spaces
+                content = ' '.join(content.split())
+                # Truncate to reasonable length for title
+                if len(content) > 50:
+                    content = content[:50] + "..."
+                return content if content else "New Session"
+
+    # Fallback if no user message found
+    return "New Session"
 
 # Create router
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -226,23 +263,27 @@ async def update_agent_config(request: UpdateConfigRequest):
         Updated configuration
     """
     try:
-        agent = get_planning_agent()
-        
-        # Update configuration
-        agent.model.update_config(
+        # 1. Update persistent configuration
+        AgentConfig.update_config(
             planning_model=request.planning_model,
             executor_model=request.executor_model,
             api_key=request.openrouter_api_key
         )
+
+        # 2. Reset the agent to pick up new configuration
+        # This ensures the model is re-initialized with new ID and API key
+        await close_planning_agent()
+        await close_executor_agent()
+        agent = get_planning_agent()
         
-        # Get updated config
+        # Get updated config from the fresh agent
         model_config = agent.model.get_config()
         
         return {
             "status": "success",
             "message": "Configuration updated successfully",
             "config": {
-                "model_id": model_config.get("planning_model", "unknown"),
+                "model_id": model_config.get("model_id", "unknown"),
                 "model_config": model_config
             }
         }
@@ -293,6 +334,7 @@ class SessionRequest(BaseModel):
     """Request model for session creation."""
     session_id: str = Field(..., description="Unique session identifier", min_length=1)
     title: Optional[str] = Field(None, description="Optional session title")
+    project_path: Optional[str] = Field(None, description="Project path for database storage")
 
 
 class ChatRequest(BaseModel):
@@ -305,19 +347,23 @@ class ChatRequest(BaseModel):
 async def create_session(request: SessionRequest):
     """
     Create a new multi-agent session.
-    
+
     Args:
-        request: SessionRequest with session_id and optional title
-        
+        request: SessionRequest with session_id, optional title, and optional project_path
+
     Returns:
         Session details
     """
     try:
         from agents.multi_agent_manager import get_multi_agent_manager
         manager = get_multi_agent_manager()
-        
-        session_id = manager.create_session(request.session_id, title=request.title)
-        
+
+        session_id = manager.create_session(
+            request.session_id,
+            title=request.title,
+            project_path=request.project_path
+        )
+
         return {
             "status": "success",
             "session_id": session_id,
@@ -332,38 +378,95 @@ async def create_session(request: SessionRequest):
 async def list_sessions(path: Optional[str] = Query(None)):
     """
     List all available sessions.
-    
+
+    Prioritizes database sessions, falls back to file-based sessions if database is empty.
+
+    Args:
+        path: Optional project path for database filtering
+
     Returns:
         List of sessions
     """
     try:
+        # Try database first (preferred source)
+        if path:
+            try:
+                db = ProjectDB(path)
+                db_sessions = db.get_all_sessions()
+
+                if db_sessions:
+                    # Convert database sessions to expected format
+                    sessions_dict = {}
+                    for session in db_sessions:
+                        session_id = session["id"]
+
+                        # Extract meaningful title from chat history
+                        title = _extract_title_from_chat_history(session.get("chat_history", []))
+
+                        sessions_dict[session_id] = {
+                            "session_id": session_id,
+                            "title": title,
+                            "date": session["created_at"],
+                            "active": False,  # Could check if session is in MultiAgentManager memory
+                            "is_running": False,
+                            "metadata": {
+                                "created_at": session["created_at"],
+                                "last_updated": session["last_updated"],
+                                "title": title
+                            },
+                            "path": f"database://{session_id}"
+                        }
+
+                    # Add metrics for database sessions
+                    try:
+                        session_ids = list(sessions_dict.keys())
+                        metrics_map = db.get_metrics_for_sessions(session_ids)
+
+                        for session_id, session_data in sessions_dict.items():
+                            if session_id in metrics_map:
+                                session_data["metrics"] = metrics_map[session_id]
+
+                    except Exception as metrics_error:
+                        logger.warning(f"Failed to get metrics for database sessions: {metrics_error}")
+
+                    logger.info(f"Retrieved {len(sessions_dict)} sessions from database for project: {path}")
+                    return {
+                        "status": "success",
+                        "sessions": sessions_dict
+                    }
+
+            except Exception as db_error:
+                logger.warning(f"Failed to get sessions from database: {db_error}")
+
+        # Fallback to file-based sessions
         from agents.multi_agent_manager import get_multi_agent_manager
         manager = get_multi_agent_manager()
-        
+
         sessions_dict = manager.list_sessions()
-        
-        # Enhance with metrics
+
+        # Enhance with metrics if possible
         try:
             # Use a dummy path if none provided, just to access the global DB file
-            # The get_metrics_for_sessions method doesn't filter by project hash
-            db_path = path if path else "." 
+            db_path = path if path else "."
             db = ProjectDB(db_path)
-            
+
             session_ids = list(sessions_dict.keys())
             metrics_map = db.get_metrics_for_sessions(session_ids)
-            
+
             for session_id, session_data in sessions_dict.items():
                 if session_id in metrics_map:
                     session_data["metrics"] = metrics_map[session_id]
-                    
+
         except Exception as e:
-            logger.error(f"Error fetching metrics for sessions: {e}")
+            logger.warning(f"Error fetching metrics for file sessions: {e}")
             # Continue without metrics if DB fails
-        
+
+        logger.info(f"Retrieved {len(sessions_dict)} sessions from file system (fallback)")
         return {
             "status": "success",
             "sessions": sessions_dict
         }
+
     except Exception as e:
         logger.error(f"Error listing sessions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -372,47 +475,66 @@ async def list_sessions(path: Optional[str] = Query(None)):
 @router.get("/sessions/{session_id}", response_model=dict)
 async def get_session(session_id: str, path: Optional[str] = Query(None)):
     """
-    Get session details.
-    
+    Get session details with enhanced loading strategy and user notifications.
+
     Args:
         session_id: Session ID
         path: Optional project path to look up in ProjectDB
-        
+
     Returns:
-        Session details
+        Session details with status and error information
     """
     try:
-        if path:
-            try:
-                db = ProjectDB(path)
-                session = db.get_session(session_id)
-                if session:
-                    # Get session metrics too
-                    metrics = db.get_session_metrics(session_id)
-                    session["metrics"] = metrics
-                    return {
-                        "status": "success",
-                        "session": session
-                    }
-            except Exception as e:
-                logger.error(f"Error getting session from ProjectDB: {e}")
-
         from agents.multi_agent_manager import get_multi_agent_manager
         manager = get_multi_agent_manager()
-        
-        session = manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-            
-        return {
-            "status": "success",
-            "session": session
-        }
-    except HTTPException:
-        raise
+
+        # Primary source: FileSessionManager (always has latest conversation)
+        try:
+            session_data = await manager.get_session_chat_history(session_id)
+
+            # If we have data and a path, sync to ProjectDB for future listing
+            if session_data and path:
+                try:
+                    db = ProjectDB(path)
+                    db.save_session(session_id, session_data)
+                    logger.info(f"Synced session {session_id} to ProjectDB")
+                except Exception as sync_error:
+                    logger.warning(f"Failed to sync session to ProjectDB: {sync_error}")
+
+            if session_data:
+                # Get metrics from database if available
+                metrics = None
+                if path:
+                    try:
+                        db = ProjectDB(path)
+                        metrics = db.get_session_metrics(session_id)
+                    except Exception as metrics_error:
+                        logger.warning(f"Failed to get session metrics: {metrics_error}")
+
+                return {
+                    "status": "success",
+                    "chat_history": session_data,
+                    "metrics": metrics
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Session {session_id} not found or contains no data"
+                }
+
+        except FileNotFoundError:
+            logger.error(f"Session file not found: {session_id}")
+            return {"status": "error", "message": "Session not found. It may have been deleted."}
+        except PermissionError:
+            logger.error(f"Permission denied accessing session: {session_id}")
+            return {"status": "error", "message": "Unable to access session due to file permissions."}
+        except Exception as e:
+            logger.error(f"Unexpected error loading session {session_id}: {e}", exc_info=True)
+            return {"status": "error", "message": "An unexpected error occurred while loading the session."}
+
     except Exception as e:
-        logger.error(f"Error getting session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to load session {session_id}: {e}")
+        return {"status": "error", "message": f"Unable to load session: {str(e)}"}
 
 
 @router.post("/sessions/{session_id}/restore", response_model=dict)
@@ -448,16 +570,20 @@ async def restore_session(session_id: str, path: str = Query(...)):
 async def get_project_metrics(path: str = Query(...)):
     """
     Get aggregated metrics for the project.
-    
+
     Args:
         path: Project path
-        
+
     Returns:
         Project metrics
     """
     try:
         db = ProjectDB(path)
         metrics = db.get_project_metrics()
+
+        logger.info(f"Project metrics for {path}: cost=${metrics['total_cost']:.4f}, "
+                   f"tokens={metrics['total_tokens']}, sessions={metrics['total_sessions']}")
+
         return {
             "status": "success",
             "metrics": metrics
@@ -583,7 +709,7 @@ async def chat_session(session_id: str, request: ChatRequest, path: Optional[str
         # Auto-create session if it doesn't exist (lazy creation)
         if not manager.get_session(session_id):
             logger.info(f"Auto-creating session {session_id} with title: {request.message[:50]}...")
-            manager.create_session(session_id, title=request.message)
+            manager.create_session(session_id, title=request.message, project_path=path)
         
         # Process message
         # Note: This might take time, so in a real app we might want streaming or background tasks
@@ -699,7 +825,7 @@ async def chat_session_stream(
         # Auto-create session if it doesn't exist (lazy creation)
         if not manager.get_session(session_id):
             logger.info(f"Auto-creating session {session_id} with title: {chat_request.message[:50]}...")
-            manager.create_session(session_id, title=chat_request.message)
+            manager.create_session(session_id, title=chat_request.message, project_path=path)
         
         # Create streaming generator
         async def event_generator():

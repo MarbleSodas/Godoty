@@ -220,23 +220,36 @@ class ProjectDB:
         # Aggregated metrics for the project
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
+        # Get metrics from metrics table
         cursor.execute("""
-            SELECT 
-                SUM(cost), 
-                SUM(tokens), 
+            SELECT
+                SUM(cost),
+                SUM(tokens),
                 COUNT(DISTINCT session_id)
-            FROM metrics 
+            FROM metrics
             WHERE project_hash = ?
         """, (self.project_hash,))
-        
-        row = cursor.fetchone()
+
+        metrics_row = cursor.fetchone()
+
+        # Get session count from sessions table for more accurate count
+        cursor.execute("""
+            SELECT COUNT(session_id)
+            FROM sessions
+            WHERE project_hash = ?
+        """, (self.project_hash,))
+
+        sessions_row = cursor.fetchone()
         conn.close()
-        
+
+        # Use the more reliable session count from sessions table
+        session_count = sessions_row[0] if sessions_row and sessions_row[0] else 0
+
         return {
-            "total_cost": row[0] if row[0] else 0.0,
-            "total_tokens": row[1] if row[1] else 0,
-            "total_sessions": row[2] if row[2] else 0
+            "total_cost": metrics_row[0] if metrics_row and metrics_row[0] else 0.0,
+            "total_tokens": metrics_row[1] if metrics_row and metrics_row[1] else 0,
+            "total_sessions": session_count
         }
 
     def get_session_metrics(self, session_id: str) -> Dict[str, Any]:

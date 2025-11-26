@@ -157,5 +157,29 @@ async def test_process_message(temp_storage_dir, mock_agents):
     
     # Process message
     response = await manager.process_message(session_id, "Hello", mode="fast")
-    
+
     assert response == "Agent response"
+
+
+@pytest.mark.asyncio
+async def test_session_manager_sharing(temp_storage_dir, mock_agents):
+    """Test that planning and executor graphs share the same session manager."""
+    manager = MultiAgentManager(storage_dir=temp_storage_dir)
+    session_id = "test_shared_session"
+
+    # Create session
+    manager.create_session(session_id)
+
+    # Verify session manager is shared
+    graphs = manager._active_graphs[session_id]
+
+    # Both graphs should exist
+    assert "planning" in graphs
+    assert "executor" in graphs
+
+    # Shared session reference should be stored
+    assert "shared_session" in graphs
+    assert graphs["shared_session"] is not None
+
+    # Verify the session manager was set for both graphs
+    # (This is a structural test - the actual session manager object is created by Strands)

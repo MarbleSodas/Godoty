@@ -558,3 +558,12 @@ def get_executor_agent() -> ExecutorAgent:
         _executor_agent_instance = ExecutorAgent()
 
     return _executor_agent_instance
+
+
+async def close_executor_agent():
+    """Close the executor agent singleton instance."""
+    global _executor_agent_instance
+
+    if _executor_agent_instance is not None:
+        await _executor_agent_instance.close()
+        _executor_agent_instance = None

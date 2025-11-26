@@ -1,6 +1,7 @@
 import { Component, signal, computed, effect, ViewChild, ElementRef, AfterViewChecked, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import { ChatService, Message, Session, ToolCall, ExecutionPlan, WorkflowMetrics } from './services/chat.service';
 import { DesktopService } from './services/desktop.service';
 
@@ -66,7 +67,19 @@ interface GroupedEvent {
 
         <!-- Session List (Takes remaining height) -->
         <div class="flex-1 overflow-y-auto p-2">
-          <div class="px-2 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">History</div>
+          <!-- New Session Button -->
+          <div class="px-2 pb-3">
+            <button
+              (click)="createNewSession()"
+              class="w-full bg-[#478cbf] hover:bg-[#3a7ca8] text-white rounded-lg px-3 py-2.5 text-sm font-medium transition-colors flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20 transform active:scale-95">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              <span>New Session</span>
+            </button>
+          </div>
+
+          <div class="px-2 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Sessions</div>
           
           <div class="space-y-1">
             @for (session of sessions(); track session.id) {
@@ -281,7 +294,7 @@ interface GroupedEvent {
         <div class="flex-1 overflow-y-auto p-4 md:p-8 space-y-4 scroll-smooth" #scrollContainer>
           
           <!-- Welcome Message -->
-          @if (messages().length === 0) {
+          @if (messages().length === 0 && !currentSessionId()) {
             <div class="flex flex-col items-center justify-center py-10 text-center opacity-60">
                <div class="w-12 h-12 rounded bg-[#363d4a] flex items-center justify-center mb-4">
                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-[#478cbf]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -290,8 +303,23 @@ interface GroupedEvent {
                </div>
                <h2 class="text-lg font-medium text-white">Godoty Agent Ready</h2>
                <p class="text-sm text-slate-400 max-w-md mt-2">
-                 I have analyzed the project structure at <code>{{config().projectPath}}</code>. 
+                 I have analyzed the project structure at <code>{{config().projectPath}}</code>.
                  I can help you refactor GDScript, create new scenes, or debug signals.
+               </p>
+               <p class="text-sm text-slate-500 max-w-md mt-3">
+                 Click "New Session" to start a conversation or continue with an existing session.
+               </p>
+            </div>
+          } @else if (messages().length === 0 && currentSessionId()) {
+            <div class="flex flex-col items-center justify-center py-10 text-center opacity-60">
+               <div class="w-12 h-12 rounded bg-[#363d4a] flex items-center justify-center mb-4">
+                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-[#478cbf]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                  </svg>
+               </div>
+               <h2 class="text-lg font-medium text-white">Ready to Chat</h2>
+               <p class="text-sm text-slate-400 max-w-md mt-2">
+                 Start a conversation by sending a message below.
                </p>
             </div>
           }
@@ -837,8 +865,13 @@ export class App implements AfterViewChecked, OnInit {
     // Check if project path changed
     if (path && path !== this.config().projectPath) {
       console.log(`[App] Project path changed: ${path}`);
+
+      // Clear current session - it belongs to old project
+      this.currentSessionId.set(null);
+      this.messages.set([]);
+
+      // Update path and reload sessions
       this.chatService.setProjectPath(path);
-      // Reload sessions for the new project
       this.loadSessions();
     }
 
@@ -879,18 +912,31 @@ export class App implements AfterViewChecked, OnInit {
       }
 
       this.sessions.set(sessions);
-      if (sessions.length > 0 && !this.currentSessionId()) {
-        this.selectSession(sessions[0].id);
-      }
-      // Don't auto-create session if empty - wait for first message
+      // Don't auto-select session on load - let user explicitly create or select a session
+      // This allows the app to start in an empty state as requested
+      // Don't auto-create session if empty - wait for first message or explicit session creation
     });
   }
 
   createNewSession(title?: string) {
     const newId = 'session-' + Date.now();
-    this.chatService.createSession(newId, title).subscribe(() => {
+    const sessionTitle = title || 'New Session';
+
+    // Clear current state immediately for better UX
+    this.messages.set([]);
+    this.currentSessionId.set(null);
+
+    this.chatService.createSession(newId, sessionTitle).subscribe(() => {
       this.loadSessions();
       this.selectSession(newId);
+
+      // Focus on input field after session creation
+      setTimeout(() => {
+        const textarea = document.querySelector('textarea') as HTMLTextAreaElement;
+        if (textarea) {
+          textarea.focus();
+        }
+      }, 100);
     });
   }
 
@@ -900,9 +946,166 @@ export class App implements AfterViewChecked, OnInit {
       ...session,
       active: session.id === id
     })));
-    // Load messages for this session if backend supported message history retrieval
-    // For now we start fresh or would need an endpoint to get history
+
+    // Load conversation history
+    this.loadSessionHistory(id);
+  }
+
+  /**
+   * Load full conversation history for a session from the backend.
+   */
+  private loadSessionHistory(sessionId: string) {
+    // Clear current messages first to show loading state
     this.messages.set([]);
+
+    // Reset metrics to avoid carrying over from previous session
+    this.metrics.set({
+      totalTokens: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      sessionCost: 0,
+      projectTotalCost: this.metrics().projectTotalCost, // Preserve project total
+      toolCalls: 0,
+      toolErrors: 0,
+      generationTimeMs: undefined
+    });
+
+    // Fetch session details including chat history
+    this.chatService.getSession(sessionId).subscribe({
+      next: (response) => {
+        if (response.status === 'success' && response.chat_history) {
+          // Transform database format to frontend Message format using the enhanced method
+          const messages: Message[] = this.transformSessionData(response.chat_history);
+          this.messages.set(messages);
+
+          // Apply or calculate metrics
+          if (response.metrics) {
+            this.metrics.set(response.metrics);
+          } else {
+            this.metrics.set(this.calculateMetricsFromMessages(messages));
+          }
+
+          console.log(`Loaded ${messages.length} messages for session ${sessionId}`);
+        } else {
+          // User notification for empty or error sessions
+          console.warn(`Session ${sessionId} is empty or could not be loaded:`, response.message);
+          this.messages.set([{
+            id: 'system-empty',
+            role: 'system',
+            content: `This session appears to be empty or could not be loaded properly. You can start a new conversation here.`,
+            timestamp: new Date()
+          }]);
+        }
+      },
+      error: (err) => {
+        console.error('Failed to load session history:', err);
+
+        // User notification for loading failures
+        if (err.status === 404) {
+          // Session not found - remove from list
+          console.warn(`Session ${sessionId} not found, removing from list`);
+          this.sessions.update(list => list.filter(s => s.id !== sessionId));
+          this.currentSessionId.set(null);
+          this.messages.set([{
+            id: 'system-not-found',
+            role: 'system',
+            content: `This session could not be found. It may have been deleted or moved.`,
+            timestamp: new Date()
+          }]);
+        } else {
+          // General loading error
+          this.messages.set([{
+            id: 'system-error',
+            role: 'system',
+            content: `Unable to load this session. Please try again or select a different session.`,
+            timestamp: new Date()
+          }]);
+        }
+      }
+    });
+  }
+
+  /**
+   * Calculate aggregated metrics from message array.
+   * Used as fallback when backend metrics unavailable.
+   */
+  private calculateMetricsFromMessages(messages: Message[]): SessionMetrics {
+    const aggregated = messages.reduce((acc, msg) => {
+      const toolCallsCount = msg.toolCalls?.length || 0;
+      const toolErrorsCount = msg.toolCalls?.filter(tc => tc.status === 'failed').length || 0;
+
+      return {
+        totalTokens: acc.totalTokens + (msg.tokens || 0),
+        promptTokens: acc.promptTokens + (msg.promptTokens || 0),
+        completionTokens: acc.completionTokens + (msg.completionTokens || 0),
+        sessionCost: acc.sessionCost + (msg.cost || 0),
+        toolCalls: acc.toolCalls + toolCallsCount,
+        toolErrors: acc.toolErrors + toolErrorsCount
+      };
+    }, {
+      totalTokens: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      sessionCost: 0,
+      toolCalls: 0,
+      toolErrors: 0
+    });
+
+    return {
+      ...aggregated,
+      projectTotalCost: this.metrics().projectTotalCost, // Preserve existing project total
+      generationTimeMs: undefined
+    };
+  }
+
+  /**
+   * Transform session data from backend format to frontend Message format.
+   * Handles both new events-based format and legacy content-based format.
+   */
+  private transformSessionData(chatHistory: any[]): Message[] {
+    return chatHistory.map((msg: any, index: number) => {
+      // Handle both new events-based format and legacy content-based format
+      const baseMessage: Message = {
+        id: msg.id || `${this.currentSessionId()}-${index}`,
+        role: msg.role,
+        content: msg.content || '',
+        timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+
+        // Token metrics (with backward compatibility)
+        tokens: msg.tokens ?? 0,
+        promptTokens: msg.promptTokens,
+        completionTokens: msg.completionTokens,
+        cost: msg.cost || 0,
+        modelName: msg.modelName,
+        generationTimeMs: msg.generationTimeMs,
+
+        // Extended fields (preserved if present)
+        toolCalls: msg.toolCalls,
+        plan: msg.plan,
+        workflowMetrics: msg.workflowMetrics,
+
+        // Streaming state always false for historical messages
+        isStreaming: false
+      };
+
+      // Handle new events-based format
+      if (msg.events && Array.isArray(msg.events)) {
+        return {
+          ...baseMessage,
+          events: msg.events
+        };
+      }
+
+      // Handle legacy format or create minimal events array
+      return {
+        ...baseMessage,
+        events: msg.content ? [{
+          type: 'text',
+          content: msg.content,
+          timestamp: msg.timestamp || Date.now()
+        }] : []
+      };
+    });
   }
 
   getCurrentSessionTitle() {
@@ -945,14 +1148,21 @@ export class App implements AfterViewChecked, OnInit {
     let sessionId = this.currentSessionId();
     const isNewSession = !sessionId;
 
-    // Lazy session creation - create session on first message if none exists
+    // Explicit session creation - create session before sending first message
     if (isNewSession) {
       sessionId = 'session-' + Date.now();
-      this.currentSessionId.set(sessionId);
 
-      // Note: We don't create the session here because the backend will
-      // auto-create it with the message as the title when we send the message
-      console.log(`Will auto-create session ${sessionId} on first message`);
+      // Explicitly create session before sending message
+      try {
+        await firstValueFrom(
+          this.chatService.createSession(sessionId, text)
+        );
+        this.currentSessionId.set(sessionId);
+        console.log(`Created session ${sessionId} explicitly`);
+      } catch (err) {
+        console.error('Session creation failed:', err);
+        return;  // Abort if creation fails
+      }
     }
 
     // 1. Add User Message

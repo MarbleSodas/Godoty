@@ -117,6 +117,9 @@ export class ChatService {
     if (title) {
       body.title = title;
     }
+    if (this.currentProjectPath) {
+      body.project_path = this.currentProjectPath;
+    }
     return this.http.post(`${this.apiUrl}/sessions`, body);
   }
 
@@ -135,7 +138,7 @@ export class ChatService {
                 let timestamp = Date.now();
                 if (s.last_updated) timestamp = s.last_updated * 1000;
                 else if (s.created_at) timestamp = s.created_at * 1000;
-                
+
                 return {
                     id: s.id,
                     title: s.title || `Session ${s.id.substring(0, 8)}`,
