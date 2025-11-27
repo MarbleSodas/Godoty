@@ -10,6 +10,23 @@ from typing import List, Dict, Optional, Any
 class ProjectDB:
     def __init__(self, project_path: str):
         self.project_path = os.path.abspath(project_path)
+
+        # Validate project path exists
+        if not os.path.exists(self.project_path):
+            raise ValueError(f"Project path does not exist: {self.project_path}")
+
+        # Validate it's a directory
+        if not os.path.isdir(self.project_path):
+            raise ValueError(f"Project path is not a directory: {self.project_path}")
+
+        # Check if it's a valid Godot project (optional validation)
+        project_file = os.path.join(self.project_path, "project.godot")
+        if not os.path.exists(project_file):
+            # Only warn, don't fail - allow non-Godot directories for flexibility
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Directory does not contain project.godot file: {self.project_path}")
+
         self.project_hash = self._get_project_hash(self.project_path)
         self.db_path = self._get_db_path()
         self._init_db()
@@ -159,6 +176,28 @@ class ProjectDB:
         # Only delete from sessions table, NOT from metrics table
         # This preserves historical project cost/usage data
         cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+
+    def add_session(self, session_id: str, session_data: Dict[str, Any]):
+        """
+        Add session metadata to database.
+
+        Args:
+            session_id: Session ID
+            session_data: Session metadata dictionary
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        now = time.time()
+
+        cursor.execute("""
+            INSERT INTO sessions (session_id, project_hash, created_at, last_updated)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                last_updated = excluded.last_updated
+        """, (session_id, self.project_hash, now, now))
+
         conn.commit()
         conn.close()
 

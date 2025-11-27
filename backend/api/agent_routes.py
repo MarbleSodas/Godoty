@@ -12,13 +12,13 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Optional, AsyncIterable
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agents import get_planning_agent, close_planning_agent, AgentConfig
-from agents.executor_agent import close_executor_agent
+from agents import get_planning_agent, AgentConfig
 from agents.db import ProjectDB
 
 logger = logging.getLogger(__name__)
@@ -77,270 +77,6 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 
 # Request/Response Models
-class PlanRequest(BaseModel):
-    """Request model for plan generation."""
-    prompt: str = Field(..., description="The planning request", min_length=1)
-    reset_conversation: bool = Field(
-        default=False,
-        description="Whether to reset conversation history before planning"
-    )
-
-
-class PlanResponse(BaseModel):
-    """Response model for plan generation."""
-    status: str = Field(..., description="Status of the request")
-    plan: str = Field(..., description="Generated plan")
-    metadata: Optional[dict] = Field(None, description="Additional metadata")
-
-
-class HealthResponse(BaseModel):
-    """Response model for health check."""
-    status: str
-    agent_ready: bool
-    model: Optional[str] = None
-
-
-# Routes
-@router.get("/health", response_model=HealthResponse)
-async def agent_health():
-    """
-    Check agent health and readiness.
-
-    Returns:
-        HealthResponse with agent status
-    """
-    try:
-        agent = get_planning_agent()
-        model_id = None
-        if hasattr(agent, 'model'):
-            model_config = agent.model.get_config()
-            model_id = model_config.get("model_id")
-
-        return HealthResponse(
-            status="healthy",
-            agent_ready=True,
-            model=model_id
-        )
-    except Exception as e:
-        logger.error(f"Agent health check failed: {e}")
-        return HealthResponse(
-            status="unhealthy",
-            agent_ready=False
-        )
-
-
-@router.post("/plan", response_model=PlanResponse)
-async def create_plan(request: PlanRequest):
-    """
-    Generate a plan (non-streaming).
-
-    Args:
-        request: PlanRequest with prompt and options
-
-    Returns:
-        PlanResponse with generated plan and metrics
-    """
-    try:
-        # Get agent
-        agent = get_planning_agent()
-
-        # Reset conversation if requested
-        if request.reset_conversation:
-            agent.reset_conversation()
-
-        # Generate plan - returns dict with plan, message_id, and metrics
-        result = await agent.plan_async(request.prompt)
-
-        # Extract plan text and metrics
-        plan_text = result.get("plan", "") if isinstance(result, dict) else str(result)
-        message_id = result.get("message_id") if isinstance(result, dict) else None
-        metrics = result.get("metrics") if isinstance(result, dict) else None
-
-        # Build metadata
-        metadata = {}
-        if message_id:
-            metadata["message_id"] = message_id
-        if metrics:
-            metadata["metrics"] = metrics
-
-        return PlanResponse(
-            status="success",
-            plan=plan_text,
-            metadata=metadata if metadata else None
-        )
-
-    except Exception as e:
-        import traceback
-        error_detail = f"Error generating plan: {str(e)}"
-        logger.error(f"{error_detail}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=error_detail)
-
-
-@router.post("/plan/stream")
-async def create_plan_stream(request: PlanRequest):
-    """
-    Generate a plan with streaming responses (SSE).
-
-    Args:
-        request: PlanRequest with prompt and options
-
-    Returns:
-        StreamingResponse with Server-Sent Events
-    """
-    try:
-        # Get agent
-        agent = get_planning_agent()
-
-        # Reset conversation if requested
-        if request.reset_conversation:
-            agent.reset_conversation()
-
-        # Create streaming generator
-        async def event_generator():
-            """Generate Server-Sent Events from agent stream."""
-            try:
-                async for event in agent.plan_stream(request.prompt):
-                    # Format as SSE
-                    event_type = event.get("type", "data")
-                    event_data = event.get("data", {})
-
-                    # Serialize data
-                    data_json = json.dumps(event_data)
-
-                    # Yield SSE format
-                    yield f"event: {event_type}\n"
-                    yield f"data: {data_json}\n\n"
-
-                # Send done event
-                yield "event: done\n"
-                yield "data: {}\n\n"
-
-            except Exception as e:
-                logger.error(f"Error in event stream: {e}")
-                error_data = json.dumps({"error": str(e)})
-                yield "event: error\n"
-                yield f"data: {error_data}\n\n"
-
-        # Return streaming response
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # Disable nginx buffering
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"Error setting up stream: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/reset")
-async def reset_conversation():
-    """
-    Reset the agent's conversation history.
-
-    Returns:
-        Status message
-    """
-    try:
-        agent = get_planning_agent()
-        agent.reset_conversation()
-
-        return {
-            "status": "success",
-            "message": "Conversation history reset"
-        }
-
-    except Exception as e:
-        logger.error(f"Error resetting conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class UpdateConfigRequest(BaseModel):
-    """Request model for updating agent configuration."""
-    planning_model: Optional[str] = Field(None, description="Model ID for planning agent")
-    executor_model: Optional[str] = Field(None, description="Model ID for executor agent")
-    openrouter_api_key: Optional[str] = Field(None, description="OpenRouter API key")
-
-
-@router.post("/config")
-async def update_agent_config(request: UpdateConfigRequest):
-    """
-    Update agent configuration.
-    
-    Args:
-        request: Configuration updates
-        
-    Returns:
-        Updated configuration
-    """
-    try:
-        # 1. Update persistent configuration
-        AgentConfig.update_config(
-            planning_model=request.planning_model,
-            executor_model=request.executor_model,
-            api_key=request.openrouter_api_key
-        )
-
-        # 2. Reset the agent to pick up new configuration
-        # This ensures the model is re-initialized with new ID and API key
-        await close_planning_agent()
-        await close_executor_agent()
-        agent = get_planning_agent()
-        
-        # Get updated config from the fresh agent
-        model_config = agent.model.get_config()
-        
-        return {
-            "status": "success",
-            "message": "Configuration updated successfully",
-            "config": {
-                "model_id": model_config.get("model_id", "unknown"),
-                "model_config": model_config
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error updating config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/config")
-async def get_agent_config():
-    """
-    Get current agent configuration.
-
-    Returns:
-        Agent configuration details
-    """
-    try:
-        agent = get_planning_agent()
-
-        # Ensure MCP tools are initialized before getting configuration
-        await agent._ensure_mcp_initialized()
-
-        model_config = agent.model.get_config()
-        return {
-            "status": "success",
-            "config": {
-                "model_id": model_config.get("planning_model", "unknown"),
-                "model_config": model_config,
-                "tools": [
-                    getattr(tool, '__name__',
-                           getattr(tool, 'name',
-                                  f"MCP_{type(tool).__name__}"))
-                    for tool in agent.tools
-                ],
-                "conversation_manager": type(agent.conversation_manager).__name__
-            }
-        }
-
-    except Exception as e:
-        logger.error(f"Error getting config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Session Management Routes
@@ -389,6 +125,8 @@ async def create_session(request: SessionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @router.get("/sessions", response_model=dict)
 async def list_sessions(path: Optional[str] = Query(None)):
     """
@@ -413,9 +151,12 @@ async def list_sessions(path: Optional[str] = Query(None)):
         logger.info(f"Found {len(fs_sessions)} sessions from FileSessionManager")
 
         if not path:
-            # For development/testing, use current working directory as default
-            logger.warning("No project path provided, using current working directory as default")
-            path = os.getcwd()
+            # Require explicit project path to avoid loading wrong project's sessions
+            logger.error("No project path provided - project path is required to list sessions")
+            raise HTTPException(
+                status_code=400,
+                detail="Project path is required to list sessions. Please provide a valid project path."
+            )
 
         sessions_dict = {}
 
@@ -582,184 +323,6 @@ async def get_session(session_id: str, path: Optional[str] = Query(None)):
         return {"status": "error", "message": f"Unable to load session: {str(e)}"}
 
 
-@router.get("/sessions/{session_id}/metrics", response_model=dict)
-async def get_session_metrics(session_id: str):
-    """
-    Retrieve session metrics ledger for display.
-
-    Returns cumulative cost, token count, and run history from the agent.state
-    metrics ledger. This enables UI to display "Previous Cost: $X.XX" on session resume.
-
-    Args:
-        session_id: Session ID to retrieve metrics for
-
-    Returns:
-        Dictionary containing:
-        - session_id: The session identifier
-        - total_cost: Cumulative cost across all runs
-        - total_tokens: Cumulative token count
-        - run_count: Number of runs in history
-        - recent_runs: Last 10 runs with details
-    """
-    try:
-        from agents.planning_agent import get_planning_agent
-
-        planning_agent = get_planning_agent()
-
-        # Use the new get_session_metrics method
-        ledger = planning_agent.get_session_metrics(session_id=session_id)
-
-        return {
-            "status": "success",
-            "session_id": session_id,
-            "total_cost": ledger.get('total_cost', 0.0),
-            "total_tokens": ledger.get('total_tokens', 0),
-            "run_count": len(ledger.get('run_history', [])),
-            "recent_runs": ledger.get('run_history', [])[-10:]  # Last 10 runs
-        }
-    except Exception as e:
-        logger.error(f"Failed to retrieve metrics for session {session_id}: {e}")
-        return {
-            "status": "error",
-            "message": f"Unable to retrieve metrics: {str(e)}",
-            "session_id": session_id,
-            "total_cost": 0.0,
-            "total_tokens": 0,
-            "run_count": 0,
-            "recent_runs": []
-        }
-
-
-@router.post("/sessions/{session_id}/restore", response_model=dict)
-async def restore_session(session_id: str, path: str = Query(...)):
-    """
-    Restore agent state from history.
-    
-    Args:
-        session_id: Session ID
-        path: Project path
-        
-    Returns:
-        Status message
-    """
-    try:
-        # Initialize agent with project path and restore session
-        from agents.executor_agent import get_executor_agent
-        agent = get_executor_agent()
-        
-        agent.set_project_path(path)
-        agent.restore_session(session_id)
-        
-        return {
-            "status": "success",
-            "message": f"Session {session_id} restored"
-        }
-    except Exception as e:
-        logger.error(f"Error restoring session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/metrics/project", response_model=dict)
-async def get_project_metrics(path: str = Query(...)):
-    """
-    Get aggregated metrics for the project.
-
-    Args:
-        path: Project path
-
-    Returns:
-        Project metrics
-    """
-    try:
-        db = ProjectDB(path)
-        metrics = db.get_project_metrics()
-
-        logger.info(f"Project metrics for {path}: cost=${metrics['total_cost']:.4f}, "
-                   f"tokens={metrics['total_tokens']}, sessions={metrics['total_sessions']}")
-
-        return {
-            "status": "success",
-            "metrics": metrics
-        }
-    except Exception as e:
-        logger.error(f"Error getting project metrics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/metrics/session/{session_id}", response_model=dict)
-async def get_session_metrics_endpoint(session_id: str, path: str = Query(...)):
-    """
-    Get metrics for a specific session.
-    
-    Args:
-        session_id: Session ID
-        path: Project path
-        
-    Returns:
-        Session metrics
-    """
-    try:
-        db = ProjectDB(path)
-        metrics = db.get_session_metrics(session_id)
-        return {
-            "status": "success",
-            "metrics": metrics
-        }
-    except Exception as e:
-        logger.error(f"Error getting session metrics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/sessions/{session_id}", response_model=dict)
-async def delete_session(session_id: str, path: Optional[str] = Query(None)):
-    """
-    Delete a session from FileSessionManager and ProjectDB.
-
-    IMPORTANT: Metrics are preserved in MetricsDB for project tracking.
-    Only session chat history and metadata are removed.
-
-    Args:
-        session_id: Session ID
-        path: Optional project path
-
-    Returns:
-        Status message
-    """
-    try:
-        project_db_deleted = False
-        if path:
-            try:
-                db = ProjectDB(path)
-                # Only deletes from sessions table, NOT from metrics
-                db.delete_session(session_id)
-                project_db_deleted = True
-                logger.info(f"Deleted session {session_id} from ProjectDB")
-            except Exception as e:
-                logger.warning(f"ProjectDB delete failed: {e}")
-
-        from agents.multi_agent_manager import get_multi_agent_manager
-        manager = get_multi_agent_manager()
-
-        # Remove from FileSessionManager (chat history)
-        manager_deleted = manager.delete_session(session_id)
-        if manager_deleted:
-            logger.info(f"Deleted session {session_id} from FileSessionManager")
-
-        if not manager_deleted and not project_db_deleted:
-            raise HTTPException(status_code=404, detail="Session not found or could not be deleted")
-
-        # DO NOT delete from MetricsDB - metrics persist for project tracking
-        # This is intentional to maintain historical project cost/usage data
-
-        return {
-            "status": "success",
-            "message": f"Session {session_id} deleted (metrics preserved)"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/sessions/{session_id}/hide", response_model=dict)
@@ -790,49 +353,6 @@ async def hide_session(session_id: str):
         raise
     except Exception as e:
         logger.error(f"Error hiding session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/sessions/{session_id}/chat", response_model=dict)
-async def chat_session(session_id: str, request: ChatRequest, path: Optional[str] = Query(None)):
-    """
-    Send a message to a session.
-    
-    Args:
-        session_id: Session ID
-        request: ChatRequest with message
-        path: Optional project path
-        
-    Returns:
-        Agent response
-    """
-    try:
-        from agents.multi_agent_manager import get_multi_agent_manager
-        manager = get_multi_agent_manager()
-        
-        # Auto-create session if it doesn't exist (lazy creation)
-        if not manager.get_session(session_id):
-            logger.info(f"Auto-creating session {session_id} with title: {request.message[:50]}...")
-            manager.create_session(session_id, title=request.message, project_path=path)
-        
-        # Process message
-        # Note: This might take time, so in a real app we might want streaming or background tasks
-        result = await manager.process_message(session_id, request.message, mode=request.mode, project_path=path)
-        
-        # Format result
-        response_text = str(result)
-        if hasattr(result, 'message') and isinstance(result.message, dict):
-             content = result.message.get('content')
-             if isinstance(content, list) and len(content) > 0:
-                 response_text = content[0].get('text', response_text)
-        
-        return {
-            "status": "success",
-            "response": response_text,
-            "raw_result": str(result)
-        }
-    except Exception as e:
-        logger.error(f"Error processing chat: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

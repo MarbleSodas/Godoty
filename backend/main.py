@@ -70,7 +70,6 @@ def create_app():
     from fastapi.middleware.cors import CORSMiddleware
     from api import agent_router
     from api.health_routes import router as health_router
-    from api.metrics_routes import router as metrics_router
     from api.sse_routes import router as sse_router
 
     app = FastAPI(title="PyWebView Desktop App", version="1.0.0")
@@ -90,35 +89,10 @@ def create_app():
     # Include health check routes
     app.include_router(health_router)
 
-    # Include metrics routes
-    app.include_router(metrics_router)
-
     # Include SSE routes for real-time Godot status
     app.include_router(sse_router, prefix="/api")
 
-    # FastAPI API Routes (must be defined before mounting static files)
-    @app.get("/api/health")
-    async def health():
-        """Health check endpoint"""
-        return {"status": "ok", "message": "FastAPI backend is running"}
-
-    @app.get("/api/data")
-    async def get_data():
-        """Sample data endpoint"""
-        return {
-            "message": "Hello from FastAPI",
-            "items": [
-                {"id": 1, "name": "Item 1", "value": 100},
-                {"id": 2, "name": "Item 2", "value": 200},
-                {"id": 3, "name": "Item 3", "value": 300}
-            ]
-        }
-
-    @app.post("/api/echo")
-    async def echo(data: dict):
-        """Echo endpoint for testing"""
-        return {"received": data, "timestamp": time.time()}
-
+    
     # Serve Angular static files
     # IMPORTANT: Mount static files LAST so API routes take precedence
     dist_path = os.path.join(os.path.dirname(__file__), '..', 'dist', 'browser')

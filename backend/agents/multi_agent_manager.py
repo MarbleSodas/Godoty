@@ -256,7 +256,8 @@ class MultiAgentManager:
             # Store session metadata
             metadata = {
                 "title": processed_title or f"Session {session_id}",
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
+                "project_path": db_project_path  # Store project path for auto-discovery
             }
             self._save_session_metadata(session_id, metadata)
 
@@ -1820,6 +1821,65 @@ Please proceed with implementation."""
         except Exception as e:
             logger.error(f"Error getting metrics summary for session {session_id}: {e}")
             return {"session_id": session_id, "error": str(e)}
+
+    def discover_sessions_for_project(self, project_path: str) -> List[str]:
+        """
+        Discover all sessions that belong to a specific project path.
+
+        This method scans existing sessions and returns session IDs that
+        are associated with the given project path.
+
+        Args:
+            project_path: Project path to discover sessions for
+
+        Returns:
+            List of session IDs belonging to the project
+        """
+        try:
+            # Normalize project path for comparison
+            project_path = os.path.abspath(project_path)
+            matching_sessions = []
+
+            # Get all sessions
+            all_sessions = self.list_sessions()
+
+            for session_id, session_data in all_sessions.items():
+                try:
+                    # Check if session has project path in metadata
+                    session_metadata = session_data.get("metadata", {})
+                    stored_path = session_metadata.get("project_path")
+
+                    if stored_path:
+                        # Normalize stored path for comparison
+                        stored_path = os.path.abspath(stored_path)
+                        if stored_path == project_path:
+                            matching_sessions.append(session_id)
+                            continue
+
+                    # Fallback: check internal session project paths
+                    if session_id in self._session_project_paths:
+                        internal_path = os.path.abspath(self._session_project_paths[session_id])
+                        if internal_path == project_path:
+                            matching_sessions.append(session_id)
+                            continue
+
+                    # Additional fallback: try to load session metadata and check
+                    loaded_metadata = self._load_session_metadata(session_id)
+                    if "project_path" in loaded_metadata:
+                        metadata_path = os.path.abspath(loaded_metadata["project_path"])
+                        if metadata_path == project_path:
+                            matching_sessions.append(session_id)
+
+                except Exception as session_error:
+                    logger.warning(f"Error checking session {session_id} for project {project_path}: {session_error}")
+                    continue
+
+            logger.info(f"Discovered {len(matching_sessions)} sessions for project: {project_path}")
+            return matching_sessions
+
+        except Exception as e:
+            logger.error(f"Error discovering sessions for project {project_path}: {e}")
+            return []
 
 
 # Global instance

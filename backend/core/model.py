@@ -17,7 +17,8 @@ class GodotyOpenRouterModel(OpenAIModel):
         metrics_callback: Optional[Callable] = None,
         **kwargs
     ):
-        # Store metrics callback for cost tracking
+        # Store model_id and metrics callback for cost tracking
+        self.model_id = model_id
         self.metrics_callback = metrics_callback
 
         # Construct the client arguments for the underlying OpenAI client
@@ -46,12 +47,14 @@ class GodotyOpenRouterModel(OpenAIModel):
     async def stream(
         self,
         messages: Messages,
+        tool_specs: Optional[List] = None,
+        system_prompt: Optional[str] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[StreamEvent, None]:
         usage_received = False  # Track if usage data arrives
 
         # We wrap the parent stream to inspect events
-        async for event in super().stream(messages, **kwargs):
+        async for event in super().stream(messages, tool_specs, system_prompt, **kwargs):
             yield event
 
             # Check for metrics event
