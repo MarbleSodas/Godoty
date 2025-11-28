@@ -39,7 +39,14 @@
       "Bash(npm start)",
       "Bash(npm start:*)",
       "Bash(ng serve:*)",
-      "mcp__desktop-commander__read_multiple_files"
+      "mcp__desktop-commander__read_multiple_files",
+      "Bash(ng cache:*)",
+      "Bash(git tag:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(npm test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git merge:*)"
     ],
     "deny": [],
     "ask": []

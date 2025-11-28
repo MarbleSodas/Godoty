@@ -1,13 +1,12 @@
 # PyWebView Desktop App
 
-A modern desktop application built with **PyWebView**, **Angular**, **TailwindCSS**, **PrimeNG**, and **FastAPI**.
+A modern desktop application built with **PyWebView**, **Angular**, **TailwindCSS**, and **FastAPI**.
 
 ## Tech Stack
 
 ### Frontend
-- **Angular** (Latest) - Modern TypeScript framework
+- **Angular 20.3.0** - Modern TypeScript framework
 - **TailwindCSS v4** - Utility-first CSS framework
-- **PrimeNG** - Rich UI component library with Aura theme
 - **TypeScript** - Type-safe development
 
 ### Backend
@@ -44,11 +43,13 @@ Godot-Assistant/
 │   │   │   ├── prompts.py         # System prompts
 │   │   │   └── validators.py      # Config validation
 │   │   ├── models/        # Custom model providers (OpenRouter)
-│   │   ├── tools/         # Agent tools (file system, web, MCP)
-│   │   ├── planning_agent.py  # Main planning agent
-│   │   └── executor_agent.py  # Executor agent
+│   │   ├── tools/         # Agent tools (file system, web, Godot, MCP)
+│   │   ├── planning_agent.py  # Single planning agent
+│   │   └── multi_agent_manager.py  # Session management
 │   ├── api/               # API routes
-│   │   └── agent_routes.py    # Agent endpoints
+│   │   ├── agent_routes.py    # Agent endpoints
+│   │   ├── health_routes.py   # Health endpoints
+│   │   └── sse_routes.py      # SSE streaming
 │   ├── tests/             # Test suite
 │   │   ├── conftest.py        # Shared pytest fixtures
 │   │   ├── test_planning_agent.py  # Agent tests
@@ -278,7 +279,6 @@ For more details, see [backend/tests/README.md](backend/tests/README.md)
 
 1. **Frontend (Angular)**:
    - Add components in `frontend/src/app/`
-   - Use PrimeNG components for UI
    - Style with TailwindCSS utilities
    - Call Python methods via `DesktopService`
 
@@ -341,7 +341,6 @@ Once the app is running, access FastAPI auto-generated docs at:
 
 - [Angular Documentation](https://angular.dev)
 - [TailwindCSS Documentation](https://tailwindcss.com)
-- [PrimeNG Documentation](https://primeng.org)
 - [FastAPI Documentation](https://fastapi.tiangolo.com)
 - [PyWebView Documentation](https://pywebview.flowrl.com)
 
@@ -355,4 +354,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ---
 
-Built with ❤️ using Angular, TailwindCSS, PrimeNG, FastAPI, and PyWebView
+Built with ❤️ using Angular, TailwindCSS, FastAPI, and PyWebView

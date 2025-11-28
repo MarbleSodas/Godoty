@@ -364,7 +364,6 @@ backend/
 │   ├── __init__.py
 │   ├── conftest.py            # Shared pytest fixtures
 │   ├── test_planning_agent.py # Planning agent tests
-│   ├── test_executor_agent.py # Executor agent tests
 │   ├── test_api_endpoints.py  # API integration tests
 │   ├── test_mcp_integration.py # MCP tests
 │   ├── test_multi_agent.py    # Multi-agent tests

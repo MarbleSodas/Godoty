@@ -16,7 +16,6 @@ Shared pytest fixtures and configuration for all tests:
 - `mock_openrouter_response` - Mock API responses
 - `sample_test_files` - Sample file structure for testing
 - `mock_planning_agent` - Mock planning agent instance
-- `mock_executor_agent` - Mock executor agent instance
 - `reset_environment` - Automatic environment cleanup
 
 ### `test_planning_agent.py`
@@ -27,12 +26,6 @@ Tests for the planning agent functionality:
 - Multi-step reasoning
 - Conversation management
 
-### `test_executor_agent.py`
-Tests for the executor agent functionality:
-- Executor agent initialization
-- Plan execution with structured data
-- Model fallback support
-- Execution status management
 
 ### `test_api_endpoints.py`
 Integration tests for API endpoints:
@@ -67,7 +60,6 @@ pytest tests/ -v
 ### Run Specific Test File
 ```bash
 pytest tests/test_planning_agent.py -v
-pytest tests/test_executor_agent.py -v
 pytest tests/test_api_endpoints.py -v
 ```
 
@@ -161,10 +153,11 @@ async def test_api_endpoint():
 
 This test structure migrates from the previous scattered test files:
 - `reproduce_agent_loop.py` → `test_planning_agent.py`
-- `test_executor.py` → `test_executor_agent.py`
 - `test_agent.py` → `test_api_endpoints.py`
 - `test_mcp_integration.py` → `tests/test_mcp_integration.py` (moved)
 - `test_multi_agent.py` → `tests/test_multi_agent.py` (moved)
+
+Note: The executor agent system has been removed as part of the architecture cleanup, so `test_executor_agent.py` is no longer needed.
 
 Old debugging scripts (`check_async.py`, `test_imports.py`, etc.) have been removed as their functionality is covered by the new test suite.
 

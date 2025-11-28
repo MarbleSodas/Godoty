@@ -458,9 +458,9 @@ enemy_nodes = await search_nodes("group", "enemies")
 recommendations = scene_analysis['recommendations']
 ```
 
-### Executor Agent Usage
+### Single Agent Usage
 
-Executor agents should use executor tools with proper error handling:
+With the simplified single-agent architecture, the planning agent handles both analysis and execution:
 
 ```python
 # Execute operations with validation
@@ -480,7 +480,7 @@ try:
         )
 
 except Exception as e:
-    logger.error(f"Executor error: {e}")
+    logger.error(f"Agent error: {e}")
     # Handle error appropriately
 ```
 
@@ -626,7 +626,6 @@ See the `examples/` directory for complete usage examples:
 
 - `basic_usage.py` - Basic operations and error handling
 - `planning_agent.py` - Planning agent workflow
-- `executor_agent.py` - Executor agent workflow
 - `security_demo.py` - Security validation examples
 - `batch_operations.py` - Batch operation examples
 
