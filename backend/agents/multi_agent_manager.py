@@ -848,8 +848,10 @@ class MultiAgentManager:
         Yields:
             Stream events
         """
+        # Auto-create session if it doesn't exist (lazy creation)
         if session_id not in self._active_graphs:
-            self._active_graphs[session_id] = self._create_graphs(session_id)
+            logger.info(f"Auto-creating session {session_id} for message processing")
+            self.create_session(session_id, project_path=project_path)
 
         # Track project path for this session if provided
         if project_path:
