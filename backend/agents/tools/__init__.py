@@ -33,36 +33,13 @@ from .godot_executor_tools import (
     get_godot_executor_tools,
     # Tool wrapper functions (essential for start menu creation)
     create_node,
-    delete_node,
     modify_node_property,
-    reparent_node,
     create_scene,
     open_scene,
-    save_current_scene,
     select_nodes,
     play_scene,
     stop_playing,
-)
-from .file_tools import (
-    FileTools,
-    write_file,
-    delete_file,
-    modify_gdscript_method,
-    add_gdscript_method,
-    remove_gdscript_method,
-    modify_project_setting,
-    FileOperationResult,
-    GDScriptEditResult
-)
-from .gdscript_editor import (
-    GDScriptEditor,
-    analyze_gdscript_structure,
-    validate_gdscript_syntax,
-    refactor_gdscript_method,
-    extract_gdscript_method,
-    GDScriptMethodInfo,
-    GDScriptClassInfo,
-    GDScriptValidationResult
+    # Note: delete_node, reparent_node, save_current_scene removed - not used by planning agent
 )
 from .mcp_tools import MCPToolManager, get_mcp_tools
 
@@ -107,34 +84,12 @@ __all__ = [
     "ErrorType",
     "get_godot_executor_tools",
     "create_node",
-    "delete_node",
     "modify_node_property",
-    "reparent_node",
     "create_scene",
     "open_scene",
-    "save_current_scene",
     "select_nodes",
     "play_scene",
     "stop_playing",
-    # File management tools
-    "FileTools",
-    "write_file",
-    "delete_file",
-    "modify_gdscript_method",
-    "add_gdscript_method",
-    "remove_gdscript_method",
-    "modify_project_setting",
-    "FileOperationResult",
-    "GDScriptEditResult",
-    # GDScript editor tools
-    "GDScriptEditor",
-    "analyze_gdscript_structure",
-    "validate_gdscript_syntax",
-    "refactor_gdscript_method",
-    "extract_gdscript_method",
-    "GDScriptMethodInfo",
-    "GDScriptClassInfo",
-    "GDScriptValidationResult",
     # MCP tools
     "MCPToolManager",
     "get_mcp_tools",
