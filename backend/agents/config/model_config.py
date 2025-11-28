@@ -31,10 +31,11 @@ class ModelConfig:
     }
     
     # Default values
-    _DEFAULT_PLANNING_MODEL = "google/gemini-3-pro-preview"
-    _DEFAULT_EXECUTOR_MODEL = "anthropic/claude-sonnet-4.5"
+    _DEFAULT_PLANNING_MODEL = "x-ai/grok-4.1-fast"
+    _DEFAULT_EXECUTOR_MODEL = "x-ai/grok-4.1-fast"
     
-    EXECUTOR_FALLBACK_MODEL = "anthropic/claude-haiku-4.5"
+    FALLBACK_MODEL = "openai/gpt-4-turbo"
+    EXECUTOR_FALLBACK_MODEL = "minimax/minimax-m2"
     
     # Instance variables for dynamic configuration
     _planning_model = os.getenv("DEFAULT_PLANNING_MODEL", _DEFAULT_PLANNING_MODEL)

@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException
 
 from agents.config import AgentConfig
 from agents.planning_agent import get_planning_agent
-from agents.tools.mcp_tools import MCPToolManager
 
 logger = logging.getLogger(__name__)
 
@@ -54,46 +53,7 @@ async def health_check():
             }
         }
 
-        # Check MCP integration
-        mcp_status = {"status": "healthy", "details": {}}
-        try:
-            if config_result["mcp_available"]:
-                manager = MCPToolManager.get_instance()
-                if not manager.is_connected():
-                    success = await manager.initialize(fail_silently=True)
-                    if success:
-                        servers = manager.get_connected_servers()
-                        tools_count = len(manager.get_all_tools())
-                        mcp_status["details"] = {
-                            "connected": True,
-                            "servers": servers,
-                            "tools_count": tools_count
-                        }
-                        await manager.cleanup()
-                    else:
-                        mcp_status["status"] = "unhealthy"
-                        mcp_status["details"] = {
-                            "connected": False,
-                            "error": "Failed to initialize MCP servers"
-                        }
-                else:
-                    servers = manager.get_connected_servers()
-                    tools_count = len(manager.get_all_tools())
-                    mcp_status["details"] = {
-                        "connected": True,
-                        "servers": servers,
-                        "tools_count": tools_count
-                    }
-            else:
-                mcp_status["status"] = "disabled"
-                mcp_status["details"] = {"enabled": False}
-        except Exception as e:
-            mcp_status["status"] = "unhealthy"
-            mcp_status["details"] = {"error": str(e)}
-            logger.error(f"MCP health check failed: {e}")
-
-        health_status["components"]["mcp"] = mcp_status
-
+        
         # Check Godot integration
         godot_status = {"status": "healthy", "details": {}}
         try:
@@ -124,8 +84,7 @@ async def health_check():
             agent = get_planning_agent()
             agent_status["details"] = {
                 "initialized": True,
-                "tools_count": len(agent.tools),
-                "mcp_manager_exists": agent.mcp_manager is not None
+                "tools_count": len(agent.tools)
             }
         except Exception as e:
             agent_status["status"] = "unhealthy"
@@ -149,169 +108,7 @@ async def health_check():
     return health_status
 
 
-@router.get("/mcp", response_model=Dict[str, Any])
-async def mcp_health():
-    """
-    Detailed MCP (Model Context Protocol) health check.
-
-    Returns:
-        Dictionary containing MCP-specific health information
-    """
-    try:
-        manager = MCPToolManager.get_instance()
-
-        if not manager.is_connected():
-            success = await manager.initialize(fail_silently=True)
-            if not success:
-                return {
-                    "status": "unhealthy",
-                    "connected": False,
-                    "error": "Failed to initialize MCP servers",
-                    "servers": []
-                }
-
-        servers = manager.get_connected_servers()
-        all_tools = manager.get_all_tools()
-
-        # Get tools by server
-        tools_by_server = {}
-        for server_name in servers:
-            server_tools = manager.get_tools_by_server(server_name)
-            tools_by_server[server_name] = {
-                "count": len(server_tools) if server_tools else 0,
-                "tools": [getattr(tool, 'name', str(tool)) for tool in (server_tools or [])[:5]]  # First 5 tools
-            }
-
-        await manager.cleanup()
-
-        return {
-            "status": "healthy",
-            "connected": True,
-            "servers": servers,
-            "total_tools": len(all_tools),
-            "tools_by_server": tools_by_server
-        }
-
-    except Exception as e:
-        logger.error(f"MCP health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "connected": False,
-            "error": str(e),
-            "servers": []
-        }
 
 
-@router.get("/godot", response_model=Dict[str, Any])
-async def godot_health():
-    """
-    Detailed Godot integration health check.
-
-    Returns:
-        Dictionary containing Godot-specific health information
-    """
-    try:
-        from agents.tools.godot_bridge import get_godot_bridge
-
-        bridge = get_godot_bridge()
-        is_connected = await bridge.is_connected()
-
-        result = {
-            "status": "healthy" if is_connected else "unhealthy",
-            "connected": is_connected,
-            "plugin_accessible": True
-        }
-
-        if is_connected:
-            try:
-                project_info = await bridge.get_project_info()
-                if project_info:
-                    result["project_info"] = {
-                        "project_path": project_info.project_path,
-                        "scene_path": project_info.scene_path,
-                        "engine_version": project_info.engine_version,
-                        "is_ready": project_info.is_ready
-                    }
-            except Exception as e:
-                logger.warning(f"Could not get project info: {e}")
-                result["project_info_error"] = str(e)
-        else:
-            result["error"] = "Godot plugin not connected - ensure Godot Editor is running with Assistant plugin"
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Godot health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "connected": False,
-            "error": str(e),
-            "plugin_accessible": False
-        }
 
 
-@router.get("/tools", response_model=Dict[str, Any])
-async def tools_health():
-    """
-    Health check for all available tools.
-
-    Returns:
-        Dictionary containing tool availability and status
-    """
-    try:
-        from agents.tools import (
-            # Basic tools
-            read_file, list_files, search_codebase,
-            search_documentation, fetch_webpage, get_godot_api_reference,
-            # Godot tools
-            ensure_godot_connection,
-            get_project_overview, analyze_scene_tree, capture_visual_context, search_nodes,
-            create_node, modify_node_property, create_scene, open_scene,
-            select_nodes, play_scene, stop_playing,
-            validate_operation, validate_path, validate_node_name
-        )
-
-        agent = get_planning_agent()
-
-        # Categorize tools
-        tool_categories = {
-            "file_system": ["read_file", "list_files", "search_codebase"],
-            "web": ["search_documentation", "fetch_webpage", "get_godot_api_reference"],
-            "godot_bridge": ["ensure_godot_connection"],
-            "godot_debug": ["get_project_overview", "analyze_scene_tree", "capture_visual_context", "search_nodes"],
-            "godot_executor": ["create_node", "modify_node_property", "create_scene", "open_scene", "select_nodes", "play_scene", "stop_playing"],
-        }
-
-        available_tools = {}
-        for category, tool_names in tool_categories.items():
-            available_tools[category] = {
-                "tools": tool_names,
-                "count": len(tool_names),
-                "available": True
-            }
-
-        # Check MCP tools
-        mcp_tools = 0
-        try:
-            manager = MCPToolManager.get_instance()
-            if manager.is_connected():
-                mcp_tools = len(manager.get_all_tools())
-                await manager.cleanup()
-        except:
-            pass
-
-        return {
-            "status": "healthy",
-            "total_tools": len(agent.tools),
-            "mcp_tools": mcp_tools,
-            "categories": available_tools
-        }
-
-    except Exception as e:
-        logger.error(f"Tools health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "error": str(e),
-            "total_tools": 0,
-            "categories": {}
-        }

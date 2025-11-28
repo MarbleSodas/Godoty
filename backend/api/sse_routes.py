@@ -144,16 +144,6 @@ async def stream_godot_status():
     )
 
 
-@router.get("/godot/status")
-async def get_godot_status():
-    """
-    Get current Godot connection status (one-time, not streaming).
-
-    Returns:
-        Current connection status dictionary
-    """
-    monitor = get_connection_monitor()
-    return monitor.get_status()
 
 
 def setup_sse_listener():

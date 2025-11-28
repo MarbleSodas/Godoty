@@ -123,6 +123,11 @@ class PlanningAgent:
         # Merge additional config
         model_config.update(kwargs)
 
+        # Prepare params to avoid duplicates
+        model_params = model_config.copy()
+        for key in ['api_key', 'app_name', 'app_url']:
+             model_params.pop(key, None)
+
         # Initialize OpenRouter model with metrics callback
         try:
             self.model = GodotyOpenRouterModel(
@@ -130,7 +135,7 @@ class PlanningAgent:
                 metrics_callback=self._metrics_callback,
                 site_url=model_config.get("app_url"),
                 app_name=model_config.get("app_name"),
-                **model_config
+                **model_params
             )
             logger.info(f"Initialized GodotyOpenRouterModel: {model_config.get('model_id')}")
         except Exception as e:
@@ -139,11 +144,12 @@ class PlanningAgent:
             if model_config.get('model_id') != AgentConfig.FALLBACK_MODEL:
                 logger.info(f"Attempting fallback model: {AgentConfig.FALLBACK_MODEL}")
                 model_config['model_id'] = AgentConfig.FALLBACK_MODEL
+                model_params['model_id'] = AgentConfig.FALLBACK_MODEL
                 self.model = GodotyOpenRouterModel(
                     api_key=api_key_value,
                     site_url=model_config.get("app_url"),
                     app_name=model_config.get("app_name"),
-                    **model_config
+                    **model_params
                 )
             else:
                 raise
