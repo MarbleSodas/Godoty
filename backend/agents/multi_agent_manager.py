@@ -26,7 +26,6 @@ from strands.multiagent.graph import Graph, GraphBuilder
 from strands.session.file_session_manager import FileSessionManager
 
 from agents.planning_agent import get_planning_agent
-from agents.executor_agent import get_executor_agent
 from agents.config import AgentConfig
 from agents.db import ProjectDB
 from agents.global_sequence_manager import GlobalSequenceManager
@@ -177,9 +176,8 @@ class MultiAgentManager:
             return session_id
 
         try:
-            # Get agents
+            # Get planning agent
             planning_agent = get_planning_agent()
-            executor_agent = get_executor_agent()
 
             # Create session manager
             session_manager = FileSessionManager(
@@ -197,48 +195,30 @@ class MultiAgentManager:
             builder_planning.set_execution_timeout(300)
             planning_graph = builder_planning.build()
 
-            # --- Build Executor Graph ---
-            # This graph contains the Executor Agent
-            # Uses the SAME session_manager as planning graph for shared conversation context
-            builder_executor = GraphBuilder()
-            builder_executor.add_node(executor_agent.agent, "executor")
-            builder_executor.set_entry_point("executor")
-            builder_executor.set_session_manager(session_manager)  # Shared session!
-            builder_executor.set_max_node_executions(50)
-            builder_executor.set_execution_timeout(600)  # Longer timeout for execution
-            executor_graph = builder_executor.build()
-
-            # Explicitly initialize agents with session manager to enable message persistence
+            # Explicitly initialize planning agent with session manager to enable message persistence
             session_manager.initialize(planning_agent.agent)
-            session_manager.initialize(executor_agent.agent)
-            logger.info(f"Connected agents to session manager for session {session_id}")
+            logger.info(f"Connected planning agent to session manager for session {session_id}")
 
-            # CRITICAL: Register session manager hooks directly with each agent
+            # CRITICAL: Register session manager hooks directly with planning agent
             # This fixes the core issue where Graph execution bypasses normal hook registration
             planning_agent.agent.hooks.add_hook(session_manager)
-            executor_agent.agent.hooks.add_hook(session_manager)
 
             # Verify hook registration is successful
             planning_hooks_registered = planning_agent.agent.hooks.has_callbacks()
-            executor_hooks_registered = executor_agent.agent.hooks.has_callbacks()
-            logger.info(f"Hook registration status - Planning: {planning_hooks_registered}, Executor: {executor_hooks_registered}")
+            logger.info(f"Planning hook registration status: {planning_hooks_registered}")
 
-            # Track agent IDs for sequence management
+            # Track planning agent ID for sequence management
             planning_agent_id = getattr(planning_agent.agent, 'agent_id', f"planning_{session_id}")
-            executor_agent_id = getattr(executor_agent.agent, 'agent_id', f"executor_{session_id}")
 
             self._session_agent_ids[session_id] = {
-                "planning": planning_agent_id,
-                "execution": executor_agent_id
+                "planning": planning_agent_id
             }
 
             self._active_graphs[session_id] = {
                 "planning": planning_graph,
-                "executor": executor_graph,
                 "shared_session": session_manager,  # Store reference for debugging/access
                 "agent_ids": {
-                    "planning": planning_agent_id,
-                    "execution": executor_agent_id
+                    "planning": planning_agent_id
                 }
             }
 
@@ -878,16 +858,6 @@ class MultiAgentManager:
         # Strands session manager handles message persistence automatically via hooks
         # No need to manually save - messages are persisted as they're added to the conversation
 
-        # Setup executor agent with context
-        try:
-            executor_agent = get_executor_agent()
-            if project_path:
-                executor_agent.set_project_path(project_path)
-            # Ensure session context is set for metrics
-            executor_agent.start_session(session_id)
-        except Exception as e:
-            logger.warning(f"Failed to setup executor context: {e}")
-
         # Cancel existing task if any
         if session_id in self._active_tasks:
             task = self._active_tasks[session_id]
@@ -919,15 +889,15 @@ class MultiAgentManager:
             from agents.event_utils import transform_strands_event, accumulate_workflow_metrics
 
             if mode == "fast":
-                # --- Fast Mode: Direct execution with session support ---
-                # Uses the executor graph with its own independent session
+                # --- Fast Mode: Direct execution with planning agent ---
+                # Simplified fast mode uses planning agent for immediate tool execution
                 logger.info(f"Fast mode execution for session {session_id}")
 
-                # Get executor graph (which has its own session context)
-                executor_graph = graphs["executor"]
+                # Get planning graph for direct execution (executor agent removed)
+                planning_graph = graphs["planning"]
 
-                # Stream from executor graph
-                async for event in executor_graph.stream_async(message):
+                # Stream from planning graph
+                async for event in planning_graph.stream_async(message):
                     # Transform event with execution agent type
                     transformed = transform_strands_event(event, agent_type="execution", session_id=session_id)
                     if transformed:
@@ -1077,10 +1047,10 @@ class MultiAgentManager:
                         }
                     }
 
-                # 3. If plan discussed, run executor graph
+                # 3. If plan discussed, execute using planning graph
                 if plan_info:
                     logger.info("Executing plan based on conversation...")
-                    executor_graph = graphs["executor"]
+                    planning_graph = graphs["planning"]
 
                     # Create execution message with conversation context
                     execution_message = f"""Execute the plan we discussed:
@@ -1099,7 +1069,7 @@ Please proceed with implementation."""
                     execution_phases = []  # Track major operations
                     tool_call_count = 0
 
-                    async for event in executor_graph.stream_async(execution_message):
+                    async for event in planning_graph.stream_async(execution_message):
                         transformed = transform_strands_event(event, agent_type="execution", session_id=session_id)
                         if transformed:
                             # Update model tracking and accumulate partial metrics
@@ -1487,12 +1457,9 @@ Please proceed with implementation."""
                 logger.error(f"No active graphs found for session {session_id}")
                 return False
 
-            # Check that agents have active hooks
+            # Check that planning agent has active hooks
             planning_graph = graphs.get("planning")
-            executor_graph = graphs.get("executor")
-
             planning_hooks_active = False
-            executor_hooks_active = False
 
             if planning_graph and planning_graph.nodes:
                 planning_node = planning_graph.nodes["planner"]
@@ -1500,14 +1467,8 @@ Please proceed with implementation."""
                                        planning_node.executor.hooks.has_callbacks())
                 logger.info(f"Planning agent hooks active: {planning_hooks_active}")
 
-            if executor_graph and executor_graph.nodes:
-                executor_node = executor_graph.nodes["executor"]
-                executor_hooks_active = (hasattr(executor_node.executor, 'hooks') and
-                                      executor_node.executor.hooks.has_callbacks())
-                logger.info(f"Executor agent hooks active: {executor_hooks_active}")
-
-            if not (planning_hooks_active and executor_hooks_active):
-                logger.error(f"Hook verification failed for session {session_id} - Planning: {planning_hooks_active}, Executor: {executor_hooks_active}")
+            if not planning_hooks_active:
+                logger.error(f"Hook verification failed for session {session_id} - Planning: {planning_hooks_active}")
                 return False
 
             return True
