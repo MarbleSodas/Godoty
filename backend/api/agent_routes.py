@@ -24,6 +24,10 @@ from agents.db import ProjectDB
 logger = logging.getLogger(__name__)
 
 
+class SessionTitleUpdate(BaseModel):
+    title: str = Field(..., description="New session title")
+
+
 def _extract_title_from_chat_history(chat_history: list) -> str:
     """
     Extract meaningful title with robust cleaning.
@@ -518,7 +522,46 @@ async def chat_session_stream(
                 "X-Accel-Buffering": "no"
             }
         )
-        
+  
     except Exception as e:
         logger.error(f"Error setting up chat stream: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/sessions/{session_id}/title", response_model=dict)
+async def update_session_title(session_id: str, title_update: SessionTitleUpdate):
+    """
+    Update session title.
+
+    Args:
+        session_id: Unique identifier for the session
+        title_update: New title for the session
+
+    Returns:
+        Success confirmation
+    """
+    try:
+        from agents.multi_agent_manager import MultiAgentManager
+
+        manager = MultiAgentManager()
+
+        if not manager.get_session(session_id):
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+        # Update session title
+        manager.update_session_title(session_id, title_update.title)
+
+        logger.info(f"Updated session {session_id} title to: {title_update.title}")
+
+        return {
+            "status": "success",
+            "message": "Session title updated successfully",
+            "session_id": session_id,
+            "title": title_update.title
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating session title: {e}")
         raise HTTPException(status_code=500, detail=str(e))
