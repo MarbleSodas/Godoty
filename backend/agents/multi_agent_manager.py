@@ -233,6 +233,9 @@ class MultiAgentManager:
                 if len(processed_title) > 50:
                     processed_title = processed_title[:50] + "..."
 
+            # Define project path BEFORE using it in metadata
+            db_project_path = project_path or os.getcwd()
+
             # Store session metadata
             metadata = {
                 "title": processed_title or f"Session {session_id}",
@@ -241,10 +244,8 @@ class MultiAgentManager:
             }
             self._save_session_metadata(session_id, metadata)
 
-            # Initialize session in database (use default path if none provided)
+            # Initialize session in database (use already defined db_project_path)
             try:
-                # Use provided project_path or default to current working directory
-                db_project_path = project_path or os.getcwd()
                 db = ProjectDB(db_project_path)
                 # Initialize session metadata (chat history in FileSessionManager)
                 db.save_session(session_id)
