@@ -16,7 +16,7 @@ export const APP_CONFIG = {
 
   // OpenRouter Configuration
   OPENROUTER_API_BASE: 'https://openrouter.ai/api/v1',
-  DEFAULT_PLANNING_MODEL: 'x-ai/grok-4.1-fast',
+  DEFAULT_PLANNING_MODEL: 'x-ai/grok-4.1-fast:free',
 
   // Features (Always enabled)
   COST_TRACKING_ENABLED: true,

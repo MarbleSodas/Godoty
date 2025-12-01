@@ -459,7 +459,7 @@ export class ConfigService {
           console.error('[ConfigService] All retries exhausted, using fallback configuration');
           // Fallback: Use minimal default list
           this.availableModels.next([
-            { id: 'x-ai/grok-4.1-fast', name: 'Grok 4.1 Fast', provider: 'xAI' },
+            { id: 'x-ai/grok-4.1-fast:free', name: 'Grok 4.1 Fast (Free)', provider: 'xAI' },
             { id: 'anthropic/claude-sonnet-4.5', name: 'Sonnet 4.5', provider: 'Anthropic' }
           ]);
           this.apiKeyStatus.next({
