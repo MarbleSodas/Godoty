@@ -433,17 +433,57 @@ export class ChatService {
 // Note: Direct plan generation removed - use session-based approach
 
   /**
-   * Update session title via backend API
+   * Update session title via backend API with enhanced validation and retry logic
    */
   async updateSessionTitle(sessionId: string, title: string): Promise<void> {
+    // Validate session exists before attempting update
+    if (!(await this.sessionExists(sessionId))) {
+      throw new Error(`Session ${sessionId} does not exist`);
+    }
+
     const url = `${APP_CONFIG.API_ENDPOINTS.CHAT}/sessions/${sessionId}/title`;
 
+    let retryCount = 0;
+    const maxRetries = 3;
+
+    while (retryCount <= maxRetries) {
+      try {
+        await this.http.post(url, { title }).toPromise();
+        console.log(`[ChatService] Updated session title: ${sessionId} -> ${title}`);
+        return; // Success - exit retry loop
+      } catch (error: any) {
+        retryCount++;
+
+        if (error?.status === 404) {
+          console.error(`[ChatService] Session not found: ${sessionId}`);
+          throw new Error(`Session ${sessionId} not found. Please try refreshing.`);
+        }
+
+        if (retryCount > maxRetries) {
+          console.error('[ChatService] Failed to update session title after retries:', error);
+          throw error;
+        }
+
+        // Exponential backoff for retries
+        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+      }
+    }
+  }
+
+  /**
+   * Check if session exists in backend
+   */
+  private async sessionExists(sessionId: string): Promise<boolean> {
     try {
-      await this.http.post(url, { title }).toPromise();
-      console.log(`[ChatService] Updated session title: ${sessionId} -> ${title}`);
-    } catch (error) {
-      console.error('[ChatService] Failed to update session title:', error);
-      throw error;
+      const url = `${APP_CONFIG.API_ENDPOINTS.CHAT}/sessions/${sessionId}`;
+      await this.http.get(url).toPromise();
+      return true;
+    } catch (error: any) {
+      if (error?.status === 404) {
+        return false;
+      }
+      // For other errors, assume session might exist to avoid false negatives
+      return true;
     }
   }
 }

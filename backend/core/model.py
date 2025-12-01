@@ -102,3 +102,27 @@ class GodotyOpenRouterModel(OpenAIModel):
                 f"No usage data received for model {self.model_id}. "
                 "Verify stream_options.include_usage is configured correctly."
             )
+
+    async def execute(
+        self,
+        messages: Messages,
+        tool_specs: Optional[List] = None,
+        system_prompt: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """
+        Execute model request and return complete response as string.
+
+        This method collects all chunks from stream() and returns them as a single string.
+        Provides a simple interface for non-streaming use cases while maintaining
+        compatibility with the existing streaming infrastructure.
+        """
+        response_parts = []
+
+        # Collect all content chunks from stream
+        async for event in self.stream(messages, tool_specs, system_prompt, **kwargs):
+            if "content" in event:
+                response_parts.append(event["content"])
+
+        # Return complete response
+        return "".join(response_parts)

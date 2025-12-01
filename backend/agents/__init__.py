@@ -1,16 +1,18 @@
-"""Agents module for Godot Assistant."""
+"""Agents module for Godoty Assistant."""
 
 import warnings
 
 # Suppress LangGraph warning
 warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
 
-from .planning_agent import PlanningAgent, get_planning_agent, close_planning_agent
-from .config import AgentConfig
+# Import current unified components
+from .godoty_agent import GodotyAgent
+from .unified_session import UnifiedSessionManager, get_unified_session_manager
+from .config.model_config import ModelConfig
 
 __all__ = [
-    "PlanningAgent",
-    "get_planning_agent",
-    "close_planning_agent",
-    "AgentConfig"
+    "GodotyAgent",
+    "UnifiedSessionManager",
+    "get_unified_session_manager",
+    "ModelConfig"
 ]

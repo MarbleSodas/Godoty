@@ -1,5 +1,7 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
+import { HttpClient } from '@angular/common/http';
+import { APP_CONFIG } from '../core/constants';
 
 export interface Session {
   id: string;
@@ -42,7 +44,7 @@ export class SessionService {
   private currentProjectPath: string | null = null;
   private sessionMessages: Map<string, Message[]> = new Map();
 
-  constructor() { }
+  constructor(private http: HttpClient) { }
 
   /**
    * Initialize the session service
@@ -77,32 +79,74 @@ export class SessionService {
   }
 
   /**
-   * Create a new session
+   * Create a new session with backend-first approach for robustness
    */
   async createSession(title?: string): Promise<string> {
-    const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const sessionTitle = title || 'New Session';
 
-    const newSession: Session = {
-      id: sessionId,
-      title: sessionTitle,
-      date: new Date(),
-      active: true,
-      project_path: this.currentProjectPath || undefined
-    };
+    try {
+      // Create session in backend first
+      const response = await this.http.post(`${APP_CONFIG.API_ENDPOINTS.CHAT}/sessions`, {
+        title: sessionTitle,
+        project_path: this.currentProjectPath || undefined
+      }).toPromise();
 
-    // Add to sessions list
-    const currentSessions = this.activeSessions.value;
-    this.activeSessions.next([newSession, ...currentSessions]);
+      const backendSession = response as any;
+      const sessionId = backendSession.session_id;
 
-    // Initialize messages map for this session
-    this.sessionMessages.set(sessionId, []);
-    this.messages.next(new Map(this.sessionMessages));
+      console.log(`[SessionService] Created session in backend: ${sessionId}`);
 
-    // Select the new session
-    await this.selectSession(sessionId);
+      // Create local session object with backend data
+      const newSession: Session = {
+        id: sessionId,
+        title: backendSession.title || sessionTitle,
+        date: new Date(backendSession.created_at || Date.now()),
+        active: true,
+        project_path: backendSession.project_path || this.currentProjectPath || undefined
+      };
 
-    return sessionId;
+      // Add to sessions list
+      const currentSessions = this.activeSessions.value;
+      this.activeSessions.next([newSession, ...currentSessions]);
+
+      // Initialize messages map for this session
+      this.sessionMessages.set(sessionId, []);
+      this.messages.next(new Map(this.sessionMessages));
+
+      // Select the new session
+      await this.selectSession(sessionId);
+
+      return sessionId;
+
+    } catch (error) {
+      console.error('[SessionService] Failed to create session in backend:', error);
+
+      // Fallback to local-only session creation if backend fails
+      console.warn('[SessionService] Falling back to local session creation');
+
+      const fallbackSessionId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+      const newSession: Session = {
+        id: fallbackSessionId,
+        title: sessionTitle,
+        date: new Date(),
+        active: true,
+        project_path: this.currentProjectPath || undefined
+      };
+
+      // Add to sessions list
+      const currentSessions = this.activeSessions.value;
+      this.activeSessions.next([newSession, ...currentSessions]);
+
+      // Initialize messages map for this session
+      this.sessionMessages.set(fallbackSessionId, []);
+      this.messages.next(new Map(this.sessionMessages));
+
+      // Select the new session
+      await this.selectSession(fallbackSessionId);
+
+      return fallbackSessionId;
+    }
   }
 
   /**

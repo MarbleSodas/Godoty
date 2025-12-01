@@ -9,7 +9,7 @@ from typing import Dict, Any
 from fastapi import APIRouter, HTTPException
 
 from agents.config import AgentConfig
-from agents.planning_agent import get_planning_agent
+from api.godoty_router import get_godoty_agent
 
 logger = logging.getLogger(__name__)
 
@@ -78,20 +78,20 @@ async def health_check():
 
         health_status["components"]["godot"] = godot_status
 
-        # Check planning agent
+        # Check GodotyAgent
         agent_status = {"status": "healthy", "details": {}}
         try:
-            agent = get_planning_agent()
+            agent = get_godoty_agent()
             agent_status["details"] = {
                 "initialized": True,
-                "tools_count": len(agent.tools)
+                "tools_count": len(agent.tools) if hasattr(agent, 'tools') else 0
             }
         except Exception as e:
             agent_status["status"] = "unhealthy"
             agent_status["details"] = {"error": str(e)}
-            logger.error(f"Planning agent health check failed: {e}")
+            logger.error(f"GodotyAgent health check failed: {e}")
 
-        health_status["components"]["planning_agent"] = agent_status
+        health_status["components"]["godoty_agent"] = agent_status
 
         # Determine overall status
         component_statuses = [comp["status"] for comp in health_status["components"].values()]

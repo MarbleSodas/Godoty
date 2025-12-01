@@ -1,2 +1,68 @@
 /* You can add global styles to this file, and also import other style files */
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom base styles */
+@layer base {
+  html {
+    font-family: Inter, system-ui, sans-serif;
+  }
+
+  body {
+    @apply bg-dark-primary text-dark-text selection:bg-dark-highlight selection:text-white;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+  }
+}
+
+/* Custom component styles */
+@layer components {
+  /* Scrollbar styles */
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-dark-primary;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-dark-accent rounded;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-dark-highlight;
+  }
+
+  /* Form styles */
+  .form-input {
+    @apply bg-dark-secondary border border-dark-border rounded-lg px-3 py-2 text-dark-text placeholder:text-gray-500 focus:outline-none focus:border-dark-highlight;
+  }
+
+  .button-primary {
+    @apply bg-dark-highlight text-white px-4 py-2 rounded-lg hover:bg-opacity-80 transition-colors duration-200;
+  }
+
+  .button-secondary {
+    @apply bg-dark-accent text-dark-text px-4 py-2 rounded-lg hover:bg-opacity-80 transition-colors duration-200;
+  }
+}
+
+/* Animation utilities */
+.animate-in {
+  @apply animate-fade-in;
+}
+
+.slide-in-from-top-2 {
+  @apply animate-slide-down;
+}
+
+.slide-in-from-right-2 {
+  @apply animate-slide-right;
+}
+
+.slide-in-from-bottom {
+  @apply animate-text-fade-up;
+}

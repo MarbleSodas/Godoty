@@ -4,6 +4,7 @@ Configuration validation utilities.
 Handles validation of configuration values and provides useful error messages.
 """
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, List
@@ -30,7 +31,10 @@ class ConfigValidator:
         if not api_key:
             errors.append("OPENROUTER_API_KEY is not set. Please set it in .env file or configuration.")
         elif not api_key.startswith("sk-or-v1-"):
-            warnings.append("OPENROUTER_API_KEY format looks incorrect. Should start with 'sk-or-v1-'.")
+            # Only warn if key is present but incorrectly formatted
+            # and not in production/silent mode
+            if os.getenv('GODOTY_ENVIRONMENT') != 'production':
+                warnings.append("OPENROUTER_API_KEY format looks incorrect. Should start with 'sk-or-v1-'.")
         
         # Validate model configuration
         if model_config.AGENT_TEMPERATURE < 0 or model_config.AGENT_TEMPERATURE > 2:

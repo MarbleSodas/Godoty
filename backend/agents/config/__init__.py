@@ -5,6 +5,7 @@ Re-exports all configuration classes for backward compatibility.
 Import from here to get all config options:
     from agents.config import AgentConfig
 """
+import os
 from .model_config import ModelConfig
 from .tool_config import ToolConfig
 from .prompts import Prompts
@@ -35,18 +36,20 @@ class AgentConfig(ModelConfig, ToolConfig, Prompts):
         return ConfigValidator.validate_all(ModelConfig, ToolConfig)
 
 
-# Validate configuration on module import
+# Validate configuration on module import, but be less noisy
 validation_result = AgentConfig.validate()
 if not validation_result['valid']:
-    print("Agent configuration validation failed with errors:")
-    for error in validation_result['errors']:
-        print(f"  ERROR: {error}")
+    if os.getenv('GODOTY_ENVIRONMENT') != 'production':
+        print("Agent configuration validation failed with errors:")
+        for error in validation_result['errors']:
+            print(f"  ERROR: {error}")
 
-if validation_result['warnings']:
+if validation_result['warnings'] and os.getenv('GODOTY_ENVIRONMENT') != 'production':
     print("Agent configuration validation warnings:")
     for warning in validation_result['warnings']:
         print(f"  WARNING: {warning}")
 
-# Log availability status
-print(f"Godot tools available: {validation_result['godot_available']}")
-print(f"MCP tools available: {validation_result['mcp_available']}")
+# Only log availability status in debug mode
+if os.getenv('GODOTY_DEBUG'):
+    print(f"Godot tools available: {validation_result['godot_available']}")
+    print(f"MCP tools available: {validation_result['mcp_available']}")

@@ -75,46 +75,6 @@ def sample_test_files(temp_dir):
     return temp_dir
 
 
-@pytest.fixture
-def mock_planning_agent():
-    """Mock planning agent for testing."""
-    agent = MagicMock()
-    agent.plan_async = MagicMock(return_value="Test plan output")
-    
-    async def mock_plan_stream(prompt):
-        """Mock streaming plan generation."""
-        yield {"type": "start", "data": {"message": "Starting plan generation"}}
-        yield {"type": "data", "data": {"text": "Test "}}
-        yield {"type": "data", "data": {"text": "plan "}}
-        yield {"type": "data", "data": {"text": "output"}}
-        yield {"type": "end", "data": {"stop_reason": "end_turn"}}
-    
-    agent.plan_stream = mock_plan_stream
-    agent.reset_conversation = MagicMock()
-    agent.close = MagicMock()
-    
-    return agent
-
-
-@pytest.fixture
-def mock_executor_agent():
-    """Mock executor agent for testing."""
-    agent = MagicMock()
-    
-    async def mock_execute_plan(plan, context=None):
-        """Mock plan execution."""
-        yield {"type": "execution_start", "data": {"plan_title": plan.title}}
-        yield {"type": "step_start", "data": {"step": 1}}
-        yield {"type": "step_complete", "data": {"step": 1, "status": "success"}}
-        yield {"type": "execution_complete", "data": {"status": "success"}}
-    
-    agent.execute_plan = mock_execute_plan
-    agent.get_execution_status = MagicMock(return_value=None)
-    agent.cancel_execution = MagicMock(return_value=True)
-    agent.list_active_executions = MagicMock(return_value=[])
-    
-    return agent
-
 
 @pytest.fixture(autouse=True)
 def reset_environment(mock_api_key):

@@ -27,3 +27,8 @@ beautifulsoup4>=4.12.0
 # Type Extensions
 typing-extensions>=4.0.0
 sqlalchemy>=2.0.0
+
+# Enhanced RAG and Vector Embeddings
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.0
+numpy>=1.24.0

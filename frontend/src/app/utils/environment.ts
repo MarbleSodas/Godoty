@@ -8,7 +8,7 @@
 
 export enum EnvironmentMode {
   DESKTOP = 'desktop',  // PyWebView desktop application
-  BROWSER = 'browser'    // Web browser (development)
+  BROWSER = 'browser',    // Web browser (development)
   UNKNOWN = 'unknown'    // Unable to determine
 }
 
@@ -46,17 +46,17 @@ export class EnvironmentDetector {
   static isPyWebViewDesktop(): boolean {
     const windowAny = window as any;
 
-    // Check for pywebview API object
+    // Primary check: pywebview API object
     if (windowAny.pywebview?.api) {
       return true;
     }
 
-    // Check for pywebview-specific window properties
+    // Secondary check: pywebview object exists (but API might not be ready yet)
     if (windowAny.pywebview) {
       return true;
     }
 
-    // Check for desktop-specific indicators
+    // Tertiary check: desktop-specific indicators
     if (windowAny.electronAPI || windowAny.desktop) {
       return true;
     }
@@ -69,7 +69,7 @@ export class EnvironmentDetector {
    */
   static isBrowserEnvironment(): boolean {
     // Check if we have typical browser APIs
-    return !!(window.fetch && window.location && !this.isPyWebViewDesktop());
+    return !!(typeof window.fetch === 'function' && window.location && !this.isPyWebViewDesktop());
   }
 
   /**

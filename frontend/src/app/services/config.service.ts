@@ -424,34 +424,54 @@ export class ConfigService {
    * Load available models from backend
    */
   private async loadAvailableModels(): Promise<void> {
-    try {
-      const data = await this.makeBackendCall('/config');
+    let retryCount = 0;
+    const maxRetries = 2;
 
-      if (data.available_models && Array.isArray(data.available_models)) {
-        this.availableModels.next(data.available_models);
-        console.log('[ConfigService] Loaded models from backend:', data.available_models.length);
-      }
+    while (retryCount <= maxRetries) {
+      try {
+        const data = await this.makeBackendCall('/config');
 
-      // Update API key status
-      if (data.has_api_key !== undefined) {
-        this.apiKeyStatus.next({
-          hasKey: data.has_api_key,
-          source: data.api_key_source || 'none',
-          needsUserInput: !data.has_api_key
-        });
+        if (data && typeof data === 'object' && 'available_models' in data && Array.isArray((data as any).available_models)) {
+          this.availableModels.next((data as any).available_models);
+        }
+
+        // Update API key status - this is critical for chat functionality
+        if (data && typeof data === 'object' && 'has_api_key' in data && (data as any).has_api_key !== undefined) {
+          this.apiKeyStatus.next({
+            hasKey: (data as any).has_api_key,
+            source: (data as any).api_key_source || 'none',
+            needsUserInput: !(data as any).has_api_key
+          });
+
+          // Log only critical status for desktop mode
+          if (EnvironmentDetector.isDesktopMode() && !(data as any).has_api_key) {
+            console.error('[ConfigService] Critical: API key validation failed in desktop mode');
+          }
+          return; // Success - exit the retry loop
+        } else {
+          throw new Error('API key status not returned from backend');
+        }
+      } catch (error) {
+        retryCount++;
+        console.error(`[ConfigService] Load attempt ${retryCount} failed:`, error);
+
+        if (retryCount > maxRetries) {
+          console.error('[ConfigService] All retries exhausted, using fallback configuration');
+          // Fallback: Use minimal default list
+          this.availableModels.next([
+            { id: 'x-ai/grok-4.1-fast', name: 'Grok 4.1 Fast', provider: 'xAI' },
+            { id: 'anthropic/claude-sonnet-4.5', name: 'Sonnet 4.5', provider: 'Anthropic' }
+          ]);
+          this.apiKeyStatus.next({
+            hasKey: false,
+            source: 'none',
+            needsUserInput: true
+          });
+        } else {
+          // Brief delay before retry
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+        }
       }
-    } catch (error) {
-      console.warn('[ConfigService] Failed to load models from backend:', error);
-      // Fallback: Use a minimal default list
-      this.availableModels.next([
-        { id: 'x-ai/grok-4.1-fast', name: 'Grok 4.1 Fast', provider: 'xAI' },
-        { id: 'anthropic/claude-sonnet-4.5', name: 'Sonnet 4.5', provider: 'Anthropic' }
-      ]);
-      this.apiKeyStatus.next({
-        hasKey: false,
-        source: 'none',
-        needsUserInput: true
-      });
     }
   }
 

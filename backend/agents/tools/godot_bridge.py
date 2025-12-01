@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import pathlib
+import random
+import time
 from typing import Any, Dict, Optional, Tuple, Union
 from dataclasses import dataclass, field, fields
 from enum import Enum
@@ -18,6 +20,7 @@ from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from strands import tool
 from ..config import AgentConfig
+from utils.serialization import safe_json_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,27 @@ class ConnectionState(Enum):
     CONNECTING = "connecting"
     CONNECTED = "connected"
     ERROR = "error"
+
+
+class ConnectionErrorType(Enum):
+    """Types of connection errors for better error handling."""
+    NETWORK_ERROR = "network_error"          # Network connectivity issues
+    TIMEOUT_ERROR = "timeout_error"          # Connection timeouts
+    REFUSED_ERROR = "refused_error"          # Connection refused (Godot not running)
+    WEBSOCKET_ERROR = "websocket_error"      # WebSocket protocol errors
+    AUTH_ERROR = "auth_error"                # Authentication/handshake errors
+    UNKNOWN_ERROR = "unknown_error"          # Uncategorized errors
+
+
+@dataclass
+class ConnectionErrorInfo:
+    """Detailed information about a connection error."""
+    error_type: ConnectionErrorType
+    message: str
+    original_exception: Optional[Exception] = None
+    timestamp: float = field(default_factory=time.time)
+    retry_count: int = 0
+    is_recoverable: bool = True
 
 
 @dataclass
@@ -85,6 +109,9 @@ class GodotBridge:
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.connection_state = ConnectionState.DISCONNECTED
         self.project_info: Optional[GodotProjectInfo] = None
+        self.last_connection_error: Optional[ConnectionErrorInfo] = None
+        self.connection_attempts = 0
+        self.successful_connections = 0
 
 
         # Command management
@@ -101,6 +128,92 @@ class GodotBridge:
         # Register default message handlers
         self._register_default_handlers()
 
+    def _classify_connection_error(self, exception: Exception) -> ConnectionErrorInfo:
+        """
+        Classify connection error for better handling and retry logic.
+
+        Args:
+            exception: The exception that occurred
+
+        Returns:
+            ConnectionErrorInfo with classified error details
+        """
+        error_message = str(exception)
+
+        # Check for connection refused in error message (cross-platform)
+        if "Connection refused" in error_message or "errno 61" in error_message:
+            return ConnectionErrorInfo(
+                error_type=ConnectionErrorType.REFUSED_ERROR,
+                message=f"Godot plugin not running or not accepting connections: {error_message}",
+                original_exception=exception,
+                is_recoverable=True
+            )
+        elif isinstance(exception, asyncio.TimeoutError):
+            return ConnectionErrorInfo(
+                error_type=ConnectionErrorType.TIMEOUT_ERROR,
+                message=f"Connection timeout - Godot may be busy: {error_message}",
+                original_exception=exception,
+                is_recoverable=True
+            )
+        elif isinstance(exception, OSError):
+            if "Connection refused" in error_message or "errno 61" in error_message:
+                return ConnectionErrorInfo(
+                    error_type=ConnectionErrorType.REFUSED_ERROR,
+                    message=f"Godot plugin not running: {error_message}",
+                    original_exception=exception,
+                    is_recoverable=True
+                )
+            elif "Network is unreachable" in error_message or "No route to host" in error_message:
+                return ConnectionErrorInfo(
+                    error_type=ConnectionErrorType.NETWORK_ERROR,
+                    message=f"Network connectivity issue: {error_message}",
+                    original_exception=exception,
+                    is_recoverable=False
+                )
+            else:
+                return ConnectionErrorInfo(
+                    error_type=ConnectionErrorType.NETWORK_ERROR,
+                    message=f"Network/OS error: {error_message}",
+                    original_exception=exception,
+                    is_recoverable=True
+                )
+        elif isinstance(exception, (ConnectionClosed, ConnectionClosedError)):
+            return ConnectionErrorInfo(
+                error_type=ConnectionErrorType.WEBSOCKET_ERROR,
+                message=f"WebSocket connection lost: {error_message}",
+                original_exception=exception,
+                is_recoverable=True
+            )
+        else:
+            return ConnectionErrorInfo(
+                error_type=ConnectionErrorType.UNKNOWN_ERROR,
+                message=f"Unexpected connection error: {error_message}",
+                original_exception=exception,
+                is_recoverable=True
+            )
+
+    def _calculate_backoff_delay(self, attempt: int, base_delay: float = 1.0, max_delay: float = 60.0, jitter: bool = True) -> float:
+        """
+        Calculate exponential backoff delay with optional jitter.
+
+        Args:
+            attempt: Current attempt number (0-based)
+            base_delay: Base delay in seconds
+            max_delay: Maximum delay in seconds
+            jitter: Whether to add jitter to prevent thundering herd
+
+        Returns:
+            Delay in seconds
+        """
+        delay = min(base_delay * (2 ** attempt), max_delay)
+
+        if jitter:
+            # Add ±25% jitter
+            jitter_factor = 0.75 + (random.random() * 0.5)  # 0.75 to 1.25
+            delay *= jitter_factor
+
+        return delay
+
     def _register_default_handlers(self):
         """Register default message handlers for common Godot messages."""
         self._message_handlers.update({
@@ -112,34 +225,59 @@ class GodotBridge:
 
     async def connect(self) -> bool:
         """
-        Establish WebSocket connection to Godot plugin.
+        Establish WebSocket connection to Godot plugin with enhanced error handling
+        and intelligent retry logic.
 
         Returns:
             True if connection successful, False otherwise
         """
         if self.connection_state == ConnectionState.CONNECTED:
-            logger.warning("Already connected to Godot plugin")
+            logger.debug("Already connected to Godot plugin")
             return True
 
         uri = f"ws://{self.host}:{self.port}"
         logger.info(f"Connecting to Godot plugin at {uri}")
 
         self.connection_state = ConnectionState.CONNECTING
+        self.connection_attempts += 1
+
+        consecutive_failures = 0
+        max_consecutive_failures = 3  # Give up after 3 consecutive failures with non-recoverable errors
 
         for attempt in range(self.max_retries):
             try:
+                # Calculate delay with exponential backoff and jitter
+                delay = self._calculate_backoff_delay(attempt, self.retry_delay, 60.0, jitter=True)
+
+                if attempt > 0:
+                    logger.info(f"Waiting {delay:.2f}s before retry attempt {attempt + 1}/{self.max_retries}")
+                    await asyncio.sleep(delay)
+
+                logger.info(f"Connection attempt {attempt + 1}/{self.max_retries} to {uri}")
+
+                # Attempt connection with timeout
                 self.websocket = await asyncio.wait_for(
                     websockets.connect(uri),
                     timeout=self.timeout
                 )
 
+                # Connection successful
                 self.connection_state = ConnectionState.CONNECTED
-                logger.info(f"✓ Successfully connected to Godot plugin at {uri} (attempt {attempt + 1})")
+                self.successful_connections += 1
+                consecutive_failures = 0  # Reset consecutive failure count
+
+                logger.info(
+                    f"✅ Successfully connected to Godot plugin at {uri} "
+                    f"(attempt {attempt + 1}, success rate: {self.successful_connections}/{self.connection_attempts})"
+                )
 
                 # Start message listener task and track it
                 logger.info("🎧 Starting WebSocket message listener")
                 self._message_listener_task = asyncio.create_task(self._message_listener())
                 self._message_listener_task.add_done_callback(self._on_listener_done)
+
+                # Clear any previous error
+                self.last_connection_error = None
 
                 # Notify connection callbacks
                 for callback in self._connection_callbacks:
@@ -150,17 +288,57 @@ class GodotBridge:
 
                 return True
 
-            except (OSError, asyncio.TimeoutError) as e:
-                logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
-                continue
             except Exception as e:
-                logger.error(f"Unexpected error during connection: {e}")
-                break
+                # Classify the error for better handling
+                error_info = self._classify_connection_error(e)
+                error_info.retry_count = attempt
+                self.last_connection_error = error_info
+                consecutive_failures += 1
 
+                # Enhanced error logging
+                logger.warning(
+                    f"❌ Connection attempt {attempt + 1} failed ({error_info.error_type.value}): "
+                    f"{error_info.message}"
+                )
+
+                # Check if we should give up due to consecutive non-recoverable errors
+                if not error_info.is_recoverable:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.error(
+                            f"🛑 Giving up after {max_consecutive_failures} consecutive "
+                            f"non-recoverable errors: {error_info.error_type.value}"
+                        )
+                        break
+                    else:
+                        logger.info(f"Non-recoverable error, but will retry ({consecutive_failures}/{max_consecutive_failures})")
+                        continue
+
+                # For timeout errors, try with shorter timeout on next attempt
+                if error_info.error_type == ConnectionErrorType.TIMEOUT_ERROR and attempt < self.max_retries - 1:
+                    original_timeout = self.timeout
+                    self.timeout = max(original_timeout * 0.8, 2.0)  # Don't go below 2 seconds
+                    logger.info(f"Reducing timeout to {self.timeout}s for next attempt")
+                    # Restore original timeout after this attempt
+                    self.timeout = original_timeout
+
+                # Continue to next attempt unless this was the last one
+                if attempt < self.max_retries - 1:
+                    continue
+
+        # All attempts failed
         self.connection_state = ConnectionState.ERROR
-        logger.error("Failed to connect to Godot plugin after all attempts")
+
+        if self.last_connection_error:
+            error_type_desc = "non-recoverable" if not self.last_connection_error.is_recoverable else "recoverable"
+            logger.error(
+                f"🔴 Failed to connect to Godot plugin after {self.max_retries} attempts. "
+                f"Last error: {self.last_connection_error.error_type.value} ({error_type_desc}): "
+                f"{self.last_connection_error.message}"
+            )
+        else:
+            logger.error(f"🔴 Failed to connect to Godot plugin after {self.max_retries} attempts")
+
         return False
 
     async def disconnect(self):
@@ -250,7 +428,7 @@ class GodotBridge:
 
         try:
             # Send command
-            message = json.dumps(command)
+            message = safe_json_dumps(command)
             # logger.info(f"📤 Sending command {command_id}: {command_type} with params: {list(kwargs.keys())}")
             logger.info(f"📤 SENDING RAW WEBSOCKET MESSAGE: {message}")
             await self.websocket.send(message)
@@ -340,26 +518,58 @@ class GodotBridge:
             return False
 
     async def _message_listener(self):
-        """Background task to listen for WebSocket messages."""
+        """Background task to listen for WebSocket messages with enhanced error handling."""
         logger.info("🎧 Message listener started and listening...")
+        message_count = 0
+        last_activity = time.time()
+
         try:
             async for message in self.websocket:
                 try:
-                    # logger.debug(f"📥 RAW WEBSOCKET MESSAGE: {message}")
-                    logger.info(f"📥 RECEIVED RAW WEBSOCKET MESSAGE: {message[:1000]}...") # Truncate to avoid spamming too much if it's an image
+                    # Update activity tracking
+                    message_count += 1
+                    last_activity = time.time()
+
+                    # Log message receipt with size information
+                    message_size = len(message)
+                    if message_size > 1024:  # Large messages
+                        logger.info(f"📥 Received large message #{message_count} ({message_size} bytes): {message[:200]}...")
+                    else:
+                        logger.debug(f"📥 Received message #{message_count} ({message_size} bytes): {message}")
+
                     data = json.loads(message)
                     await self._handle_message(data)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON received: {e}")
-                except Exception as e:
-                    logger.error(f"Error handling message: {e}")
 
-        except ConnectionClosed:
-            logger.warning("⚠️ WebSocket connection closed, message listener stopping")
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Invalid JSON in message #{message_count}: {e}. Message preview: {message[:100]}...")
+                    # Don't disconnect for malformed JSON, just log and continue
+                except Exception as e:
+                    logger.error(f"❌ Error handling message #{message_count}: {e}")
+                    # Continue processing other messages
+
+        except ConnectionClosed as e:
+            logger.warning(f"⚠️ WebSocket connection closed ({e.code}): {e.reason}")
             self.connection_state = ConnectionState.DISCONNECTED
+
+            # Log connection statistics
+            logger.info(f"📊 Connection stats: {message_count} messages processed, "
+                       f"duration: {time.time() - last_activity:.1f}s if available")
+
+        except asyncio.CancelledError:
+            logger.info("🛑 Message listener cancelled")
+            self.connection_state = ConnectionState.DISCONNECTED
+
         except Exception as e:
-            logger.error(f"❌ Error in message listener: {e}")
+            logger.error(f"❌ Unexpected error in message listener: {e}")
             self.connection_state = ConnectionState.ERROR
+
+            # Store error information
+            self.last_connection_error = ConnectionErrorInfo(
+                error_type=ConnectionErrorType.WEBSOCKET_ERROR,
+                message=f"Message listener error: {str(e)}",
+                original_exception=e,
+                is_recoverable=True
+            )
 
     def _on_listener_done(self, task: asyncio.Task):
         """Callback when message listener task completes."""
@@ -457,6 +667,46 @@ class GodotBridge:
         """Remove connection callback."""
         if callback in self._connection_callbacks:
             self._connection_callbacks.remove(callback)
+
+    def get_connection_stats(self) -> dict:
+        """
+        Get detailed connection statistics.
+
+        Returns:
+            Dictionary with connection statistics and error information
+        """
+        success_rate = 0.0
+        if self.connection_attempts > 0:
+            success_rate = self.successful_connections / self.connection_attempts
+
+        stats = {
+            "connection_attempts": self.connection_attempts,
+            "successful_connections": self.successful_connections,
+            "success_rate": success_rate,
+            "current_state": self.connection_state.value,
+            "last_error": None,
+            "project_info": None
+        }
+
+        if self.last_connection_error:
+            stats["last_error"] = {
+                "type": self.last_connection_error.error_type.value,
+                "message": self.last_connection_error.message,
+                "timestamp": self.last_connection_error.timestamp,
+                "retry_count": self.last_connection_error.retry_count,
+                "is_recoverable": self.last_connection_error.is_recoverable
+            }
+
+        if self.project_info:
+            stats["project_info"] = {
+                "project_path": self.project_info.project_path,
+                "project_name": self.project_info.project_name,
+                "godot_version": self.project_info.godot_version,
+                "plugin_version": self.project_info.plugin_version,
+                "is_ready": self.project_info.is_ready
+            }
+
+        return stats
 
 
 # Global bridge instance for use across tools

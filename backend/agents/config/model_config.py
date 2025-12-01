@@ -10,7 +10,7 @@ Handles all model-related settings including:
 import os
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,9 @@ class ModelConfig:
     ALLOWED_MODELS = {
         "Gemini 3 Pro": "google/gemini-3-pro-preview",
         "Grok 4.1 Fast": "x-ai/grok-4.1-fast",
+        "Grok 4.1 Fast (Free)": "x-ai/grok-4.1-fast:free",
         "Sonnet 4.5": "anthropic/claude-sonnet-4.5",
+        "Opus 4.5": "anthropic/claude-opus-4.5",
         "Haiku 4.5": "anthropic/claude-haiku-4.5",
         "Minimax M2": "minimax/minimax-m2",
         "GPT 5.1 Codex": "openai/gpt-5.1-codex",
@@ -65,7 +67,21 @@ class ModelConfig:
                     config = json.load(f)
                     cls._planning_model = config.get("planning_model", cls._planning_model)
                     cls._executor_model = config.get("executor_model", cls._executor_model)
-                    cls._openrouter_api_key = config.get("openrouter_api_key", cls._openrouter_api_key)
+
+                    # Only override API key from config if it's non-empty and we don't have one from env
+                    config_api_key = config.get("openrouter_api_key", "")
+                    if config_api_key and not os.getenv("OPENROUTER_API_KEY"):
+                        cls._openrouter_api_key = config_api_key
+
+                    # Log configuration source for API key
+                    env_api_key = os.getenv("OPENROUTER_API_KEY")
+                    if env_api_key:
+                        logger.info("API key loaded from environment variables (.env file)")
+                    elif config_api_key:
+                        logger.info(f"API key loaded from configuration file ({cls.CONFIG_FILE})")
+                    else:
+                        logger.warning("No API key found in environment or configuration file")
+
                     logger.info(f"Loaded configuration from {cls.CONFIG_FILE}")
             except Exception as e:
                 logger.error(f"Error loading configuration: {e}")
@@ -136,6 +152,27 @@ class ModelConfig:
             "db_path": cls.METRICS_DB_PATH,
             "precise_cost_tracking": cls.ENABLE_PRECISE_COST_TRACKING,
             "cost_query_delay_ms": cls.COST_QUERY_DELAY_MS
+        }
+
+    @classmethod
+    def planning_model(cls) -> str:
+        """Get the planning model."""
+        return cls._planning_model
+
+    @classmethod
+    def executor_model(cls) -> str:
+        """Get the executor model."""
+        return cls._executor_model
+
+    @classmethod
+    def get_model_info(cls) -> Dict[str, Any]:
+        """Get comprehensive model information."""
+        return {
+            "planning_model": cls._planning_model,
+            "executor_model": cls._executor_model,
+            "temperature": cls.AGENT_TEMPERATURE,
+            "max_tokens": cls.AGENT_MAX_TOKENS,
+            "allowed_models": cls.ALLOWED_MODELS
         }
 
 # Load config on module import

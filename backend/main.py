@@ -38,6 +38,23 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Configure logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
+)
+
+# Configure specific loggers
+logging.getLogger("agents").setLevel(logging.INFO)
+logging.getLogger("backend.agents").setLevel(logging.INFO)
+logging.getLogger("context").setLevel(logging.INFO)
+logging.getLogger("api").setLevel(logging.INFO)
+
+# Create logger instance
+logger = logging.getLogger(__name__)
+
 # Import modules needed for PyWebView API
 try:
     from api.godoty_router import GodotyAPIRouter
@@ -69,18 +86,8 @@ if hasattr(signal, 'SIGBREAK'):
 
 def configure_logging():
     """Configure logging for the application."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)],
-        force=True
-    )
-
-    # Configure specific loggers
-    logging.getLogger("agents").setLevel(logging.INFO)
-    logging.getLogger("backend.agents").setLevel(logging.INFO)
-    logging.getLogger("context").setLevel(logging.INFO)
-    logging.getLogger("api").setLevel(logging.INFO)
+    # Logging already configured at module level
+    pass
 
 
 def create_app():
@@ -95,7 +102,6 @@ def create_app():
     # Configure logging
     configure_logging()
 
-    logger = logging.getLogger(__name__)
     logger.info("Creating simplified FastAPI application with GodotyAgent")
 
     # Import the simplified router
@@ -172,6 +178,8 @@ def create_app():
     @app.get("/health/", tags=["legacy"], summary="Legacy health endpoint for frontend compatibility")
     async def legacy_health_check():
         """Legacy health endpoint to maintain frontend compatibility."""
+        # Log usage for monitoring
+        logger.warning("🚨 LEGACY ENDPOINT USED: /health/ - Consider migrating to /api/godoty/health")
         try:
             from api.godoty_router import GodotyAPIRouter
             godoty_router = GodotyAPIRouter()
@@ -197,6 +205,8 @@ def create_app():
     @app.get("/api/agent/sessions", tags=["legacy"], summary="Legacy sessions endpoint for frontend compatibility")
     async def legacy_list_sessions():
         """Legacy sessions endpoint to maintain frontend compatibility."""
+        # Log usage for monitoring
+        logger.warning("🚨 LEGACY ENDPOINT USED: GET /api/agent/sessions - Consider migrating to /api/godoty/sessions")
         try:
             from api.godoty_router import GodotyAPIRouter
             godoty_router = GodotyAPIRouter()
@@ -212,6 +222,8 @@ def create_app():
     @app.post("/api/agent/sessions", tags=["legacy"], summary="Legacy session creation endpoint for frontend compatibility")
     async def legacy_create_session(request: dict = Body(default={"title": "New Session"})):
         """Legacy session creation endpoint to maintain frontend compatibility."""
+        # Log usage for monitoring
+        logger.warning("🚨 LEGACY ENDPOINT USED: POST /api/agent/sessions - Consider migrating to /api/godoty/sessions")
         try:
             from api.godoty_router import GodotyAPIRouter, SessionCreateRequest
             godoty_router = GodotyAPIRouter()
@@ -355,24 +367,41 @@ class PyWebViewAPI:
         if not PYWEBVIEW_IMPORTS_AVAILABLE:
             raise Exception("PyWebView dependencies not available")
 
-        self.router = GodotyAPIRouter()
-        self.session_manager = get_unified_session_manager()
+        self._router = GodotyAPIRouter()
+        self._session_manager = get_unified_session_manager()
 
     def get_config(self):
         """Get configuration dictionary for frontend"""
         try:
-            # Create event loop for async call
             import asyncio
+            from agents.config.model_config import ModelConfig
+
+            # Create event loop for async call
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            config = loop.run_until_complete(self.router.get_config())
+
+            # Get configuration from router
+            config = loop.run_until_complete(self._router.get_config())
             loop.close()
-            return config.dict()
+
+            # Ensure API key status is accurate by double-checking
+            result = config.dict()
+            api_key_status = bool(ModelConfig._openrouter_api_key)
+            result['has_api_key'] = api_key_status
+
+            # Log only critical status change
+            if not api_key_status:
+                logger.warning("API key not found in configuration")
+
+            return result
+
         except Exception as e:
             logger.error(f"Error getting config: {e}")
+            # Return correct fallback with actual API key status
+            api_key = os.getenv('OPENROUTER_API_KEY', '')
             return {
-                "has_api_key": bool(os.getenv('OPENROUTER_API_KEY')),
-                "api_key_source": "environment" if os.getenv('OPENROUTER_API_KEY') else "none",
+                "has_api_key": bool(api_key),
+                "api_key_source": "environment" if api_key else "none",
                 "available_models": [],
                 "metrics_enabled": True,
                 "model_id": "unknown",
@@ -397,7 +426,7 @@ class PyWebViewAPI:
             project_path = session_data.get('project_path')
 
             # Create session
-            session = self.session_manager.create_session(
+            session = self._session_manager.create_session(
                 session_id=session_id,
                 title=title or f"Session {session_id[:8]}",
                 project_path=project_path
@@ -419,7 +448,7 @@ class PyWebViewAPI:
             session_id = data.get('session_id')
             title = data.get('title')
 
-            success = self.session_manager.update_session_title(session_id, title)
+            success = self._session_manager.update_session_title(session_id, title)
 
             if not success:
                 raise Exception(f"Session {session_id} not found")
@@ -437,7 +466,7 @@ class PyWebViewAPI:
         """Handle session hiding from frontend"""
         try:
             session_id = data.get('session_id')
-            success = self.session_manager.hide_session(session_id)
+            success = self._session_manager.hide_session(session_id)
 
             if not success:
                 raise Exception(f"Session {session_id} not found")
@@ -454,7 +483,7 @@ class PyWebViewAPI:
         """Handle session stopping from frontend"""
         try:
             session_id = data.get('session_id')
-            success = self.session_manager.stop_session(session_id)
+            success = self._session_manager.stop_session(session_id)
 
             if not success:
                 raise Exception(f"Session {session_id} not found")
@@ -485,6 +514,120 @@ class PyWebViewAPI:
         except Exception as e:
             logger.error(f"Error sending message: {e}")
             raise Exception(f"Failed to send message: {str(e)}")
+
+    def send_message_stream(self, data):
+        """Handle message sending with streaming support for frontend"""
+        try:
+            session_id = data.get('session_id')
+            message = data.get('message')
+            mode = data.get('mode', 'planning')
+            project_path = data.get('project_path')
+
+            # Create proper request for streaming
+            from api.godoty_router import ChatStreamRequest
+            stream_request = ChatStreamRequest(
+                message=message,
+                mode=mode,
+                context_limit=data.get('context_limit', 10),
+                include_dependencies=data.get('include_dependencies', True)
+            )
+
+            # Use the chat_stream method from the router for proper streaming
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Create session context if needed
+            try:
+                session = self._session_manager.get_session(session_id)
+                if not session:
+                    session = self._session_manager.create_session(
+                        session_id=session_id,
+                        title=f"Session {session_id[:8]}",
+                        project_path=project_path
+                    )
+            except Exception as e:
+                logger.error(f"Error creating session context: {e}")
+                raise Exception(f"Failed to create session context: {str(e)}")
+
+            # Get streaming response
+            response = loop.run_until_complete(self._router.chat_stream(
+                session_id=session_id,
+                request=stream_request,
+                project_path=project_path
+            ))
+            loop.close()
+
+            return response.dict()
+
+        except Exception as e:
+            logger.error(f"Error in send_message_stream: {e}")
+            raise Exception(f"Failed to stream message: {str(e)}")
+
+    def manage_session(self, endpoint, data):
+        """Generic session management method for frontend compatibility"""
+        try:
+            # Parse the endpoint to determine the operation
+            if not endpoint.startswith('/'):
+                endpoint = '/' + endpoint
+
+            parts = endpoint.split('/')
+
+            if len(parts) == 2:
+                # Creating or listing sessions
+                if parts[1] == '':
+                    # Root sessions endpoint - list sessions
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(self._router.list_sessions(
+                        project_path=data.get('project_path')
+                    ))
+                    loop.close()
+                    return result
+                else:
+                    # Create session
+                    from api.godoty_router import SessionCreateRequest
+                    session_request = SessionCreateRequest(
+                        title=data.get('title', 'New Session'),
+                        project_path=data.get('project_path')
+                    )
+                    return self.create_session(session_request)
+
+            elif len(parts) == 3:
+                session_id = parts[2]
+                action = parts[1]
+
+                if action == 'title':
+                    # Update session title
+                    return self.update_session_title({
+                        'session_id': session_id,
+                        'title': data.get('title')
+                    })
+                elif action == 'hide':
+                    # Hide session
+                    return self.hide_session({
+                        'session_id': session_id
+                    })
+                elif action == 'stop':
+                    # Stop session
+                    return self.stop_session({
+                        'session_id': session_id
+                    })
+                elif action == 'chat' and len(parts) == 4 and parts[3] == 'stream':
+                    # Chat streaming
+                    return self.send_message_stream({
+                        'session_id': session_id,
+                        **data
+                    })
+                else:
+                    raise Exception(f"Unknown session operation: {action}")
+            else:
+                raise Exception(f"Invalid session endpoint: {endpoint}")
+
+        except Exception as e:
+            logger.error(f"Error in manage_session: {e}")
+            raise Exception(f"Failed to manage session: {str(e)}")
 
 
 
@@ -554,8 +697,16 @@ def run_desktop_app():
         # Create API object for PyWebView bridge
         api_object = PyWebViewAPI()
 
-        # Expose API to JavaScript
-        window.expose(api_object)
+        # Expose each method individually (PyWebView expects individual function parameters)
+        window.expose(api_object.get_config)
+        window.expose(api_object.update_config)
+        window.expose(api_object.create_session)
+        window.expose(api_object.update_session_title)
+        window.expose(api_object.hide_session)
+        window.expose(api_object.stop_session)
+        window.expose(api_object.send_message)
+        window.expose(api_object.send_message_stream)
+        window.expose(api_object.manage_session)
 
         # Start webview (blocking)
         webview.start()

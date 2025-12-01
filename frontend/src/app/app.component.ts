@@ -7,8 +7,11 @@ import { Subscription } from 'rxjs';
 import { ConfigService, AgentConfig, AvailableModel } from './services/config.service';
 import { SessionService, Session, Message } from './services/session.service';
 import { ChatService, ExecutionPlan } from './services/chat.service';
-import { DesktopService, GodotStatus } from './services/desktop.service';
+import { DesktopService, GodotStatus, DetailedConnectionStatus } from './services/desktop.service';
 import { MetricsService, SessionMetrics, ProjectMetrics } from './services/metrics.service';
+
+// Import utilities
+import { EnvironmentDetector } from './utils/environment';
 
 // Import preserved components
 import { SettingsComponent } from './components/settings/settings.component';
@@ -302,9 +305,13 @@ import {
               }
             </button>
           </div>
-          @if (!isConfigured()) {
-            <div class="text-center text-[10px] text-red-400 mt-2 font-mono">
-              {{ getConfigurationMessage() }}
+          @let configMessage = getConfigurationMessage();
+          @if (!isConfigured() || configMessage.type === 'info') {
+            <div class="text-center text-[10px] mt-2 font-mono"
+                 [class]="configMessage.type === 'error' ? 'text-red-400' :
+                            configMessage.type === 'warning' ? 'text-yellow-400' :
+                            'text-blue-400'">
+              {{ configMessage.message }}
             </div>
           } @else {
             <div class="text-center text-[10px] text-gray-600 mt-2 font-mono">
@@ -376,6 +383,7 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
   godotStatus = signal<GodotStatus>({
     state: 'disconnected'
   });
+  detailedConnectionStatus = signal<DetailedConnectionStatus | null>(null);
   agentConfig = signal<AgentConfig>({
     projectPath: '',
     agentModel: '',
@@ -409,6 +417,32 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
 
   ngOnDestroy() {
     this.subscriptions.forEach(sub => sub.unsubscribe());
+  }
+
+  /**
+   * Update connection state from Godot status and sync to config service
+   * @param status Godot status from SSE stream
+   */
+  private updateConnectionStateFromStatus(status: GodotStatus): void {
+    // Sync Godot connection state to config service
+    const isConnected = status.state === 'connected';
+    this.configService.setConnectionState(status.state as 'connected' | 'disconnected' | 'connecting' | 'error');
+    if (status.godot_version) {
+      this.configService.setGodotConnection(isConnected, status.godot_version);
+    }
+
+    // Sync Godot-detected project path to services if available and not already configured
+    if (isConnected && status.project_path) {
+      const currentConfigPath = this.configService.getProjectPath();
+      // Only auto-set if user hasn't manually configured a path
+      if (!currentConfigPath || currentConfigPath.trim() === '') {
+        this.sessionService.setProjectPath(status.project_path);
+        this.configService.setProjectPath(status.project_path);
+      } else if (currentConfigPath !== status.project_path) {
+        // User has a configured path, but also sync Godot path to session service as fallback
+        this.sessionService.setProjectPath(status.project_path);
+      }
+    }
   }
 
   ngAfterViewChecked() {
@@ -457,27 +491,55 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
     // Godot status subscription - sync to both local state and config service
     // Use streaming SSE for real-time updates
     this.subscriptions.push(
-      this.desktopService.streamGodotStatus().subscribe(status => {
-        this.godotStatus.set(status);
-        // Sync Godot connection state to config service
-        const isConnected = status.state === 'connected';
-        this.configService.setConnectionState(status.state as 'connected' | 'disconnected' | 'connecting' | 'error');
-        if (status.godot_version) {
-          this.configService.setGodotConnection(isConnected, status.godot_version);
-        }
+      this.desktopService.streamGodotStatus().subscribe({
+        next: (status: GodotStatus) => {
+          console.log('[AppComponent] Godot status update received:', status);
+          console.log('[AppComponent] Project name from SSE:', status.project_name);
+          console.log('[AppComponent] Connection state from SSE:', status.state);
+          console.log('[AppComponent] Godot version from SSE:', status.godot_version);
+          console.log('[AppComponent] Project path from SSE:', status.project_path);
 
-        // Sync Godot-detected project path to services if available and not already configured
-        if (isConnected && status.project_path) {
+          // Update local signal
+          this.godotStatus.set(status);
+          console.log('[AppComponent] Godot status signal updated');
+
+          // Update connection state and sync to config service
+          this.updateConnectionStateFromStatus(status);
+          console.log('[AppComponent] Connection state updated and synced');
+        },
+        error: (error) => {
+          console.error('[AppComponent] Error receiving Godot status:', error);
+          console.error('[AppComponent] SSE subscription error details:', error);
+        },
+        complete: () => {
+          console.log('[AppComponent] Godot status subscription completed');
+        }
+      })
+    );
+
+    // Enhanced detailed connection status polling for comprehensive monitoring
+    this.subscriptions.push(
+      this.desktopService.pollConnectionStatus(3000).subscribe(detailedStatus => {
+        this.detailedConnectionStatus.set(detailedStatus);
+
+        // Use detailed status for enhanced project auto-configuration
+        // Check both agent and monitor for project path, with priority to agent
+        const projectPath = detailedStatus.agent.project_info?.project_path || detailedStatus.monitor.project_path;
+        if (detailedStatus.integration_available && projectPath) {
           const currentConfigPath = this.configService.getProjectPath();
-          // Only auto-set if user hasn't manually configured a path
           if (!currentConfigPath || currentConfigPath.trim() === '') {
-            this.sessionService.setProjectPath(status.project_path);
-            this.configService.setProjectPath(status.project_path);
-          } else if (currentConfigPath !== status.project_path) {
-            // User has a configured path, but also sync Godot path to session service as fallback
-            this.sessionService.setProjectPath(status.project_path);
+            this.sessionService.setProjectPath(projectPath);
+            this.configService.setProjectPath(projectPath);
           }
         }
+
+        // Log connection quality metrics for debugging
+        console.log('[App] Detailed connection status:', {
+          monitorRunning: detailedStatus.monitor.running,
+          agentConnected: detailedStatus.agent.connected,
+          integrationAvailable: detailedStatus.integration_available,
+          timestamp: detailedStatus.timestamp
+        });
       })
     );
 
@@ -591,15 +653,27 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
     const godotStatus = this.godotStatus();
 
     // API key can be in frontend localStorage OR backend .env
-    const hasApiKey = !!(config.openRouterKey) || this.backendHasApiKey();
+    const hasFrontendKey = !!(config.openRouterKey);
+    const hasBackendKey = this.backendHasApiKey();
+    const hasApiKey = hasFrontendKey || hasBackendKey;
+
+    // Log critical API key status for desktop mode debugging
+    if (EnvironmentDetector.isDesktopMode() && !hasApiKey) {
+      console.error('[AppComponent] Critical: No API key found - Frontend:', hasFrontendKey, 'Backend:', hasBackendKey);
+    }
 
     // Project path can be manually configured OR auto-detected from Godot
     const hasProjectPath = !!(config.projectPath) || !!(godotStatus.project_path);
 
     const hasModel = !!config.agentModel;
-    const isGodotConnected = config.connectionState === 'connected';
 
-    return hasApiKey && hasProjectPath && hasModel && isGodotConnected;
+    // Only validate core configuration items, not connection state
+    return hasApiKey && hasProjectPath && hasModel;
+  }
+
+  isReadyForUse(): boolean {
+    // Additional method for full readiness including connection
+    return this.isConfigured() && this.agentConfig().connectionState === 'connected';
   }
 
   // Session Methods
@@ -821,18 +895,33 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   /**
-   * Get project display name based on showFullPath setting
+   * Get project display name with enhanced logic prioritizing SSE project_name field
    */
   getProjectDisplayName(): string {
-    const fullPath = this.godotStatus().project_path;
-    if (!fullPath) return '';
+    const status = this.godotStatus();
+    console.log('[Header] getProjectDisplayName called with status:', status);
 
-    if (this.agentConfig().showFullPath) {
-      return fullPath;
+    // PRIORITY: Use explicit project_name field from enhanced SSE
+    if (status.project_name) {
+      console.log('[Header] Using project_name from SSE:', status.project_name);
+      return status.project_name;
     }
 
-    // Extract last folder name from path
-    return this.getFolderNameFromPath(fullPath);
+    // FALLBACK: Extract from project_settings.name
+    if (status.project_settings?.name) {
+      console.log('[Header] Using project_settings.name:', status.project_settings.name);
+      return status.project_settings.name;
+    }
+
+    // FALLBACK: Extract from project_path
+    if (status.project_path) {
+      const name = this.getFolderNameFromPath(status.project_path);
+      console.log('[Header] Using project_path to extract name:', name);
+      return name;
+    }
+
+    console.log('[Header] No project information available');
+    return 'Unknown Project';
   }
 
   /**
@@ -841,10 +930,15 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
   getHeaderStatusText(): string {
     const state = this.godotStatus().state;
     const projectPath = this.godotStatus().project_path;
+    const projectName = this.godotStatus().project_name;
+
+    console.log('[Header] getHeaderStatusText called:', { state, projectPath, projectName });
 
     switch (state) {
       case 'connected':
-        return projectPath ? `Connected: ${this.getProjectDisplayName()}` : 'Godot Connected';
+        const displayName = this.getProjectDisplayName();
+        console.log('[Header] Connected - using display name:', displayName);
+        return projectPath || projectName ? `Connected: ${displayName}` : 'Godot Connected';
       case 'connecting':
         return 'Connecting to Godot...';
       case 'error':
@@ -881,9 +975,9 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   /**
-   * Get configuration error message
+   * Get configuration message with type classification
    */
-  getConfigurationMessage(): string {
+  getConfigurationMessage(): { message: string; type: 'error' | 'warning' | 'info' } {
     const config = this.agentConfig();
     const godotStatus = this.godotStatus();
     const hasApiKey = !!(config.openRouterKey) || this.backendHasApiKey();
@@ -891,30 +985,31 @@ export class App implements OnInit, OnDestroy, AfterViewChecked {
 
     // Check in order of importance
     if (!hasApiKey) {
-      return 'Please configure OpenRouter API key in settings or .env file';
+      return { message: 'Please configure OpenRouter API key in settings or .env file', type: 'error' };
     }
 
     if (!config.agentModel) {
-      return 'Please select an AI model in settings';
+      return { message: 'Please select an AI model in settings', type: 'error' };
     }
 
+    // Only show project path error if Godot is not connected and no manual path
+    if (!hasProjectPath && config.connectionState === 'disconnected') {
+      return { message: 'Please select a Godot project path in settings or connect to Godot Editor', type: 'warning' };
+    }
+
+    // Connection states should be info messages, not errors
     if (config.connectionState === 'disconnected') {
-      return 'Waiting for Godot Editor connection. Please open your project in Godot with the Godoty plugin enabled';
+      return { message: 'Waiting for Godot Editor connection. Please open your project in Godot with the Godoty plugin enabled', type: 'info' };
     }
 
     if (config.connectionState === 'connecting') {
-      return 'Connecting to Godot Editor...';
+      return { message: 'Connecting to Godot Editor...', type: 'info' };
     }
 
     if (config.connectionState === 'error') {
-      return 'Error connecting to Godot Editor. Please check your plugin installation';
+      return { message: 'Error connecting to Godot Editor. Please check your plugin installation', type: 'error' };
     }
 
-    // Only show project path error if Godot is not connected (since Godot provides the path)
-    if (!hasProjectPath && config.connectionState !== 'connected') {
-      return 'Please select a Godot project path in settings or connect to Godot Editor';
-    }
-
-    return 'Please complete configuration in settings to start chatting';
+    return { message: 'Configuration complete', type: 'info' };
   }
 }
