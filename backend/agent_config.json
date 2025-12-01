@@ -1,0 +1,4 @@
+{
+  "planning_model": "x-ai/grok-4.1-fast",
+  "executor_model": "x-ai/grok-4.1-fast"
+}

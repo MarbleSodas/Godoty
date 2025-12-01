@@ -5,6 +5,7 @@ import { SessionService, Session, Message } from './session.service';
 import { MetricsService, OpenRouterMetrics, ProjectMetrics } from './metrics.service';
 import { ConfigService } from './config.service';
 import { APP_CONFIG } from '../core/constants';
+import { EnvironmentDetector, EnvironmentMode } from '../utils/environment';
 
 export interface ToolCall {
   name: string;
@@ -83,6 +84,70 @@ export class ChatService {
   ) {
     // Initialize project metrics observable
     this.projectMetrics$ = this.metricsService.projectMetrics.asObservable();
+  }
+
+  /**
+   * Make backend API call using appropriate communication method
+   */
+  private async makeBackendCall<T>(endpoint: string, data?: any): Promise<T> {
+    const environment = EnvironmentDetector.getCurrentMode();
+
+    if (environment === EnvironmentMode.DESKTOP) {
+      // Use PyWebView bridge for desktop mode
+      const windowAny = window as any;
+
+      // Remove leading slash for PyWebView API
+      const apiEndpoint = endpoint.startsWith('/') ? endpoint.substring(1) : endpoint;
+
+      if (!windowAny.pywebview?.api) {
+        throw new Error('PyWebView API not available in desktop mode');
+      }
+
+      console.log(`[ChatService] Using PyWebView bridge for ${apiEndpoint}`);
+
+      // Handle different endpoints for PyWebView
+      if (apiEndpoint.startsWith('sessions/')) {
+        if (apiEndpoint.includes('/chat/stream')) {
+          return await windowAny.pywebview.api.sendMessageStream(data);
+        } else if (apiEndpoint.includes('/title')) {
+          return await windowAny.pywebview.api.updateSessionTitle(data);
+        } else if (apiEndpoint.includes('/hide')) {
+          return await windowAny.pywebview.api.hideSession(data);
+        } else if (apiEndpoint.includes('/stop')) {
+          return await windowAny.pywebview.api.stopSession(data);
+        } else if (apiEndpoint.split('/').length === 2) {
+          // Create session or get sessions
+          return await windowAny.pywebview.api.manageSession(apiEndpoint, data);
+        } else {
+          throw new Error(`Unknown PyWebView session endpoint: ${apiEndpoint}`);
+        }
+      } else {
+        throw new Error(`Unknown PyWebView endpoint: ${apiEndpoint}`);
+      }
+    } else {
+      // Use HTTP requests for browser mode
+      const url = `${APP_CONFIG.API_ENDPOINTS.CHAT}${endpoint}`;
+      console.log(`[ChatService] Using HTTP for ${url}`);
+
+      const options: RequestInit = {
+        method: data ? 'POST' : 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      };
+
+      if (data) {
+        options.body = JSON.stringify(data);
+      }
+
+      const response = await fetch(url, options);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    }
   }
 
   /**
@@ -371,10 +436,10 @@ export class ChatService {
    * Update session title via backend API
    */
   async updateSessionTitle(sessionId: string, title: string): Promise<void> {
-    const url = `${APP_CONFIG.API_ENDPOINTS.CHAT}/agent/sessions/${sessionId}/title`;
+    const url = `${APP_CONFIG.API_ENDPOINTS.CHAT}/sessions/${sessionId}/title`;
 
     try {
-      await this.http.put(url, { title }).toPromise();
+      await this.http.post(url, { title }).toPromise();
       console.log(`[ChatService] Updated session title: ${sessionId} -> ${title}`);
     } catch (error) {
       console.error('[ChatService] Failed to update session title:', error);
