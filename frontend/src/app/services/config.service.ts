@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { APP_CONFIG } from '../core/constants';
 import { EnvironmentDetector, EnvironmentMode } from '../utils/environment';
+import { BackendConfigResponse, ConnectionStatusResponse, ApiKeyStatus, isBackendConfigResponse, isConnectionStatusResponse, extractApiKeyStatus } from '../types/backend.types';
 
 export interface AgentConfig {
   projectPath: string;
@@ -26,6 +27,7 @@ export interface AvailableModel {
     prompt: number;
     completion: number;
   };
+  context_length?: number;
 }
 
 @Injectable({
@@ -50,15 +52,7 @@ export class ConfigService {
   public availableModels: BehaviorSubject<AvailableModel[]> = new BehaviorSubject<AvailableModel[]>([]);
 
   // API key status from backend
-  public apiKeyStatus: BehaviorSubject<{
-    hasKey: boolean;
-    source: 'environment' | 'user_override' | 'none';
-    needsUserInput: boolean;
-  } | null> = new BehaviorSubject<{
-    hasKey: boolean;
-    source: 'environment' | 'user_override' | 'none';
-    needsUserInput: boolean;
-  } | null>(null);
+  public apiKeyStatus: BehaviorSubject<ApiKeyStatus | null> = new BehaviorSubject<ApiKeyStatus | null>(null);
 
   constructor() {
     this.loadConfigFromStorage();
@@ -68,7 +62,7 @@ export class ConfigService {
   /**
    * Make backend API call using appropriate communication method
    */
-  private async makeBackendCall<T>(endpoint: string, data?: any): Promise<T> {
+  private async makeBackendCall<T = any>(endpoint: string, data?: any, method: 'GET' | 'POST' = 'GET'): Promise<T> {
     const environment = EnvironmentDetector.getCurrentMode();
 
     if (environment === EnvironmentMode.DESKTOP) {
@@ -96,16 +90,16 @@ export class ConfigService {
     } else {
       // Use HTTP requests for browser mode
       const url = `${APP_CONFIG.API_ENDPOINTS.CHAT}${endpoint}`;
-      console.log(`[ConfigService] Using HTTP for ${url}`);
+      console.log(`[ConfigService] Using HTTP ${method} for ${url}`);
 
       const options: RequestInit = {
-        method: data ? 'POST' : 'GET',
+        method: method,
         headers: {
           'Content-Type': 'application/json',
         },
       };
 
-      if (data) {
+      if (data && method === 'POST') {
         options.body = JSON.stringify(data);
       }
 
@@ -436,15 +430,19 @@ export class ConfigService {
         }
 
         // Update API key status - this is critical for chat functionality
-        if (data && typeof data === 'object' && 'has_api_key' in data && (data as any).has_api_key !== undefined) {
-          this.apiKeyStatus.next({
-            hasKey: (data as any).has_api_key,
-            source: (data as any).api_key_source || 'none',
-            needsUserInput: !(data as any).has_api_key
-          });
+        if (data && isBackendConfigResponse(data)) {
+          const apiKeyStatus = extractApiKeyStatus(data);
 
+          // If backend has key, clear frontend localStorage key
+          if (apiKeyStatus.hasBackendKey && localStorage.getItem('godoty_openrouter_key')) {
+            localStorage.removeItem('godoty_openrouter_key');
+          }
+
+          this.apiKeyStatus.next(apiKeyStatus);
+
+  
           // Log only critical status for desktop mode
-          if (EnvironmentDetector.isDesktopMode() && !(data as any).has_api_key) {
+          if (EnvironmentDetector.isDesktopMode() && !data.api_key_configured) {
             console.error('[ConfigService] Critical: API key validation failed in desktop mode');
           }
           return; // Success - exit the retry loop
@@ -465,7 +463,9 @@ export class ConfigService {
           this.apiKeyStatus.next({
             hasKey: false,
             source: 'none',
-            needsUserInput: true
+            needsUserInput: true,
+            hasBackendKey: false,
+            allowUserOverride: true
           });
         } else {
           // Brief delay before retry
@@ -476,9 +476,63 @@ export class ConfigService {
   }
 
   /**
+   * Check connection status and update API key status
+   */
+  async checkConnectionStatus(): Promise<void> {
+    try {
+      const data = await this.makeBackendCall('/godoty/connection/status');
+
+      if (data && isConnectionStatusResponse(data)) {
+        const apiKeyStatus = extractApiKeyStatus(data);
+
+        // If backend has key, clear frontend localStorage key
+        if (apiKeyStatus.hasBackendKey && localStorage.getItem('godoty_openrouter_key')) {
+          localStorage.removeItem('godoty_openrouter_key');
+        }
+
+        this.apiKeyStatus.next(apiKeyStatus);
+      }
+    } catch (error) {
+      console.error('[ConfigService] Connection status check failed:', error);
+    }
+  }
+
+  /**
+   * Set user API key override
+   */
+  setUserApiKey(apiKey: string): void {
+    if (apiKey.trim()) {
+      localStorage.setItem('godoty_openrouter_key', apiKey.trim());
+    } else {
+      localStorage.removeItem('godoty_openrouter_key');
+    }
+
+    // Update the API key status to reflect user override
+    const currentStatus = this.apiKeyStatus.value;
+    if (currentStatus && currentStatus.hasBackendKey) {
+      this.apiKeyStatus.next({
+        ...currentStatus,
+        hasKey: true,
+        source: 'user_override',
+        needsUserInput: false
+      });
+    }
+  }
+
+  /**
+   * Clear user API key and revert to backend key
+   */
+  clearUserApiKey(): void {
+    localStorage.removeItem('godoty_openrouter_key');
+
+    // Re-check connection status to revert to backend key
+    this.checkConnectionStatus();
+  }
+
+  /**
    * Fetch complete backend configuration
    */
-  async fetchBackendConfig(): Promise<any> {
+  async fetchBackendConfig(): Promise<BackendConfigResponse> {
     return await this.makeBackendCall('/config');
   }
 
@@ -515,18 +569,221 @@ export class ConfigService {
     try {
       const config = await this.fetchBackendConfig();
 
-      this.apiKeyStatus.next({
-        hasKey: config.has_api_key || false,
-        source: config.api_key_source || 'none',
-        needsUserInput: !config.has_api_key
-      });
+      if (config && isBackendConfigResponse(config)) {
+        const apiKeyStatus = extractApiKeyStatus(config);
+        this.apiKeyStatus.next(apiKeyStatus);
+      }
     } catch (error) {
       console.error('[ConfigService] Failed to refresh API key status:', error);
       this.apiKeyStatus.next({
         hasKey: false,
         source: 'none',
-        needsUserInput: true
+        needsUserInput: true,
+        hasBackendKey: false,
+        allowUserOverride: true
       });
+    }
+  }
+
+  /**
+   * Check API key status using the dedicated endpoint
+   */
+  async checkApiKeyStatus(): Promise<ApiKeyStatus> {
+    try {
+      const response = await this.makeBackendCall('/godot/api-key/status');
+
+      if (response && typeof response === 'object' && 'hasKey' in response) {
+        return response as ApiKeyStatus;
+      } else {
+        throw new Error('Invalid API key status response');
+      }
+    } catch (error) {
+      console.error('[ConfigService] Failed to check API key status:', error);
+      return {
+        hasKey: false,
+        hasBackendKey: false,
+        allowUserOverride: true,
+        apiKeyPrefix: undefined,
+        source: 'none',
+        needsUserInput: true
+      };
+    }
+  }
+
+  /**
+   * Fetch available models from backend
+   */
+  async fetchAvailableModels(): Promise<AvailableModel[]> {
+    try {
+      const response = await this.makeBackendCall('/godoty/models/available');
+
+      if (response && typeof response === 'object' && 'models' in response && Array.isArray(response.models)) {
+        return response.models.map((model: any) => ({
+          id: model.id,
+          name: model.name,
+          provider: model.id.split('/')[0] || 'unknown',
+          description: model.description || '',
+          pricing: model.pricing || {},
+          context_length: model.context_length || 0
+        }));
+      } else {
+        throw new Error('Invalid models response format');
+      }
+    } catch (error) {
+      console.error('[ConfigService] Failed to fetch available models:', error);
+      return this.getFallbackModels();
+    }
+  }
+
+  /**
+   * Set default model in backend
+   */
+  async setDefaultModel(modelId: string): Promise<boolean> {
+    try {
+      const response = await this.makeBackendCall('/godoty/models/default', {
+        model_id: modelId
+      }, 'POST');
+
+      if (response && typeof response === 'object' && 'success' in response) {
+        return response.success === true;
+      } else {
+        return false;
+      }
+    } catch (error) {
+      console.error('[ConfigService] Failed to set default model:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Validate a model ID
+   */
+  async validateModelId(modelId: string): Promise<boolean> {
+    try {
+      const response = await this.makeBackendCall(`/godoty/models/validate/${encodeURIComponent(modelId)}`);
+
+      if (response && typeof response === 'object' && 'valid' in response) {
+        return response.valid === true;
+      } else {
+        return false;
+      }
+    } catch (error) {
+      console.error('[ConfigService] Failed to validate model ID:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get model details
+   */
+  async getModelDetails(modelId: string): Promise<AvailableModel | null> {
+    try {
+      const response = await this.makeBackendCall(`/godoty/models/details/${encodeURIComponent(modelId)}`);
+
+      if (response && typeof response === 'object' && 'model' in response && response.model) {
+        const model = response.model;
+        return {
+          id: model.id,
+          name: model.name,
+          provider: model.id.split('/')[0] || 'unknown',
+          description: model.description || '',
+          pricing: model.pricing || {},
+          context_length: model.context_length || 0
+        };
+      } else {
+        return null;
+      }
+    } catch (error) {
+      console.error('[ConfigService] Failed to get model details:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Clear model cache in backend
+   */
+  async clearModelCache(): Promise<boolean> {
+    try {
+      const response = await this.makeBackendCall('/godoty/models/cache/clear', {}, 'POST');
+
+      if (response && typeof response === 'object' && 'success' in response) {
+        return response.success === true;
+      } else {
+        return false;
+      }
+    } catch (error) {
+      console.error('[ConfigService] Failed to clear model cache:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Search for models
+   */
+  async searchModels(query: string, limit: number = 10): Promise<AvailableModel[]> {
+    try {
+      const response = await this.makeBackendCall(`/godoty/models/search?query=${encodeURIComponent(query)}&limit=${limit}`);
+
+      if (response && typeof response === 'object' && 'results' in response && Array.isArray(response.results)) {
+        return response.results.map((model: any) => ({
+          id: model.id,
+          name: model.name,
+          provider: model.id.split('/')[0] || 'unknown',
+          description: model.description || '',
+          pricing: model.pricing || {},
+          context_length: model.context_length || 0
+        }));
+      } else {
+        return [];
+      }
+    } catch (error) {
+      console.error('[ConfigService] Failed to search models:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get fallback models when API is unavailable
+   */
+  getFallbackModels(): AvailableModel[] {
+    return [
+      {
+        id: 'x-ai/grok-4.1-fast:free',
+        name: 'Grok 4.1 Fast (Free)',
+        provider: 'x-ai',
+        description: 'Fast and free model from xAI',
+        pricing: { prompt: 0, completion: 0 },
+        context_length: 8192
+      },
+      {
+        id: 'anthropic/claude-3.5-sonnet',
+        name: 'Claude 3.5 Sonnet',
+        provider: 'anthropic',
+        description: 'Advanced reasoning model from Anthropic',
+        pricing: { prompt: 0.003, completion: 0.015 },
+        context_length: 200000
+      },
+      {
+        id: 'openai/gpt-4o',
+        name: 'GPT-4o',
+        provider: 'openai',
+        description: 'Multimodal model from OpenAI',
+        pricing: { prompt: 0.005, completion: 0.015 },
+        context_length: 128000
+      }
+    ];
+  }
+
+  /**
+   * Update connection state for Godot status
+   */
+  updateConnectionState(connectionState: any): void {
+    // Update the connection state in the configuration
+    this.updateConfig('connectionState', connectionState.connected ? 'connected' : 'disconnected');
+    this.updateConfig('godotConnected', connectionState.connected);
+
+    if (connectionState.godotVersion) {
+      this.updateConfig('godotVersion', connectionState.godotVersion);
     }
   }
 

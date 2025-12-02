@@ -25,7 +25,18 @@
       "Bash(timeout:*)",
       "Bash(pkill:*)",
       "Bash(find:*)",
-      "mcp__sequential-thinking__sequentialthinking"
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(./venv/bin/pip:*)",
+      "Bash(./venv/bin/python:*)",
+      "Bash(venv/bin/pip:*)",
+      "Bash(venv/bin/python:*)",
+      "Bash(echo:*)",
+      "Bash(ng build:*)",
+      "Bash(npx ng serve:*)",
+      "Bash(cat:*)",
+      "Bash(npx ng version)",
+      "Bash(ng t:*)",
+      "Bash(ng serve:*)"
     ],
     "deny": [],
     "ask": []

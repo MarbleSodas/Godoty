@@ -1,0 +1,40 @@
+# FastAPI and web server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Strands AI framework
+strands>=0.1.0
+
+# OpenRouter SDK (using openai-compatible client)
+openai==1.3.5
+
+# HTTP client for API requests
+httpx==0.25.2
+aiohttp==3.9.1
+
+# Environment and configuration
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# JSON handling
+orjson==3.9.10
+
+# Logging and debugging
+structlog==23.2.0
+
+# File system utilities
+pathlib2==2.3.7
+
+# Async utilities
+# Note: asyncio-compat removed as package doesn't exist
+
+# Desktop app support (PyWebView)
+pywebview==4.4.1
+
+# Development dependencies (optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.11.0
+mypy==1.7.1

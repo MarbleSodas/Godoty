@@ -1,0 +1,3 @@
+"""
+Godoty backend application package.
+"""
