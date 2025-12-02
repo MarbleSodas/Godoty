@@ -35,12 +35,16 @@ class GodotStatusManager:
             "connection_details": {
                 "host": "localhost",
                 "port": 6007,  # Default Godot remote debug port
-                "protocol": "websocket"
+                "protocol": "websocket",
+                "websocket_connected": False
             }
         }
 
         # Active streams to broadcast to
         self.active_streams: set[str] = set()
+
+        # WebSocket client (initialized later)
+        self.websocket_client = None
 
         logger.info("[GodotStatusManager] Initialized with disconnected status")
 
@@ -54,6 +58,46 @@ class GodotStatusManager:
         # Update timestamp before returning
         self.current_status["timestamp"] = datetime.utcnow().isoformat()
         return self.current_status.copy()
+
+    async def initialize_websocket_client(self) -> None:
+        """
+        Initialize WebSocket client for Godot connection.
+        """
+        try:
+            from app.godot.websocket_client import GodotWebSocketClient
+            from app.config import settings
+
+            if not self.websocket_client:
+                self.websocket_client = GodotWebSocketClient(
+                    settings=settings,
+                    status_manager=self
+                )
+                logger.info("[GodotStatusManager] WebSocket client initialized")
+
+        except Exception as e:
+            logger.error(f"[GodotStatusManager] Failed to initialize WebSocket client: {e}")
+            self.set_error(f"WebSocket client initialization failed: {str(e)}")
+
+    async def connect_to_godot(self) -> bool:
+        """
+        Connect to Godot WebSocket server.
+
+        Returns:
+            True if connection successful, False otherwise
+        """
+        if not self.websocket_client:
+            await self.initialize_websocket_client()
+
+        if self.websocket_client:
+            return await self.websocket_client.connect()
+        return False
+
+    async def disconnect_from_godot(self) -> None:
+        """
+        Disconnect from Godot WebSocket server.
+        """
+        if self.websocket_client:
+            await self.websocket_client.disconnect()
 
     def update_status(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -74,7 +118,8 @@ class GodotStatusManager:
 
         self.current_status["timestamp"] = datetime.utcnow().isoformat()
 
-        logger.info(f"[GodotStatusManager] Status updated: {key}={value for key, value in updates.items()}")
+        update_str = ", ".join(f"{k}={v}" for k, v in updates.items())
+        logger.info(f"[GodotStatusManager] Status updated: {update_str}")
         return self.get_status()
 
     async def broadcast_to_stream(self, stream_id: str) -> None:
@@ -187,26 +232,49 @@ class GodotStatusManager:
 
     async def _check_godot_connection(self) -> None:
         """
-        Check if Godot is running and update status accordingly.
+        Check Godot connection status and update accordingly.
 
-        This is a mock implementation for development. In production,
-        this would establish actual WebSocket communication with Godot.
+        Real implementation using WebSocket client to monitor connection health.
         """
-        # Mock implementation - in real scenario, this would:
-        # 1. Try to connect to Godot via WebSocket/IPC
-        # 2. Detect running projects
-        # 3. Get project metadata
-        # 4. Monitor connection health
+        if not self.websocket_client:
+            # Initialize WebSocket client if not already done
+            await self.initialize_websocket_client()
 
-        # For now, simulate a disconnected state
-        # This can be enhanced later to actually detect Godot
-        current_state = self.current_status.get("state", "disconnected")
+        if self.websocket_client:
+            # Get current connection state from WebSocket client
+            connection_state = self.websocket_client.get_connection_state()
+            connection_info = self.websocket_client.get_connection_info()
 
-        # Mock: if disconnected, try to connect every 30 seconds
-        if current_state == "disconnected":
-            # In real implementation, this would try to connect to Godot
-            # For now, we stay disconnected but show we're checking
-            logger.debug("[GodotStatusManager] Checking for Godot connection...")
+            # Update status based on WebSocket connection
+            if connection_state.value == "connected":
+                self.update_status({
+                    "state": "connected",
+                    "error": None
+                })
+            elif connection_state.value == "error":
+                self.update_status({
+                    "state": "error",
+                    "error": "WebSocket connection error"
+                })
+            elif connection_state.value == "disconnected":
+                # Try to connect if auto-reconnect is disabled
+                if not self.websocket_client.enable_auto_reconnect:
+                    logger.debug("[GodotStatusManager] Attempting to connect to Godot...")
+                    await self.websocket_client.connect()
+            else:
+                # For connecting or reconnecting states
+                self.update_status({
+                    "state": connection_state.value,
+                    "error": None
+                })
+
+            # Update connection details
+            self.update_status({
+                "connection_details": connection_info
+            })
+        else:
+            # WebSocket client not available
+            logger.warning("[GodotStatusManager] WebSocket client not initialized")
 
     def _format_sse_message(self, data: Dict[str, Any]) -> str:
         """
@@ -277,7 +345,16 @@ class GodotStatusManager:
 
     async def shutdown(self) -> None:
         """
-        Shutdown the status manager and clean up all streams.
+        Shutdown the status manager and clean up all streams and WebSocket connections.
         """
         logger.info(f"[GodotStatusManager] Shutting down {len(self.active_streams)} active streams")
+
+        # Clean up WebSocket client
+        if self.websocket_client:
+            await self.websocket_client.cleanup()
+            self.websocket_client = None
+
+        # Clear active streams
         self.active_streams.clear()
+
+        logger.info("[GodotStatusManager] Shutdown completed")

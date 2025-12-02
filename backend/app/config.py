@@ -45,6 +45,22 @@ class Settings(BaseSettings):
         env="ALLOWED_FILE_EXTENSIONS"
     )
 
+    # Godot WebSocket Configuration
+    godot_ws_host: str = Field(default="localhost", env="GODOT_WS_HOST")
+    godot_ws_port: int = Field(default=9001, env="GODOT_WS_PORT")
+    godot_ws_timeout: int = Field(default=10, env="GODOT_WS_TIMEOUT")
+    godot_ws_reconnect_interval: int = Field(default=30, env="GODOT_WS_RECONNECT_INTERVAL")
+    godot_ws_max_reconnect_attempts: int = Field(default=10, env="GODOT_WS_MAX_RECONNECT_ATTEMPTS")
+    godot_ws_enable_auto_reconnect: bool = Field(default=True, env="GODOT_WS_ENABLE_AUTO_RECONNECT")
+
+    # Desktop Mode Configuration
+    desktop_mode: bool = Field(default=False, env="DESKTOP_MODE")
+    window_title: str = Field(default="Godoty", env="WINDOW_TITLE")
+    window_width: int = Field(default=1200, env="WINDOW_WIDTH")
+    window_height: int = Field(default=800, env="WINDOW_HEIGHT")
+    min_window_width: int = Field(default=800, env="MIN_WINDOW_WIDTH")
+    min_window_height: int = Field(default=600, env="MIN_WINDOW_HEIGHT")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

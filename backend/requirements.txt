@@ -1,37 +1,39 @@
-# FastAPI and web server
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+# FastAPI and web server - updated to support anyio 4.x (required by mcp/strands)
+fastapi>=0.110.0,<1.0.0
+uvicorn[standard]>=0.27.0,<1.0.0
+python-multipart>=0.0.6,<1.0.0
 
-# Strands AI framework
-strands>=0.1.0
+# Strands AI framework - pinned to tested working version
+strands-agents==1.16.0
 
-# OpenRouter SDK (using openai-compatible client)
-openai==1.3.5
+# OpenRouter SDK - minimum 1.47.0 for ParsedChatCompletion (required by strands)
+openai>=1.47.0,<3.0.0
 
-# HTTP client for API requests
-httpx==0.25.2
-aiohttp==3.9.1
+# HTTP clients - bounded to prevent backtracking
+httpx>=0.25.2,<1.0.0
+aiohttp>=3.9.1,<4.0.0
+
+# WebSocket client
+websockets>=12.0,<13.0
 
 # Environment and configuration
-python-dotenv==1.0.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
+python-dotenv>=1.0.0,<2.0.0
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
 
-# JSON handling
-orjson==3.9.10
+# JSON handling - updated for Python 3.14 compatibility
+orjson>=3.10.0,<4.0.0
 
 # Logging and debugging
-structlog==23.2.0
+structlog>=23.2.0,<25.0.0
 
-# File system utilities
-pathlib2==2.3.7
+# File system utilities - pathlib2 removed (not needed in Python 3.4+)
 
 # Async utilities
 # Note: asyncio-compat removed as package doesn't exist
 
 # Desktop app support (PyWebView)
-pywebview==4.4.1
+pywebview>=5.0,<6.0
 
 # Development dependencies (optional)
 pytest==7.4.3

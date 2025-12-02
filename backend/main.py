@@ -6,13 +6,24 @@ Provides API endpoints for Strands agent integration with OpenRouter.
 
 import logging
 import sys
+import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# PyWebView imports (conditional to support both web and desktop modes)
+try:
+    import pywebview
+    DESKTOP_MODE_AVAILABLE = True
+except ImportError:
+    DESKTOP_MODE_AVAILABLE = False
+    pywebview = None
 
 # Import application modules
 from app.config import settings, validate_environment
