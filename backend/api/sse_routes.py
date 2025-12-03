@@ -5,6 +5,7 @@ Server-Sent Events (SSE) routes for real-time Godot connection status updates.
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import AsyncGenerator
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -154,6 +155,77 @@ async def get_godot_status():
     """
     monitor = get_connection_monitor()
     return monitor.get_status()
+
+
+@router.get("/godoty/connection/status")
+async def get_godoty_connection_status():
+    """
+    Get current Godot Editor connection status (compatibility endpoint).
+
+    This endpoint provides compatibility for the frontend that expects
+    /api/godoty/connection/status path.
+
+    Returns:
+        Dictionary with connection status, project info, and metadata
+    """
+    try:
+        # Try to use GodotBridge if available
+        try:
+            from agents.tools.godot_bridge import GodotBridge, ConnectionState
+
+            godot_bridge = GodotBridge()
+            is_connected = godot_bridge.is_connected()
+            project_info = None
+
+            if is_connected:
+                try:
+                    project_info = godot_bridge.get_project_info()
+                    # Handle both sync and async versions
+                    if hasattr(project_info, '__await__'):
+                        # It's a coroutine, try to get the current project info synchronously
+                        project_info = getattr(godot_bridge, 'project_info', None)
+                    # Now check if we can convert to dict
+                    if project_info and hasattr(project_info, 'dict'):
+                        project_info = project_info.dict()
+                except Exception as e:
+                    logger.warning(f"Could not get project info: {e}")
+                    project_info = None
+
+            return {
+                "status": "connected" if is_connected else "disconnected",
+                "connection_state": godot_bridge.connection_state.name,
+                "project_info": project_info,
+                "project_path": getattr(project_info, 'project_path', None) if project_info else None,
+                "project_settings": getattr(project_info, 'project_settings', {}) if project_info else {},
+                "last_checked": datetime.utcnow().isoformat()
+            }
+        except ImportError:
+            # Fallback to connection monitor if GodotBridge not available
+            monitor = get_connection_monitor()
+            status = monitor.get_status()
+
+            return {
+                "status": "connected" if status.get("state") == "connected" else "disconnected",
+                "connection_state": status.get("state", "UNKNOWN").upper(),
+                "project_info": None,
+                "project_path": status.get("project_path"),
+                "project_settings": status.get("project_settings", {}),
+                "godot_version": status.get("godot_version"),
+                "plugin_version": status.get("plugin_version"),
+                "last_checked": status.get("last_attempt", datetime.utcnow().isoformat())
+            }
+
+    except Exception as e:
+        logger.error(f"Error getting connection status: {e}")
+        return {
+            "status": "error",
+            "connection_state": "ERROR",
+            "project_info": None,
+            "project_path": None,
+            "project_settings": {},
+            "error": str(e),
+            "last_checked": datetime.utcnow().isoformat()
+        }
 
 
 def setup_sse_listener():

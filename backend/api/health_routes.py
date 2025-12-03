@@ -9,7 +9,7 @@ from typing import Dict, Any
 from fastapi import APIRouter, HTTPException
 
 from agents.config import AgentConfig
-from agents.planning_agent import get_planning_agent
+from agents.godoty_agent import get_godoty_agent
 from agents.tools.mcp_tools import MCPToolManager
 
 logger = logging.getLogger(__name__)
@@ -121,11 +121,11 @@ async def health_check():
         # Check planning agent
         agent_status = {"status": "healthy", "details": {}}
         try:
-            agent = get_planning_agent()
+            agent = get_godoty_agent()
             agent_status["details"] = {
                 "initialized": True,
                 "tools_count": len(agent.tools),
-                "mcp_manager_exists": agent.mcp_manager is not None
+                "mcp_manager_exists": getattr(agent, 'mcp_manager', None) is not None
             }
         except Exception as e:
             agent_status["status"] = "unhealthy"
@@ -271,7 +271,7 @@ async def tools_health():
             validate_operation, validate_path, validate_node_name
         )
 
-        agent = get_planning_agent()
+        agent = get_godoty_agent()
 
         # Categorize tools
         tool_categories = {

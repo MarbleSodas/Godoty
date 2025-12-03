@@ -1,6 +1,13 @@
 import multiprocessing
 import signal
 import os
+import sys
+
+# CRITICAL: Set UTF-8 encoding BEFORE any other imports
+# This prevents UnicodeEncodeError on Windows when logging emoji characters
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
+sys.stderr.reconfigure(encoding='utf-8') if hasattr(sys.stderr, 'reconfigure') else None
 
 # CRITICAL: Suppress warnings BEFORE any other imports
 # This must be set before importing uvicorn, fastapi, or agents
@@ -57,15 +64,21 @@ def create_app():
     
     # Setup basic logging configuration if not already set
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[logging.StreamHandler(sys.stdout)],
         force=True  # Force reconfiguration to ensure our settings apply
     )
     
-    # Ensure specific loggers are set to INFO
-    logging.getLogger("agents").setLevel(logging.INFO)
-    logging.getLogger("backend.agents").setLevel(logging.INFO)
+    # Ensure specific loggers are set to DEBUG for SSE debugging
+    logging.getLogger("agents").setLevel(logging.DEBUG)
+    logging.getLogger("agents.event_utils").setLevel(logging.DEBUG)
+    logging.getLogger("api.agent_routes").setLevel(logging.DEBUG)
+    logging.getLogger("backend.agents").setLevel(logging.DEBUG)
+
+    # Suppress websocket client ping/pong debug logs
+    logging.getLogger("websockets.client").setLevel(logging.WARNING)
+    logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
     from fastapi.middleware.cors import CORSMiddleware
     from api import agent_router

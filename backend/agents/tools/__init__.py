@@ -64,7 +64,6 @@ from .gdscript_editor import (
     GDScriptClassInfo,
     GDScriptValidationResult
 )
-from .mcp_tools import MCPToolManager, get_mcp_tools
 
 __all__ = [
     # File system tools
@@ -135,7 +134,4 @@ __all__ = [
     "GDScriptMethodInfo",
     "GDScriptClassInfo",
     "GDScriptValidationResult",
-    # MCP tools
-    "MCPToolManager",
-    "get_mcp_tools",
 ]

@@ -5,7 +5,7 @@ Event utilities for transforming Strands events to frontend-compatible format.
 import logging
 import time
 from typing import Any, Dict, Optional, List, Union
-from core.pricing import PricingService
+# from core.pricing import PricingService  # Module removed
 
 logger = logging.getLogger(__name__)
 
@@ -245,12 +245,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
             if actual_cost is not None:
                 estimated_cost = float(actual_cost)
             else:
-                # Calculate estimated cost as fallback using PricingService
-                estimated_cost = PricingService.calculate_cost(
-                    model_id,
-                    input_tokens,
-                    output_tokens
-                )
+                # PricingService removed - fallback to zero cost
+                estimated_cost = 0.0
 
             # Finalize metrics in streaming tracker if session_id is provided
             if session_id:
@@ -310,12 +306,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
              if actual_cost is not None:
                  estimated_cost = float(actual_cost)
              else:
-                 # Use PricingService class for accurate cost calculation
-                 estimated_cost = PricingService.calculate_cost(
-                     model_id,
-                     input_tokens,
-                     output_tokens
-                 )
+                 # PricingService removed - fallback to zero cost
+                 estimated_cost = 0.0
 
              metrics_data = {
                  "total_tokens": total_tokens,

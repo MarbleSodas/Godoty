@@ -60,6 +60,8 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
+  reasoning?: string;
+  error?: string;
   tokens?: number;
   promptTokens?: number;
   completionTokens?: number;
@@ -73,6 +75,13 @@ export interface Message {
   plan?: ExecutionPlan;
   events?: MessageEvent[];
   workflowMetrics?: WorkflowMetrics;
+  metrics?: {
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    estimated_cost: number;
+    model_id: string;
+  };
 }
 
 export interface Session {
@@ -168,6 +177,11 @@ export class ChatService {
     if (this.currentProjectPath) {
         url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
     }
+    return this.http.get(url);
+  }
+
+  getSessionStatus(sessionId: string): Observable<any> {
+    const url = `${this.apiUrl}/sessions/${sessionId}/status`;
     return this.http.get(url);
   }
 
@@ -276,10 +290,8 @@ export class ChatService {
               // Yield error event so UI can show something went wrong
               yield {
                 type: 'error',
-                data: {
-                  message: 'Failed to parse server response',
-                  raw: data
-                }
+                error: 'Failed to parse server response',
+                details: data
               };
             }
           }
@@ -325,10 +337,8 @@ export class ChatService {
       // Yield error event for real errors
       yield {
         type: 'error',
-        data: {
-          message: error instanceof Error ? error.message : 'Stream error occurred',
-          error: error
-        }
+        error: error instanceof Error ? error.message : 'Stream error occurred',
+        details: error
       };
       throw error;
     } finally {
