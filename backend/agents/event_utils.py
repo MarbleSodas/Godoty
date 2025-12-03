@@ -16,14 +16,22 @@ def get_streaming_metrics_tracker():
     """Get or create the global streaming metrics tracker."""
     global _streaming_tracker
     if _streaming_tracker is None:
-        from agents.streaming_metrics_tracker import StreamingMetricsTracker
-        _streaming_tracker = StreamingMetricsTracker()
+        try:
+            from agents.streaming_metrics_tracker import StreamingMetricsTracker
+            _streaming_tracker = StreamingMetricsTracker()
+        except ImportError:
+            logger.warning("StreamingMetricsTracker not available, metrics tracking disabled")
+            _streaming_tracker = None  # Set to None to skip tracking
     return _streaming_tracker
 
 def get_metrics_buffer():
     """Get or create the global metrics buffer."""
-    from agents.metrics_buffer import MetricsBuffer
-    return MetricsBuffer()
+    try:
+        from agents.metrics_buffer import MetricsBuffer
+        return MetricsBuffer()
+    except ImportError:
+        logger.warning("MetricsBuffer not available, using fallback")
+        return None
 
 def sanitize_event_data(data: Any) -> Any:
     """
@@ -81,8 +89,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
         streaming_tracker = get_streaming_metrics_tracker()
         metrics_buffer = get_metrics_buffer()
 
-        # Start tracking if this is a new session
-        if session_id not in streaming_tracker.get_all_active_sessions():
+        # Start tracking if this is a new session (only if tracker is available)
+        if streaming_tracker and session_id not in streaming_tracker.get_all_active_sessions():
             streaming_tracker.start_session_tracking(session_id)
     # If it's an object, try to convert to dict
     if not isinstance(event, dict):
@@ -175,7 +183,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
                 event_type = "tool_use"
                 event_data = {
                     "tool_name": tool_use.get("name"),
-                    "tool_input": tool_use.get("input", {})
+                    "tool_input": tool_use.get("input", {}),
+                    "tool_use_id": tool_use.get("toolUseId", f"tool-{int(time.time()*1000)}")
                 }
         # Message start/stop events
         elif "messageStop" in inner_event:
@@ -215,7 +224,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
             event_type = "tool_use"
             event_data = {
                 "tool_name": tool_use.get("name"),
-                "tool_input": tool_use.get("input", {}) # Might be empty if streaming args
+                "tool_input": tool_use.get("input", {}), # Might be empty if streaming args
+                "tool_use_id": tool_use.get("toolUseId", f"tool-{int(time.time()*1000)}")
             }
             
     elif "contentBlockStop" in event:
@@ -349,7 +359,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
         event_type = "tool_use"
         event_data = {
             "tool_name": tool_info.get("name"),
-            "tool_input": tool_info.get("input", {})
+            "tool_input": tool_info.get("input", {}),
+            "tool_use_id": tool_info.get("toolUseId", f"tool-{int(time.time()*1000)}")
         }
     elif "toolResult" in event:
         # Tool execution result (CamelCase from Strands/Claude)
@@ -357,7 +368,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
         event_type = "tool_result"
         event_data = {
             "tool_name": tool_result.get("name"),
-            "result": tool_result.get("content", [])
+            "result": tool_result.get("content", []),
+            "tool_use_id": tool_result.get("toolUseId")
         }
     elif "tool_result" in event:
         # Tool execution result
@@ -365,7 +377,18 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
         event_type = "tool_result"
         event_data = {
             "tool_name": tool_result.get("name"),
-            "result": tool_result.get("content", [])
+            "result": tool_result.get("content", []),
+            "tool_use_id": tool_result.get("toolUseId")
+        }
+    elif "toolError" in event or "tool_cancelled" in event:
+        # Handle tool errors/cancellations
+        tool_error = event.get("toolError", event.get("tool_cancelled"))
+        event_type = "tool_error"
+        event_data = {
+            "tool_name": tool_error.get("name"),
+            "tool_use_id": tool_error.get("toolUseId"),
+            "error": tool_error.get("error", "Tool execution failed"),
+            "error_type": tool_error.get("type", "execution_error")
         }
     elif "result" in event:
         # Final result - extract and yield end event
@@ -504,6 +527,11 @@ def handle_session_cancellation(session_id: str, agent_type: Optional[str] = Non
         streaming_tracker = get_streaming_metrics_tracker()
         metrics_buffer = get_metrics_buffer()
 
+        # Skip metrics tracking if modules not available
+        if not streaming_tracker or not metrics_buffer:
+            logger.debug("Metrics tracking unavailable, skipping cancellation metrics")
+            return None
+
         # Capture partial metrics from the streaming tracker
         partial_metrics = streaming_tracker.handle_cancellation(session_id)
 
@@ -555,6 +583,11 @@ def recover_session_metrics(session_id: str) -> Dict[str, Any]:
     """
     try:
         metrics_buffer = get_metrics_buffer()
+
+        # Skip if metrics buffer not available
+        if not metrics_buffer:
+            logger.debug("Metrics buffer unavailable, skipping recovery")
+            return {"recovered": 0, "failed": 0, "metrics": []}
 
         # Attempt recovery
         recovery_stats = metrics_buffer.attempt_recovery(session_id)
@@ -614,6 +647,11 @@ def create_checkpoint_for_session(session_id: str) -> bool:
     try:
         streaming_tracker = get_streaming_metrics_tracker()
 
+        # Skip if tracker not available
+        if not streaming_tracker:
+            logger.debug("Streaming tracker unavailable, skipping checkpoint creation")
+            return False
+
         if session_id not in streaming_tracker.get_all_active_sessions():
             logger.warning(f"Session {session_id} is not actively tracking, cannot create checkpoint")
             return False
@@ -642,13 +680,20 @@ def cleanup_session_metrics(session_id: str, keep_recovered: bool = False) -> bo
         streaming_tracker = get_streaming_metrics_tracker()
         metrics_buffer = get_metrics_buffer()
 
-        # Clean up streaming tracker
-        streaming_tracker.end_session_tracking(session_id)
+        # Skip if modules not available
+        if not streaming_tracker and not metrics_buffer:
+            logger.debug("Metrics tracking unavailable, skipping cleanup")
+            return True
 
-        # Clean up metrics buffer
-        cleared_count = metrics_buffer.clear_session(session_id, keep_recovered=keep_recovered)
+        # Clean up streaming tracker (if available)
+        if streaming_tracker:
+            streaming_tracker.end_session_tracking(session_id)
 
-        logger.info(f"Cleaned up {cleared_count} metrics for session {session_id} (keep_recovered={keep_recovered})")
+        # Clean up metrics buffer (if available)
+        if metrics_buffer:
+            cleared_count = metrics_buffer.clear_session(session_id, keep_recovered=keep_recovered)
+            logger.info(f"Cleaned up {cleared_count} metrics for session {session_id} (keep_recovered={keep_recovered})")
+
         return True
 
     except Exception as e:
@@ -666,6 +711,16 @@ def get_metrics_statistics() -> Dict[str, Any]:
     try:
         streaming_tracker = get_streaming_metrics_tracker()
         metrics_buffer = get_metrics_buffer()
+
+        # Return empty stats if modules not available
+        if not streaming_tracker or not metrics_buffer:
+            logger.debug("Metrics tracking unavailable, returning empty statistics")
+            return {
+                "active_sessions": [],
+                "buffered_metrics": 0,
+                "recovered_metrics": 0,
+                "pending_recovery": 0
+            }
 
         # Get active sessions
         active_sessions = streaming_tracker.get_all_active_sessions()

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from agents.godoty_agent import get_godoty_agent
 from agents.config import AgentConfig
-from agents.db import ProjectDB
+from agents.db import get_metrics_db
 
 logger = logging.getLogger(__name__)
 
@@ -397,11 +397,25 @@ async def create_session(request: SessionRequest):
         if not request.session_id:
             raise HTTPException(status_code=400, detail="Session ID is required")
 
+        # Check if session already exists
+        storage_dir = AgentConfig.get_sessions_storage_dir()
+        session_path = os.path.join(storage_dir, f"session_{request.session_id}")
+
+        if os.path.exists(session_path):
+            logger.info(f"Session {request.session_id} already exists")
+            # Return existing session data
+            return {
+                "status": "success",
+                "session_id": request.session_id,
+                "message": "Session already exists",
+                "ready": True,
+                "existing": True
+            }
+
         # Create session directory and initialize metadata
         from strands.session.file_session_manager import FileSessionManager
         # AgentConfig is already imported at module level (line 22)
 
-        storage_dir = AgentConfig.get_sessions_storage_dir()
         manager = FileSessionManager(session_id=request.session_id, storage_dir=storage_dir)
 
         # Initialize session with metadata
@@ -446,6 +460,13 @@ async def create_session(request: SessionRequest):
                 await manager.save_metadata(metadata)
         except Exception as e:
             logger.warning(f"Could not update session status: {e}")
+
+        # Register session in MetricsDB
+        try:
+            db = get_metrics_db()
+            db.register_session(request.session_id, request.title or "New Session")
+        except Exception as e:
+            logger.error(f"Failed to register session in MetricsDB: {e}")
 
         return {
             "status": "success",
@@ -539,11 +560,16 @@ def _list_sessions_from_storage(storage_dir: str) -> Dict[str, Dict[str, Any]]:
             if not session_id:
                 continue
 
-            title = _extract_title_from_session_files(session_path) or f"Session {session_id[:8]}"
+            title = _extract_title_from_session_files(session_path)
+
+            # Skip empty sessions (no messages yet)
+            if not title:
+                logger.debug(f"Skipping empty session (no messages): {session_id}")
+                continue
 
             sessions[session_id] = {
                 'session_id': session_id,
-                'title': title,
+                'title': title,  # Now guaranteed to have a real title
                 'date': session_data.get('updated_at') or session_data.get('created_at'),
                 'active': False,
                 'metadata': {
@@ -577,16 +603,7 @@ async def list_sessions(path: Optional[str] = Query(None)):
         logger.info(f"Listing sessions with path: {path}")
 
         # Get sessions from FileSessionManager (primary source)
-        # Get sessions from FileSessionManager (primary source)
         from strands.session.file_session_manager import FileSessionManager
-        # We need to list all sessions. FileSessionManager doesn't have a static list_sessions method usually?
-        # Let's check Strands SDK or assume we need to scan the directory.
-        # Assuming FileSessionManager has a way or we need to implement scanning.
-        # Wait, MultiAgentManager had list_sessions. It probably scanned the directory.
-        # Let's implement a simple scanner here or import one.
-        
-        # Load sessions from FileSessionManager storage
-        # AgentConfig is already imported at module level (line 22)
         storage_dir = AgentConfig.get_sessions_storage_dir()
         fs_sessions = _list_sessions_from_storage(storage_dir)
         logger.info(f"Found {len(fs_sessions)} sessions from FileSessionManager")
@@ -636,55 +653,31 @@ async def list_sessions(path: Optional[str] = Query(None)):
                 logger.error(f"Error processing session {session_id}: {e}")
                 continue
 
-        # SECONDARY SOURCE: Enrich with ProjectDB metadata where available
+        # Use MetricsDB to get aggregated metrics
         try:
-            logger.debug(f"Enriching sessions with ProjectDB data using path: {path}")
-            db = ProjectDB(path)
-            db_sessions = db.get_all_sessions()
-            logger.debug(f"Found {len(db_sessions)} sessions in ProjectDB")
+            db = get_metrics_db()
+            metrics_db_sessions = db.get_all_sessions()
+            
+            # Map DB metrics to session IDs
+            db_metrics_map = {s["id"]: s["metrics"] for s in metrics_db_sessions}
 
-            # Create mapping of session_id -> db_session for quick lookup
-            db_session_map = {session["id"]: session for session in db_sessions}
-
-            # Enrich FileSessionManager sessions with ProjectDB data
-            enriched_count = 0
             for session_id, session_data in sessions_dict.items():
-                if session_id in db_session_map:
-                    db_session = db_session_map[session_id]
-                    # Merge ProjectDB metadata with FileSessionManager data
-                    session_data["metadata"].update({
-                        "last_updated": db_session.get("last_updated"),
-                        "project_path": path
-                    })
-                    enriched_count += 1
-            logger.debug(f"Enriched {enriched_count} sessions with ProjectDB data")
-
+                if session_id in db_metrics_map:
+                    session_data["metrics"] = db_metrics_map[session_id]
+                else:
+                    session_data["metrics"] = {
+                        "total_tokens": 0,
+                        "total_estimated_cost": 0.0
+                    }
         except Exception as e:
-            logger.warning(f"Failed to enrich sessions with ProjectDB data: {e}")
-
-        # Add metrics from ProjectDB (with defaults if unavailable)
-        session_ids = list(sessions_dict.keys())
-        try:
-            logger.debug(f"Fetching metrics for {len(session_ids)} sessions")
-            db = ProjectDB(path)
-            metrics_map = db.get_metrics_for_sessions(session_ids)
-
-            metrics_count = 0
-            for sid, sdata in sessions_dict.items():
-                sdata["metrics"] = metrics_map.get(sid, {
-                    "session_cost": 0.0,
-                    "session_tokens": 0
-                })
-                if metrics_map.get(sid):
-                    metrics_count += 1
-            logger.debug(f"Added metrics for {metrics_count} sessions")
-        except Exception as e:
-            logger.error(f"Metrics fetch failed: {e}")
-            for sid, sdata in sessions_dict.items():
-                sdata["metrics"] = {
-                    "session_cost": 0.0,
-                    "session_tokens": 0
-                }
+            logger.error(f"Error fetching metrics from MetricsDB: {e}")
+            # Initialize default metrics
+            for session_id, session_data in sessions_dict.items():
+                if "metrics" not in session_data:
+                    session_data["metrics"] = {
+                        "total_tokens": 0,
+                        "total_estimated_cost": 0.0
+                    }
 
         logger.info(f"Successfully returning {len(sessions_dict)} sessions for project: {path}")
         return {"status": "success", "sessions": sessions_dict}
@@ -692,6 +685,134 @@ async def list_sessions(path: Optional[str] = Query(None)):
     except Exception as e:
         logger.error(f"Unexpected error in list_sessions: {e}", exc_info=True)
         return {"status": "error", "sessions": {}, "message": str(e)}
+
+
+def parse_message_content_blocks(message_obj: Dict) -> Dict:
+    """
+    Parse message content blocks to extract text and tool calls.
+
+    Handles the Anthropic/Strands message format where content is an array
+    of blocks that can be text, toolUse, or toolResult.
+
+    Args:
+        message_obj: Raw message object with 'content' field containing
+                    either a string or list of content blocks
+
+    Returns:
+        Dict with:
+        - text: str - Concatenated text from all text blocks
+        - toolCalls: List[Dict] - Tool calls with matched results
+          Each tool call has: name, input, status, and optionally result
+    """
+    try:
+        content = message_obj.get('content', [])
+
+        # Handle string content (typically user messages)
+        if isinstance(content, str):
+            return {"text": content, "toolCalls": []}
+
+        # Handle non-list content
+        if not isinstance(content, list):
+            return {"text": "", "toolCalls": []}
+
+        text_parts = []
+        tool_uses = {}      # toolUseId -> {name, input}
+        tool_results = {}   # toolUseId -> result content
+        tool_errors = {}    # toolUseId -> {error, type}
+
+        # First pass: collect all blocks by type
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            # Text block
+            if 'text' in block:
+                text_parts.append(block['text'])
+
+            # Tool use block
+            elif 'toolUse' in block:
+                tool_use = block['toolUse']
+                tool_use_id = tool_use.get('toolUseId', f"generated-{len(tool_uses)}")
+                tool_uses[tool_use_id] = {
+                    'name': tool_use.get('name', 'unknown'),
+                    'input': tool_use.get('input', {}),
+                    'toolUseId': tool_use_id
+                }
+
+            # Tool result block
+            elif 'toolResult' in block:
+                tool_result = block['toolResult']
+                tool_use_id = tool_result.get('toolUseId')
+                if tool_use_id:
+                    # Extract result content
+                    result_content = tool_result.get('content', [])
+
+                    # Result can be a list of blocks or a simple value
+                    if isinstance(result_content, list) and len(result_content) > 0:
+                        # Take first block if it's a dict with text
+                        if isinstance(result_content[0], dict) and 'text' in result_content[0]:
+                            result = result_content[0]['text']
+                        else:
+                            result = result_content[0]
+                    else:
+                        result = result_content
+
+                    tool_results[tool_use_id] = result
+
+            # Add tool error handling
+            elif 'toolError' in block:
+                tool_error = block['toolError']
+                tool_use_id = tool_error.get('toolUseId')
+                if tool_use_id:
+                    tool_errors[tool_use_id] = {
+                        'error': tool_error.get('error', 'Unknown error'),
+                        'type': tool_error.get('type', 'execution_error')
+                    }
+
+        # Second pass: match tool uses with their results
+        tool_calls = []
+        for tool_use_id, tool_use_data in tool_uses.items():
+            status = "completed"
+            result = None
+            error = None
+
+            if tool_use_id in tool_errors:
+                status = "failed"
+                error = tool_errors[tool_use_id]
+            elif tool_use_id not in tool_results:
+                status = "running"
+            else:
+                result = tool_results[tool_use_id]
+
+            tool_call = {
+                'name': tool_use_data['name'],
+                'input': tool_use_data['input'],
+                'toolUseId': tool_use_id,  # Include ID
+                'status': status,
+                'result': result,
+                'error': error
+            }
+
+            tool_calls.append(tool_call)
+
+        return {
+            'text': ' '.join(text_parts) if text_parts else '',
+            'toolCalls': tool_calls
+        }
+
+    except Exception as e:
+        logger.warning(f"Error parsing message content blocks: {e}", exc_info=True)
+
+        # Fallback: try basic text extraction
+        content = message_obj.get('content', [])
+        if isinstance(content, str):
+            return {"text": content, "toolCalls": []}
+        elif isinstance(content, list) and len(content) > 0:
+            first_block = content[0]
+            if isinstance(first_block, dict) and 'text' in first_block:
+                return {"text": first_block['text'], "toolCalls": []}
+
+        return {"text": "", "toolCalls": []}
 
 
 @router.get("/sessions/{session_id}", response_model=dict)
@@ -714,33 +835,43 @@ async def get_session(session_id: str, path: Optional[str] = Query(None)):
 
             for msg in messages:
                 message_obj = msg.message
-                message_content = message_obj.get('content', [])
 
-                # Extract text
-                text = ""
-                if isinstance(message_content, list) and len(message_content) > 0:
-                    text = message_content[0].get('text', '')
-                elif isinstance(message_content, str):
-                    text = message_content
+                # Parse content blocks to extract text and tool calls
+                parsed = parse_message_content_blocks(message_obj)
 
-                chat_history.append({
+                message_dict = {
                     "role": message_obj.get("role"),
-                    "content": text,
+                    "content": parsed['text'],
                     "timestamp": msg.created_at,
                     "id": f"{session_id}-{msg.message_id}"
-                })
+                }
+
+                # Add tool calls if present
+                if parsed['toolCalls']:
+                    message_dict['toolCalls'] = parsed['toolCalls']
+
+                # Filter: Skip empty messages (no content and no tool calls)
+                if not parsed['text'].strip() and not parsed['toolCalls']:
+                    logger.debug(f"Skipping empty message: {message_dict['id']}")
+                    continue
+
+                chat_history.append(message_dict)
         except Exception as e:
             logger.warning(f"Error loading messages: {e}")
             chat_history = []
 
-        # Get metrics
-        metrics = {"session_cost": 0.0, "session_tokens": 0}
-        if path:
-            try:
-                db = ProjectDB(path)
-                metrics = db.get_session_metrics(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to load metrics: {e}")
+        # Get metrics from MetricsDB
+        metrics = {"total_tokens": 0, "total_estimated_cost": 0.0}
+        try:
+            db = get_metrics_db()
+            session_metrics = db.get_session_metrics(session_id)
+            if session_metrics:
+                metrics = {
+                    "total_tokens": session_metrics["total_tokens"],
+                    "total_estimated_cost": session_metrics["total_estimated_cost"]
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load metrics from MetricsDB: {e}")
 
         return {
             "status": "success",
@@ -754,12 +885,9 @@ async def get_session(session_id: str, path: Optional[str] = Query(None)):
 
 
 @router.get("/sessions/{session_id}/metrics", response_model=dict)
-async def get_session_metrics(session_id: str):
+async def get_session_metrics_endpoint(session_id: str):
     """
-    Retrieve session metrics ledger for display.
-
-    Returns cumulative cost, token count, and run history from the agent.state
-    metrics ledger. This enables UI to display "Previous Cost: $X.XX" on session resume.
+    Retrieve session metrics from MetricsDB.
 
     Args:
         session_id: Session ID to retrieve metrics for
@@ -767,40 +895,28 @@ async def get_session_metrics(session_id: str):
     Returns:
         Dictionary containing:
         - session_id: The session identifier
-        - total_cost: Cumulative cost across all runs
+        - total_estimated_cost: Cumulative cost
         - total_tokens: Cumulative token count
-        - run_count: Number of runs in history
-        - recent_runs: Last 10 runs with details
     """
     try:
-        from agents.godoty_agent import get_godoty_agent
-
-        agent = get_godoty_agent(session_id=session_id)
-
-        # Use the new get_session_metrics method
-        # GodotyAgent stores metrics in state
-        ledger = {}
-        if hasattr(agent.agent, 'state'):
-            ledger = agent.agent.state.get('godoty_metrics', {})
-
+        db = get_metrics_db()
+        metrics = db.get_session_metrics(session_id)
+        
         return {
             "status": "success",
             "session_id": session_id,
-            "total_cost": ledger.get('total_cost', 0.0),
-            "total_tokens": ledger.get('total_tokens', 0),
-            "run_count": len(ledger.get('run_history', [])),
-            "recent_runs": ledger.get('run_history', [])[-10:]  # Last 10 runs
+            "total_estimated_cost": metrics.get("total_estimated_cost", 0.0),
+            "total_tokens": metrics.get("total_tokens", 0),
         }
+
     except Exception as e:
         logger.error(f"Failed to retrieve metrics for session {session_id}: {e}")
         return {
             "status": "error",
             "message": f"Unable to retrieve metrics: {str(e)}",
             "session_id": session_id,
-            "total_cost": 0.0,
+            "total_estimated_cost": 0.0,
             "total_tokens": 0,
-            "run_count": 0,
-            "recent_runs": []
         }
 
 
@@ -838,7 +954,7 @@ async def restore_session(session_id: str, path: str = Query(...)):
 
 
 @router.get("/metrics/project", response_model=dict)
-async def get_project_metrics(path: str = Query(...)):
+async def get_project_metrics_endpoint(path: str = Query(...)):
     """
     Get aggregated metrics for the project.
 
@@ -849,52 +965,36 @@ async def get_project_metrics(path: str = Query(...)):
         Project metrics
     """
     try:
-        db = ProjectDB(path)
-        metrics = db.get_project_metrics()
+        db = get_metrics_db()
+        all_sessions = db.get_all_sessions()
+        
+        # Aggregate on the fly
+        total_tokens = sum(s["metrics"]["total_tokens"] for s in all_sessions)
+        total_cost = sum(s["metrics"]["total_estimated_cost"] for s in all_sessions)
+        session_count = len(all_sessions)
+        
+        result = {
+            "total_estimated_cost": total_cost,
+            "total_tokens": total_tokens,
+            "session_count": session_count,
+            "call_count": 0 # Not easily available in this view, but acceptable for minimal implementation
+        }
 
-        logger.info(f"Project metrics for {path}: cost=${metrics['total_cost']:.4f}, "
-                   f"tokens={metrics['total_tokens']}, sessions={metrics['total_sessions']}")
+        logger.info(f"Project metrics calculated: cost=${total_cost:.4f}, tokens={total_tokens}")
 
         return {
             "status": "success",
-            "metrics": metrics
+            "metrics": result
         }
     except Exception as e:
         logger.error(f"Error getting project metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/metrics/session/{session_id}", response_model=dict)
-async def get_session_metrics_endpoint(session_id: str, path: str = Query(...)):
-    """
-    Get metrics for a specific session.
-    
-    Args:
-        session_id: Session ID
-        path: Project path
-        
-    Returns:
-        Session metrics
-    """
-    try:
-        db = ProjectDB(path)
-        metrics = db.get_session_metrics(session_id)
-        return {
-            "status": "success",
-            "metrics": metrics
-        }
-    except Exception as e:
-        logger.error(f"Error getting session metrics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.delete("/sessions/{session_id}", response_model=dict)
 async def delete_session(session_id: str, path: Optional[str] = Query(None)):
     """
-    Delete a session from FileSessionManager and ProjectDB.
-
-    IMPORTANT: Metrics are preserved in MetricsDB for project tracking.
-    Only session chat history and metadata are removed.
+    Delete a session from FileSessionManager and MetricsDB.
 
     Args:
         session_id: Session ID
@@ -904,25 +1004,19 @@ async def delete_session(session_id: str, path: Optional[str] = Query(None)):
         Status message
     """
     try:
-        project_db_deleted = False
-        if path:
-            try:
-                db = ProjectDB(path)
-                # Only deletes from sessions table, NOT from metrics
-                db.delete_session(session_id)
-                project_db_deleted = True
-                logger.info(f"Deleted session {session_id} from ProjectDB")
-            except Exception as e:
-                logger.warning(f"ProjectDB delete failed: {e}")
+        # Delete from MetricsDB
+        try:
+            db = get_metrics_db()
+            db.delete_session(session_id)
+            logger.info(f"Deleted session {session_id} from MetricsDB")
+        except Exception as e:
+            logger.warning(f"MetricsDB delete failed: {e}")
 
         from strands.session.file_session_manager import FileSessionManager
         # AgentConfig is already imported at module level (line 22)
-        # manager = get_multi_agent_manager()
 
-        # Remove from FileSessionManager (chat history)
-        # manager_deleted = manager.delete_session(session_id)
-
-        # Direct deletion
+        # Direct deletion from file storage
+        manager_deleted = False
         try:
             storage_dir = AgentConfig.get_sessions_storage_dir()
             manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
@@ -934,15 +1028,12 @@ async def delete_session(session_id: str, path: Optional[str] = Query(None)):
         if manager_deleted:
             logger.info(f"Deleted session {session_id} from FileSessionManager")
 
-        if not manager_deleted and not project_db_deleted:
+        if not manager_deleted:
             raise HTTPException(status_code=404, detail="Session not found or could not be deleted")
-
-        # DO NOT delete from MetricsDB - metrics persist for project tracking
-        # This is intentional to maintain historical project cost/usage data
 
         return {
             "status": "success",
-            "message": f"Session {session_id} deleted (metrics preserved)"
+            "message": f"Session {session_id} deleted"
         }
     except HTTPException:
         raise
@@ -968,9 +1059,12 @@ async def update_session_title(session_id: str, title_data: dict):
         if not new_title:
             raise HTTPException(status_code=400, detail="Title cannot be empty")
 
-        # Update title in ProjectDB
-        project_db = ProjectDB()
-        project_db.update_session_title(session_id, new_title)
+        # Update title in MetricsDB
+        try:
+            db = get_metrics_db()
+            db.update_session_title(session_id, new_title)
+        except Exception as e:
+            logger.error(f"Error updating title in MetricsDB: {e}")
 
         # Update title in FileSessionManager
         try:
@@ -981,15 +1075,14 @@ async def update_session_title(session_id: str, title_data: dict):
             session_data = manager.get_session_info()
             if session_data:
                 # Update title in session metadata
-                session_data['title'] = new_title
-                # Note: FileSessionManager doesn't have a direct update_title method,
-                # but this updates the session metadata in memory
-                manager_updated = True
-            else:
-                manager_updated = False
+                if hasattr(manager, 'load_metadata'):
+                     metadata = await manager.load_metadata()
+                     if metadata:
+                         metadata['title'] = new_title
+                         await manager.save_metadata(metadata)
+            
         except Exception as e:
             logger.error(f"Error updating title in FileSessionManager: {e}")
-            manager_updated = False
 
         logger.info(f"Updated session {session_id} title to: {new_title}")
 
@@ -1270,8 +1363,10 @@ async def chat_session_stream(
             # Filter out known non-serializable types and recursively sanitize values
             sanitized = {}
             for key, value in obj.items():
-                # Skip known non-serializable object types
+                # Keep tool IDs and error information - only filter out EventLoopMetrics
                 if hasattr(value, '__class__') and 'EventLoopMetrics' in value.__class__.__name__:
+                    # Replace with a placeholder string instead of removing entirely
+                    sanitized[key] = f"[{value.__class__.__name__}]"
                     continue
                 # Skip private/internal keys that might contain complex objects
                 if isinstance(key, str) and key.startswith('_'):

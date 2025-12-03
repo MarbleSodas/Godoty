@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import warnings
 from typing import Optional, Dict, Any, AsyncIterable
 from datetime import datetime
@@ -109,6 +110,9 @@ class GodotyAgent:
             agent_id="godoty-agent"
         )
         
+        # Initialize project path
+        self.project_path = None
+
         # Rehydrate metrics if session exists
         if self.session_manager:
             try:
@@ -184,13 +188,13 @@ class GodotyAgent:
                     
                 # Check for metrics update and persist
                 if "metrics" in event:
-                    self._update_metrics(event["metrics"])
+                    await self._update_metrics(event["metrics"])
 
         except Exception as e:
             logger.error(f"Error in agent stream: {e}", exc_info=True)
             yield {"type": "error", "data": {"error": str(e)}}
 
-    def _update_metrics(self, metrics: Dict[str, Any]):
+    async def _update_metrics(self, metrics: Dict[str, Any]):
         """Update and persist metrics ledger."""
         if not hasattr(self.agent, 'state'):
             self.agent.state = {}
@@ -204,27 +208,71 @@ class GodotyAgent:
             
         ledger = self.agent.state['godoty_metrics']
         
-        # Extract cost from OpenRouter (check multiple field names for compatibility)
-        cost = metrics.get("openrouter_cost") or metrics.get("cost", 0.0)
+        # Extract metrics data
         usage = metrics.get("usage", {})
-        tokens = usage.get("total_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens", 0)
+        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
         
-        if cost > 0 or tokens > 0:
-            ledger['total_cost'] += cost
-            ledger['total_tokens'] += tokens
+        # Cost extraction
+        cost = metrics.get("openrouter_cost") or metrics.get("cost", 0.0)
+        actual_cost = metrics.get("actual_cost") # Might be populated if available
+        
+        # Prefer actual cost if available, otherwise estimated
+        final_cost = float(actual_cost if actual_cost is not None else cost)
+
+        # Metadata
+        generation_id = metrics.get("id") or metrics.get("generation_id")
+        model_id = self.model.model_id
+        
+        if final_cost > 0 or total_tokens > 0:
+            ledger['total_cost'] += final_cost
+            ledger['total_tokens'] += total_tokens
             ledger['run_history'].append({
                 'timestamp': datetime.utcnow().isoformat(),
-                'cost': cost,
-                'tokens': tokens,
-                'model': self.model.model_id
+                'cost': final_cost,
+                'tokens': total_tokens,
+                'model': model_id
             })
             
-            # Persist
+            # Persist to FileSessionManager (Agent State)
             if self.session_manager and self.session_id:
                 try:
                     self.session_manager.update_agent(self.session_id, self.agent.to_session_agent())
                 except Exception as e:
-                    logger.error(f"Failed to persist metrics: {e}")
+                    logger.error(f"Failed to persist metrics to session manager: {e}")
+            
+            # Persist to Raw SQLite MetricsDB
+            if self.session_id:
+                try:
+                    from agents.db import get_metrics_db
+                    db = get_metrics_db()
+                    
+                    db.log_api_call(
+                        session_id=self.session_id,
+                        model=model_id,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        cost=final_cost,
+                        generation_id=generation_id
+                    )
+                    
+                    logger.debug(f"Persisted metrics to MetricsDB: cost=${final_cost:.6f}, tokens={total_tokens}")
+                except Exception as e:
+                    logger.error(f"Failed to persist metrics to MetricsDB: {e}")
+
+    async def initialize_session(self, project_path: str):
+        """Initialize session with project context."""
+        self.project_path = project_path
+        logger.info(f"Initialized session {self.session_id} with project path: {project_path}")
+        
+        # Ensure session exists in MetricsDB
+        try:
+            from agents.db import get_metrics_db
+            db = get_metrics_db()
+            db.register_session(self.session_id)
+        except Exception as e:
+            logger.error(f"Failed to register session in MetricsDB: {e}")
 
     def reset_conversation(self):
         """Reset the agent's conversation history and context."""
@@ -252,14 +300,14 @@ class GodotyAgent:
 
 # Singleton management
 _godoty_agent_instance: Optional[GodotyAgent] = None
+_agent_lock = threading.Lock()
 
 def get_godoty_agent(session_id: Optional[str] = None) -> GodotyAgent:
     global _godoty_agent_instance
-    # If session_id is provided, we might need a new instance or update the existing one
-    # For simplicity in this refactor, we'll create a new one if session_id changes or is not set
-    
-    if _godoty_agent_instance is None or (_godoty_agent_instance.session_id != session_id and session_id is not None):
-        _godoty_agent_instance = GodotyAgent(session_id)
-        
-    return _godoty_agent_instance
-    return _godoty_agent_instance
+
+    with _agent_lock:
+        if _godoty_agent_instance is None or (
+            _godoty_agent_instance.session_id != session_id and session_id is not None
+        ):
+            _godoty_agent_instance = GodotyAgent(session_id)
+        return _godoty_agent_instance

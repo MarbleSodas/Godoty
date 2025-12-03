@@ -9,9 +9,11 @@ import { catchError, of, switchMap, tap } from 'rxjs';
 
 interface ToolCall {
   toolName: string;
+  toolUseId?: string;  // Add unique identifier
   input: string;
   output?: string;
   status: 'pending' | 'success' | 'error';
+  error?: string;      // Add error message field
 }
 
 interface Message {
@@ -22,6 +24,7 @@ interface Message {
   reasoning?: string;
   toolCalls?: ToolCall[];
   isStreaming?: boolean;
+  chunks?: string[];
   error?: string;
   metrics?: {
     total_tokens: number;
@@ -64,11 +67,19 @@ interface Metrics {
             </svg>
             <span>GODOTY</span>
           </div>
-          <button (click)="createNewSession()" class="p-1.5 hover:bg-[#2d3546] rounded-md transition-colors text-gray-400 hover:text-white" title="New Chat">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
-            </svg>
-          </button>
+          <div class="flex items-center gap-1">
+            <button (click)="openSettings()" class="p-1.5 hover:bg-[#2d3546] rounded-md transition-colors text-gray-400 hover:text-white" title="Settings">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+            <button (click)="createNewSession()" class="p-1.5 hover:bg-[#2d3546] rounded-md transition-colors text-gray-400 hover:text-white" title="New Chat">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div class="flex-1 overflow-y-auto py-2">
@@ -103,6 +114,7 @@ interface Metrics {
           }
         </div>
         
+        <!--
         <div class="p-4 border-t border-[#2d3546] flex items-center space-x-3">
           <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-[#478cbf] to-cyan-400 flex items-center justify-center text-xs font-bold text-white">
             GD
@@ -112,6 +124,7 @@ interface Metrics {
             <div class="text-xs text-gray-500">Pro Plan</div>
           </div>
         </div>
+        -->
       </aside>
 
       <!-- Main Content -->
@@ -141,18 +154,16 @@ interface Metrics {
 
           <!-- Metrics Panel -->
           <div class="flex items-center gap-4 text-xs font-mono text-gray-500 bg-[#1a1e29] px-3 py-1.5 rounded border border-[#2d3546]">
-            <div class="flex items-center gap-1.5" title="Inference Latency">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3 h-3">
-                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd" />
-              </svg>
-              <span>{{ metrics().latency | number:'1.0-0' }}ms</span>
+            <div class="flex items-center gap-1.5" title="Session Cost">
+              <span class="text-green-500">$</span>
+              <span>{{ sessionMetrics().total_cost | number:'1.4-4' }}</span>
             </div>
             <div class="w-px h-3 bg-[#2d3546]"></div>
-            <div class="flex items-center gap-1.5" title="Tokens per second">
+            <div class="flex items-center gap-1.5" title="Session Tokens">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3 h-3">
                 <path fill-rule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clip-rule="evenodd" />
               </svg>
-              <span>{{ metrics().tokensPerSec | number:'1.1-1' }} t/s</span>
+              <span>{{ sessionMetrics().total_tokens | number:'1.0-0' }}</span>
             </div>
           </div>
         </header>
@@ -176,7 +187,7 @@ interface Metrics {
 
             @for (msg of messages(); track msg.id) {
               <!-- User Message -->
-              @if (msg.role === 'user') {
+              @if (msg.role === 'user' && msg.content.trim()) {
                 <div class="flex justify-end animate-fade-in-up">
                   <div class="bg-[#2d3546] text-gray-100 px-4 py-3 rounded-2xl rounded-tr-sm max-w-[85%] shadow-sm border border-[#3b4458]">
                     <div class="text-sm whitespace-pre-wrap leading-relaxed">{{ msg.content }}</div>
@@ -185,12 +196,14 @@ interface Metrics {
               }
 
               <!-- Assistant Message -->
-              @if (msg.role === 'assistant') {
+              @if (msg.role === 'assistant' && (msg.content.trim() || msg.reasoning || (msg.toolCalls && msg.toolCalls.length > 0))) {
                 <div class="flex gap-4 animate-fade-in pr-4">
                   <div class="flex-shrink-0 mt-1">
                     <div class="w-8 h-8 rounded-lg bg-[#478cbf] flex items-center justify-center shadow-lg shadow-blue-500/20">
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="white" class="w-5 h-5">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" class="w-5 h-5">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/> 
+                        <circle cx="9" cy="13" r="1.5" />
+                        <circle cx="15" cy="13" r="1.5" />
                       </svg>
                     </div>
                   </div>
@@ -225,15 +238,23 @@ interface Metrics {
                                         </svg>
                                         <span>Called: <span class="text-[#478cbf]">{{ tool.toolName }}</span></span>
                                     </div>
-                                    <span class="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold"
-                                        [class.bg-yellow-900]="tool.status === 'pending'"
-                                        [class.text-yellow-200]="tool.status === 'pending'"
-                                        [class.bg-green-900]="tool.status === 'success'"
-                                        [class.text-green-200]="tool.status === 'success'"
-                                        [class.bg-red-900]="tool.status === 'error'"
-                                        [class.text-red-200]="tool.status === 'error'">
-                                        {{ tool.status }}
-                                    </span>
+                                    @if (tool.status === 'pending') {
+                                        <div class="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold bg-yellow-900 text-yellow-200">
+                                            <svg class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                            <span>Executing</span>
+                                        </div>
+                                    } @else {
+                                        <span class="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold"
+                                            [class.bg-green-900]="tool.status === 'success'"
+                                            [class.text-green-200]="tool.status === 'success'"
+                                            [class.bg-red-900]="tool.status === 'error'"
+                                            [class.text-red-200]="tool.status === 'error'">
+                                            {{ tool.status }}
+                                        </span>
+                                    }
                                 </div>
                                 <div class="p-3 text-gray-400">
                                     <div class="mb-1 text-gray-500 select-none">// Input</div>
@@ -244,6 +265,12 @@ interface Metrics {
                                             <div class="text-[#89ca78] whitespace-pre-wrap">{{ tool.output }}</div>
                                         </div>
                                     }
+                                    @if (tool.error) {
+                                        <div class="mt-2 pt-2 border-t border-[#2d3546]">
+                                            <div class="mb-1 text-red-400 select-none">// Error</div>
+                                            <div class="text-red-300 whitespace-pre-wrap">{{ tool.error }}</div>
+                                        </div>
+                                    }
                                 </div>
                             </div>
                         }
@@ -251,7 +278,13 @@ interface Metrics {
 
                     <!-- Main Content -->
                     <div class="prose prose-invert prose-sm max-w-none text-gray-300 leading-relaxed whitespace-pre-wrap">
-                      {{ msg.content }}
+                      @if (msg.isStreaming && msg.chunks) {
+                         @for (chunk of msg.chunks; track $index) {
+                           <span class="relative animate-fade-in-up">{{ chunk }}</span>
+                         }
+                      } @else {
+                         {{ msg.content }}
+                      }
                       @if (msg.isStreaming && !msg.reasoning) {
                         <span class="inline-block w-1.5 h-4 bg-[#478cbf] align-middle ml-0.5 animate-pulse"></span>
                       }
@@ -266,16 +299,15 @@ interface Metrics {
 
         <!-- Input Area -->
         <div class="p-4 bg-[#202531]">
-          <div class="max-w-3xl mx-auto relative bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200">
+          <div class="max-w-3xl mx-auto flex items-end gap-2 bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200 p-2">
             
             <textarea
               #messageInput
               [(ngModel)]="currentInput"
               (keydown.enter)="$event.preventDefault(); sendMessage()"
               placeholder="Ask Godoty a question..."
-              class="w-full bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 pr-12 rounded-xl focus:outline-none resize-none max-h-48 overflow-y-auto"
+              class="flex-1 bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 rounded-xl focus:outline-none resize-none max-h-48 overflow-y-auto"
               rows="1"
-              style="min-height: 48px;"
               (input)="autoResize($event.target)"
             ></textarea>
 
@@ -283,7 +315,7 @@ interface Metrics {
               <!-- Stop button when generating -->
               <button
                 (click)="stopGeneration()"
-                class="absolute right-2 bottom-2 p-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-all"
+                class="p-3 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-all flex-shrink-0"
                 title="Stop generation"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
@@ -295,7 +327,7 @@ interface Metrics {
               <button
                 (click)="sendMessage()"
                 [disabled]="!currentInput()"
-                class="absolute right-2 bottom-2 p-1.5 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all"
+                class="p-3 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all flex-shrink-0"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
                   <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2 2 0 005.635 9.75h5.736a.75.75 0 010 1.5H5.636a2 2 0 00-1.942 1.586l-1.414 4.925a.75.75 0 00.826.95 28.89 28.89 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
@@ -310,6 +342,68 @@ interface Metrics {
 
       </main>
     </div>
+    <!-- Settings Modal -->
+    @if (settingsOpen()) {
+      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" (click)="closeSettings()">
+        <div class="bg-[#1a1e29] border border-[#2d3546] rounded-xl shadow-2xl w-full max-w-md overflow-hidden" (click)="$event.stopPropagation()">
+          <!-- Modal Header -->
+          <div class="px-6 py-4 border-b border-[#2d3546] flex justify-between items-center bg-[#202531]">
+            <h3 class="text-lg font-semibold text-gray-200">Settings</h3>
+            <button (click)="closeSettings()" class="text-gray-500 hover:text-white transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          <!-- Modal Body -->
+          <div class="p-6 space-y-4">
+            <!-- API Key Input -->
+            <div class="space-y-2">
+              <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">OpenRouter API Key</label>
+              <input 
+                type="password" 
+                [(ngModel)]="settingsForm.openrouter_api_key" 
+                placeholder="sk-or-..." 
+                class="w-full bg-[#161922] border border-[#2d3546] rounded-lg px-4 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-[#478cbf] focus:ring-1 focus:ring-[#478cbf] transition-all placeholder-gray-600"
+              >
+              <p class="text-[10px] text-gray-500">Required for accessing models via OpenRouter.</p>
+            </div>
+
+            <!-- Model Selection -->
+            <div class="space-y-2">
+              <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Model ID</label>
+              <div class="relative">
+                 <input 
+                  type="text" 
+                  [(ngModel)]="settingsForm.model_id" 
+                  list="model-options"
+                  placeholder="e.g., x-ai/grok-4.1-fast:free"
+                  class="w-full bg-[#161922] border border-[#2d3546] rounded-lg px-4 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-[#478cbf] focus:ring-1 focus:ring-[#478cbf] transition-all placeholder-gray-600"
+                >
+                <datalist id="model-options">
+                  <option value="anthropic/claude-opus-4.5"></option>
+                  <option value="google/gemini-3-pro-preview"></option>
+                  <option value="z-ai/glm-4.6"></option>
+                  <option value="minimax/minimax-m2"></option>
+                  <option value="anthropic/claude-haiku-4.5"></option>
+                  <option value="deepseek/deepseek-v3.2"></option>
+                  <option value="x-ai/grok-code-fast-1"></option>
+                  <option value="anthropic/claude-sonnet-4.5"></option>
+                </datalist>
+              </div>
+              <p class="text-[10px] text-gray-500">Specify the model ID to use for generation.</p>
+            </div>
+          </div>
+
+          <!-- Modal Footer -->
+          <div class="px-6 py-4 border-t border-[#2d3546] bg-[#202531] flex justify-end gap-3">
+            <button (click)="closeSettings()" class="px-4 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-[#2d3546] transition-colors">Cancel</button>
+            <button (click)="saveSettings()" class="px-4 py-2 rounded-lg text-sm font-medium bg-[#478cbf] text-white hover:bg-[#367fa9] transition-colors shadow-lg shadow-blue-500/20">Save Changes</button>
+          </div>
+        </div>
+      </div>
+    }
   `,
   styles: [`
     ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -318,13 +412,14 @@ interface Metrics {
     ::-webkit-scrollbar-thumb:hover { background: #4b556b; }
     
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeInUp { from { opacity: 0; top: 8px; } to { opacity: 1; top: 0; } }
     .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
     .animate-fade-in-up { animation: fadeInUp 0.3s ease-out forwards; }
   `]
 })
 export class App implements OnInit, AfterViewChecked {
   @ViewChild('scrollContainer') private scrollContainer!: ElementRef;
+  @ViewChild('messageInput') private messageInput!: ElementRef;
 
   private chatService = inject(ChatService);
   private desktopService = inject(DesktopService);
@@ -336,6 +431,10 @@ export class App implements OnInit, AfterViewChecked {
   activeSessionId = signal<string | null>(null);
   isDraftMode = signal(false);
 
+  // Settings State
+  settingsOpen = signal(false);
+  settingsForm = { model_id: '', openrouter_api_key: '' };
+
   metrics = signal<Metrics>({
     latency: 0,
     tokensPerSec: 0,
@@ -346,6 +445,11 @@ export class App implements OnInit, AfterViewChecked {
   godotStatus = signal<GodotStatus | null>(null);
   isGodotConnected = signal(false);
 
+  sessionMetrics = signal<{ total_tokens: number; total_cost: number }>({
+    total_tokens: 0,
+    total_cost: 0
+  });
+
   constructor() {
     // Effect to scroll to bottom when messages change
     effect(() => {
@@ -355,14 +459,10 @@ export class App implements OnInit, AfterViewChecked {
   }
 
   ngOnInit() {
-    this.loadSessions();
+    // Start in draft mode optimistically
+    this.isDraftMode.set(true);
 
-    // Set draft mode after loading sessions if no sessions exist
-    setTimeout(() => {
-      if (this.sessions().length === 0) {
-        this.isDraftMode.set(true);
-      }
-    }, 100);
+    this.loadSessions();
 
     // Subscribe to Godot Status
     this.desktopService.streamGodotStatus().subscribe(status => {
@@ -388,9 +488,64 @@ export class App implements OnInit, AfterViewChecked {
   loadSessions() {
     this.chatService.listSessions().subscribe(sessions => {
       this.sessions.set(sessions);
-      // Only auto-select if not in draft mode and no active session
-      if (sessions.length > 0 && !this.activeSessionId() && !this.isDraftMode()) {
-        this.selectSession(sessions[0].id);
+
+      // Exit draft mode if sessions exist
+      if (sessions.length > 0) {
+        this.isDraftMode.set(false);
+
+        // Auto-select first session if no active session
+        if (!this.activeSessionId()) {
+          this.selectSession(sessions[0].id);
+        }
+      }
+      // If sessions.length === 0, stays in draft mode (already set in ngOnInit)
+    });
+  }
+
+  openSettings() {
+    this.chatService.getAgentConfig().subscribe({
+      next: (response) => {
+        if (response.status === 'success' && response.config) {
+          const config = response.config.model_config || {};
+          
+          this.settingsForm = {
+            model_id: config.model_id || '',
+            openrouter_api_key: '' // Don't show existing key for security
+          };
+        }
+        this.settingsOpen.set(true);
+      },
+      error: (err) => {
+        console.error('Failed to load config:', err);
+        // Open anyway with defaults
+        this.settingsOpen.set(true);
+      }
+    });
+  }
+
+  closeSettings() {
+    this.settingsOpen.set(false);
+  }
+
+  saveSettings() {
+    const config = this.settingsForm;
+    
+    const updatePayload: any = {
+      model_id: config.model_id
+    };
+    
+    if (config.openrouter_api_key) {
+      updatePayload.openrouter_api_key = config.openrouter_api_key;
+    }
+
+    this.chatService.updateAgentConfig(updatePayload).subscribe({
+      next: () => {
+        this.closeSettings();
+        // Optional: Show success toast
+      },
+      error: (err) => {
+        console.error('Failed to save settings:', err);
+        alert('Failed to save settings');
       }
     });
   }
@@ -407,20 +562,54 @@ export class App implements OnInit, AfterViewChecked {
       // For now, let's assume we start empty or fetch if available.
       // Actually, standard ChatService usually doesn't return messages in listSessions, but getSession might.
       // Let's check if there are messages in the response.
-      if (sessionData && sessionData.messages) {
-        const mappedMessages: Message[] = sessionData.messages.map((m: any) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          timestamp: new Date(m.timestamp),
-          toolCalls: m.toolCalls?.map((tc: any) => ({
-            toolName: tc.name,
-            input: JSON.stringify(tc.input),
-            output: JSON.stringify(tc.result),
-            status: tc.status === 'completed' ? 'success' : tc.status
-          }))
-        }));
-        this.messages.set(mappedMessages);
+      if (sessionData) {
+        // Update session metrics
+        if (sessionData.metrics) {
+          this.sessionMetrics.set({
+            total_tokens: sessionData.metrics.total_tokens || 0,
+            total_cost: sessionData.metrics.total_estimated_cost || 0
+          });
+        } else {
+          this.sessionMetrics.set({ total_tokens: 0, total_cost: 0 });
+        }
+
+        if (sessionData.messages) {
+          const mappedMessages: Message[] = sessionData.messages
+            .map((m: any) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              timestamp: new Date(m.timestamp),
+              toolCalls: m.toolCalls?.map((tc: any) => {
+                // Convert legacy status values to new format
+                let status: 'pending' | 'success' | 'error' = 'pending';
+                if (tc.status === 'completed' || tc.status === 'success') {
+                  status = 'success';
+                } else if (tc.status === 'failed' || tc.status === 'error') {
+                  status = 'error';
+                }
+
+                // Generate missing toolUseId for backward compatibility
+                const toolUseId = tc.toolUseId || tc.id || `legacy-${Date.now()}-${Math.random()}`;
+
+                return {
+                  toolName: tc.name || tc.toolName || 'unknown',
+                  toolUseId: toolUseId,
+                  input: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input || {}),
+                  output: tc.result ? (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : tc.output || '',
+                  status: status,
+                  error: tc.error
+                };
+              })
+            }))
+            .filter((msg: Message) => {
+              // Filter out empty messages
+              const hasContent = msg.content?.trim();
+              const hasToolCalls = msg.toolCalls && msg.toolCalls.length > 0;
+              return hasContent || hasToolCalls;
+            });
+          this.messages.set(mappedMessages);
+        }
       }
     });
   }
@@ -442,6 +631,7 @@ export class App implements OnInit, AfterViewChecked {
           this.activeSessionId.set(null);
           this.messages.set([]);
           this.isDraftMode.set(true);
+          this.sessionMetrics.set({ total_tokens: 0, total_cost: 0 });
         }
 
         // Reload session list
@@ -464,6 +654,7 @@ export class App implements OnInit, AfterViewChecked {
     this.activeSessionId.set(null);
     this.messages.set([]);
     this.isDraftMode.set(true);
+    this.sessionMetrics.set({ total_tokens: 0, total_cost: 0 });
   }
 
   private extractTitleFromMessage(message: string): string {
@@ -560,9 +751,14 @@ export class App implements OnInit, AfterViewChecked {
     const userContent = this.currentInput();
     this.currentInput.set(''); // Clear input immediately
 
+    // Reset input height
+    if (this.messageInput) {
+      this.messageInput.nativeElement.style.height = 'auto';
+    }
+
     // CRITICAL FIX: Add user message to UI immediately
     const userMsg: Message = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: 'user',
       content: userContent,
       timestamp: new Date()
@@ -574,29 +770,36 @@ export class App implements OnInit, AfterViewChecked {
 
       // Check if we're in draft mode - create session with message as title
       if (this.isDraftMode()) {
-        const newSessionId = Date.now().toString();
+        const newSessionId = crypto.randomUUID();
         const title = this.extractTitleFromMessage(userContent);
 
-        // Create session with meaningful title
-        await this.createSessionWithTitle(newSessionId, title);
+        // Create session with meaningful title (async, don't wait)
+        this.createSessionWithTitle(newSessionId, title).then(() => {
+          console.log('Session created successfully');
+        }).catch(err => {
+          console.error('Failed to create session:', err);
+          // Remove optimistically added session on error
+          this.sessions.update(sessions =>
+            sessions.filter(s => s.id !== newSessionId)
+          );
+        });
 
-        // Exit draft mode and set active session
+        // OPTIMISTIC: Update UI immediately (don't wait for server)
         sessionId = newSessionId;
         this.activeSessionId.set(sessionId);
         this.isDraftMode.set(false);
 
-        // Refresh session list to show new session
-        this.loadSessions();
+        // OPTIMISTIC: Add session to list immediately
+        this.sessions.update(sessions => [{
+          id: newSessionId,
+          title: title,
+          date: new Date(),
+          active: true
+        }, ...sessions]);
       } else if (!sessionId) {
         // Fallback: No session and not in draft mode (shouldn't normally happen)
         this.createNewSession();
         return; // Exit early, user will need to send again
-      }
-
-      // For existing sessions, update title with new message content
-      if (!this.isDraftMode() && sessionId) {
-        const newTitle = this.extractTitleFromMessage(userContent);
-        this.updateSessionTitle(sessionId, newTitle);
       }
 
       // Double-check session is ready
@@ -613,7 +816,7 @@ export class App implements OnInit, AfterViewChecked {
       this.messages.update(msgs => {
         const updated = [...msgs];
         const errorMsg: Message = {
-          id: (Date.now() + 1).toString(),
+          id: crypto.randomUUID(),
           role: 'assistant',
           content: `❌ Error: ${error instanceof Error ? error.message : 'Failed to send message'}`,
           timestamp: new Date(),
@@ -633,7 +836,7 @@ export class App implements OnInit, AfterViewChecked {
     this.currentAbortController = new AbortController();
 
     // 2. Prepare Assistant Stub
-    const assistantId = (Date.now() + 1).toString();
+    const assistantId = crypto.randomUUID();
     const assistantMsg: Message = {
       id: assistantId,
       role: 'assistant',
@@ -641,7 +844,8 @@ export class App implements OnInit, AfterViewChecked {
       reasoning: '',
       timestamp: new Date(),
       isStreaming: true,
-      toolCalls: []
+      toolCalls: [],
+      chunks: []
     };
 
     this.messages.update(msgs => [...msgs, assistantMsg]);
@@ -666,14 +870,86 @@ export class App implements OnInit, AfterViewChecked {
           // Handle different event types with raw backend format
           if (event.type === 'data' && event.data?.text) {
             updated.content += event.data.text;
+            updated.chunks = [...(updated.chunks || []), event.data.text];
             tokenCount++; // Rough estimation
           } else if (event.type === 'text' && event.content) {
             updated.content += event.content;
+            updated.chunks = [...(updated.chunks || []), event.content];
             tokenCount++; // Rough estimation
           } else if (event.type === 'reasoning' && event.data?.text) {
             updated.reasoning = (updated.reasoning || '') + event.data.text;
           } else if (event.type === 'reasoning' && event.reasoning) {
             updated.reasoning = (updated.reasoning || '') + event.reasoning;
+          } else if (event.type === 'metrics') {
+            // Handle metrics event
+            const metricsData = event.data?.metrics || event.metrics;
+            if (metricsData) {
+              // Update message metrics
+              updated.metrics = {
+                total_tokens: metricsData.total_tokens || 0,
+                input_tokens: metricsData.input_tokens || 0,
+                output_tokens: metricsData.output_tokens || 0,
+                estimated_cost: metricsData.estimated_cost || metricsData.cost || 0,
+                model_id: metricsData.model_id || 'unknown'
+              };
+
+              // Update session metrics
+              // Note: The backend should ideally return the cumulative session metrics,
+              // but if it returns only message metrics, we might need to accumulate them.
+              // However, let's assume for now we just want to show the running total if available,
+              // or we add this message's cost to the session total.
+
+              // Better approach: If the backend sends the *message* cost, we add it to the session total.
+              // But since we might get multiple metrics events (e.g. intermediate), we should be careful not to double count.
+              // Usually metrics come at the end.
+
+              // Let's rely on the fact that we loaded the session total at start, 
+              // and we add the *incremental* cost of this message when it's done.
+              // But wait, if we switch sessions and come back, we reload from backend.
+              // So for the live update, we can just add the cost of this message to the *initial* session cost?
+              // No, that's complex.
+
+              // Simplest: Just display the message cost for now, or if we want session total,
+              // we need to know if this is the *final* metrics event for this message.
+
+              // Let's update the session metrics signal by adding this message's cost to the *current* value
+              // BUT only if this is the first time we see metrics for this message?
+              // Or better: The session metrics signal holds the *base* session cost (loaded at start) + sum of costs of new messages in this session.
+
+              // Actually, let's just update the UI to show what we have.
+              // If we want a live "Session Total", we can update it here.
+
+              const currentSessionMetrics = this.sessionMetrics();
+              // This is tricky because metrics might be sent multiple times or we might re-run.
+              // Let's just update the signal with a new object that includes this message's contribution.
+              // BUT we don't want to keep adding it if we receive multiple metrics events for the same message.
+
+              // For now, let's just log it and maybe update a "current run cost" display?
+              // The user asked for "tokens total and cost total for the session".
+
+              // Let's assume the backend *persists* the session total.
+              // So if we could fetch the updated session metrics, that would be best.
+              // But we don't want to poll.
+
+              // Let's accumulate locally.
+              // We need to track which messages we've already accounted for?
+              // Or just add the *difference*?
+
+              // Let's try this:
+              // We have `this.sessionMetrics` which was loaded from the backend.
+              // When we get metrics for a message, we update `this.sessionMetrics` by adding this message's cost/tokens.
+              // BUT we must ensure we don't add it twice.
+              // Since `sendActualMessage` runs once per message, and `metrics` usually comes once at the end...
+              // We can just add it.
+
+              // However, if `metrics` event comes multiple times (e.g. partial), we have a problem.
+              // Usually `metrics` comes once at `message_stop`.
+
+              this.sessionMetrics.update(current => ({
+                total_tokens: current.total_tokens + (metricsData.total_tokens || 0),
+                total_cost: current.total_cost + (metricsData.estimated_cost || metricsData.cost || 0)
+              }));
+            }
           } else if (event.type === 'tool_use' && event.data) {
             // Handle raw backend format for tool_use events
             if (!updated.toolCalls) {
@@ -682,6 +958,7 @@ export class App implements OnInit, AfterViewChecked {
 
             const toolCallData: ToolCall = {
               toolName: event.data.tool_name || event.data.name || 'unknown',
+              toolUseId: event.data.tool_use_id || `tool-${Date.now()}-${updated.toolCalls.length}`,
               input: JSON.stringify(event.data.tool_input || event.data.input || {}),
               output: '',
               status: 'pending' // Default status
@@ -748,6 +1025,78 @@ export class App implements OnInit, AfterViewChecked {
             } else {
               // Add new tool call
               updated.toolCalls = [...updated.toolCalls, toolCallData];
+            }
+          } else if (event.type === 'tool_result') {
+            // Handle tool completion results
+            const resultData = event.data || event;
+            const toolName = resultData.tool_name || resultData.name;
+            const toolUseId = resultData.tool_use_id;
+
+            if (!updated.toolCalls) {
+              updated.toolCalls = [];
+            }
+
+            // Find tool by toolUseId first, then fall back to name+status
+            let toolIndex = -1;
+            if (toolUseId) {
+              toolIndex = updated.toolCalls.findIndex(tc => tc.toolUseId === toolUseId);
+            }
+
+            // Fallback to original logic for backward compatibility
+            if (toolIndex === -1) {
+              toolIndex = updated.toolCalls.findIndex(
+                tc => tc.toolName === toolName && tc.status === 'pending'
+              );
+            }
+
+            if (toolIndex >= 0) {
+              // Update the existing tool with result
+              updated.toolCalls[toolIndex] = {
+                ...updated.toolCalls[toolIndex],
+                output: JSON.stringify(
+                  resultData.result || resultData,
+                  null,
+                  2
+                ),
+                status: 'success'
+              };
+            } else {
+              // Tool not found - might have been missed or out of order
+              console.warn(`Tool result received for unknown tool: ${toolName}`);
+            }
+          } else if (event.type === 'tool_error') {
+            // Handle tool errors
+            const resultData = event.data || event;
+            const toolName = resultData.tool_name || 'unknown';
+            const toolUseId = resultData.tool_use_id;
+
+            if (!updated.toolCalls) {
+              updated.toolCalls = [];
+            }
+
+            // Find tool by toolUseId or name+status
+            let toolIndex = -1;
+            if (toolUseId) {
+              toolIndex = updated.toolCalls.findIndex(tc => tc.toolUseId === toolUseId);
+            }
+
+            if (toolIndex === -1) {
+              // Create error tool entry if not found
+              updated.toolCalls.push({
+                toolName: toolName,
+                toolUseId: toolUseId || `error-${Date.now()}`,
+                input: 'Unknown',
+                output: '',
+                status: 'error',
+                error: resultData.error || 'Tool execution failed'
+              });
+            } else {
+              // Update existing tool with error
+              updated.toolCalls[toolIndex] = {
+                ...updated.toolCalls[toolIndex],
+                status: 'error',
+                error: resultData.error || 'Tool execution failed'
+              };
             }
           } else if (event.type === 'metrics' && event.data?.metrics) {
             // Handle raw backend format for metrics events

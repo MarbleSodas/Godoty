@@ -22,7 +22,10 @@
       "WebFetch(domain:strandsagents.com)",
       "Bash(python3:*)",
       "Bash(cat:*)",
-      "mcp__sequential-thinking__sequentialthinking"
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(grep:*)",
+      "Bash(source:*)",
+      "Bash(xargs ls:*)"
     ],
     "deny": [],
     "ask": []

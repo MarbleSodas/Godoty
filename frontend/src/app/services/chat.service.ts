@@ -90,8 +90,8 @@ export interface Session {
   date: Date;
   active: boolean;
   metrics?: {
-    session_cost: number;
-    session_tokens: number;
+    total_estimated_cost: number;
+    total_tokens: number;
   };
 }
 
@@ -352,17 +352,17 @@ export class ChatService {
   }
 
   // Configuration
-  getConfig(): Observable<any> {
+  getAgentConfig(): Observable<any> {
     return this.http.get(`${this.apiUrl}/config`);
   }
 
-  updateConfig(config: { planning_model?: string; executor_model?: string; openrouter_api_key?: string }): Observable<any> {
+  updateAgentConfig(config: { model_id?: string; openrouter_api_key?: string }): Observable<any> {
     return this.http.post(`${this.apiUrl}/config`, config);
   }
 
   // Session Title Management
   updateSessionTitle(sessionId: string, title: string): Observable<any> {
-    const url = `${this.apiUrl}/agent/sessions/${sessionId}/title`;
+    const url = `${this.apiUrl}/sessions/${sessionId}/title`;
     return this.http.put(url, { title });
   }
 }
