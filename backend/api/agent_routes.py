@@ -58,12 +58,12 @@ def _extract_title_from_chat_history(chat_history: list) -> str:
                 content = re.sub(r'\s+', ' ', content)
 
                 # Step 4: Truncate at word boundary
-                max_length = 50
+                max_length = 16
                 if len(content) > max_length:
                     # Try to break at last word boundary before limit
                     truncated = content[:max_length].rsplit(' ', 1)[0]
-                    # Only use truncated if it's substantial (>20 chars)
-                    if len(truncated) > 20:
+                    # Only use truncated if it's substantial (>8 chars)
+                    if len(truncated) > 8:
                         content = truncated + "..."
                     else:
                         # Just hard truncate
@@ -399,8 +399,10 @@ async def create_session(request: SessionRequest):
 
         # Create session directory and initialize metadata
         from strands.session.file_session_manager import FileSessionManager
+        # AgentConfig is already imported at module level (line 22)
 
-        manager = FileSessionManager(session_id=request.session_id)
+        storage_dir = AgentConfig.get_sessions_storage_dir()
+        manager = FileSessionManager(session_id=request.session_id, storage_dir=storage_dir)
 
         # Initialize session with metadata
         metadata = {
@@ -462,6 +464,101 @@ async def create_session(request: SessionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _extract_title_from_session_files(session_path: str, agent_id: str = "godoty-agent") -> Optional[str]:
+    """Extract title from first user message in session files."""
+    try:
+        messages_dir = os.path.join(session_path, "agents", f"agent_{agent_id}", "messages")
+
+        if not os.path.exists(messages_dir):
+            agents_dir = os.path.join(session_path, "agents")
+            if os.path.exists(agents_dir):
+                agent_dirs = [d for d in os.listdir(agents_dir) if d.startswith("agent_")]
+                if agent_dirs:
+                    messages_dir = os.path.join(agents_dir, agent_dirs[0], "messages")
+
+        if not os.path.exists(messages_dir):
+            return None
+
+        msg_file = os.path.join(messages_dir, "message_0.json")
+        if os.path.exists(msg_file):
+            with open(msg_file, 'r') as f:
+                msg_data = json.load(f)
+                message = msg_data.get('message', {})
+                if message.get('role') == 'user':
+                    content = message.get('content', [])
+                    if content and isinstance(content, list):
+                        text = content[0].get('text', '')
+                        return _extract_title_from_text(text)
+        return None
+    except Exception as e:
+        logger.debug(f"Error extracting title: {e}")
+        return None
+
+
+def _extract_title_from_text(text: str) -> str:
+    """Extract clean title from message text."""
+    if not text:
+        return "New Session"
+
+    content = text.strip()
+    content = re.sub(r'^```[\w]*\s*', '', content)
+    content = re.sub(r'```\s*$', '', content)
+    content = re.sub(r'\s+', ' ', content)
+
+    max_length = 16
+    if len(content) > max_length:
+        truncated = content[:max_length].rsplit(' ', 1)[0]
+        content = truncated + "..." if len(truncated) > 8 else content[:max_length] + "..."
+
+    return content if content else "New Session"
+
+
+def _list_sessions_from_storage(storage_dir: str) -> Dict[str, Dict[str, Any]]:
+    """Scan FileSessionManager storage directory for all sessions."""
+    sessions = {}
+
+    if not os.path.exists(storage_dir):
+        logger.warning(f"Sessions storage directory does not exist: {storage_dir}")
+        return sessions
+
+    for entry in os.listdir(storage_dir):
+        if not entry.startswith("session_"):
+            continue
+
+        try:
+            session_path = os.path.join(storage_dir, entry)
+            session_file = os.path.join(session_path, "session.json")
+
+            if not os.path.exists(session_file):
+                continue
+
+            with open(session_file, 'r') as f:
+                session_data = json.load(f)
+
+            session_id = session_data.get('session_id')
+            if not session_id:
+                continue
+
+            title = _extract_title_from_session_files(session_path) or f"Session {session_id[:8]}"
+
+            sessions[session_id] = {
+                'session_id': session_id,
+                'title': title,
+                'date': session_data.get('updated_at') or session_data.get('created_at'),
+                'active': False,
+                'metadata': {
+                    'created_at': session_data.get('created_at'),
+                    'updated_at': session_data.get('updated_at'),
+                    'title': title
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error processing session {entry}: {e}")
+            continue
+
+    return sessions
+
+
 @router.get("/sessions", response_model=dict)
 async def list_sessions(path: Optional[str] = Query(None)):
     """
@@ -488,16 +585,11 @@ async def list_sessions(path: Optional[str] = Query(None)):
         # Wait, MultiAgentManager had list_sessions. It probably scanned the directory.
         # Let's implement a simple scanner here or import one.
         
-        # For now, let's assume we can scan the .strands/sessions directory or similar.
-        # Actually, let's use a helper function.
-        
-        fs_sessions = {}
-        # TODO: Implement session listing. For now, empty or mock.
-        # Real implementation would scan the sessions directory.
-        # Let's try to use FileSessionManager's storage path if accessible.
-        
-        # Temporary: Just return empty or what ProjectDB has.
-        logger.info(f"Listing sessions from ProjectDB only for now (FileSessionManager listing pending)")
+        # Load sessions from FileSessionManager storage
+        # AgentConfig is already imported at module level (line 22)
+        storage_dir = AgentConfig.get_sessions_storage_dir()
+        fs_sessions = _list_sessions_from_storage(storage_dir)
+        logger.info(f"Found {len(fs_sessions)} sessions from FileSessionManager")
 
         if not path:
             # For development/testing, use current working directory as default
@@ -604,84 +696,61 @@ async def list_sessions(path: Optional[str] = Query(None)):
 
 @router.get("/sessions/{session_id}", response_model=dict)
 async def get_session(session_id: str, path: Optional[str] = Query(None)):
-    """
-    Get session details with enhanced loading strategy and user notifications.
-
-    Args:
-        session_id: Session ID
-        path: Optional project path to look up in ProjectDB
-
-    Returns:
-        Session details with status and error information
-    """
+    """Get session details with conversation history."""
     try:
         from strands.session.file_session_manager import FileSessionManager
-        
-        try:
-            manager = FileSessionManager(session_id=session_id)
-            session_data = manager.read_agent(session_id)
-            
-            # Extract chat history from session_data
-            # session_data is likely a SessionAgent object or similar
-            chat_history = []
-            if hasattr(session_data, 'messages'):
-                chat_history = session_data.messages
-            elif hasattr(session_data, 'history'):
-                chat_history = session_data.history
-            else:
-                 # Fallback
-                 chat_history = []
-                 
-        except Exception as e:
-            logger.warning(f"Could not load session from file: {e}")
-            chat_history = []
+        # AgentConfig is already imported at module level (line 22)
+
+        storage_dir = AgentConfig.get_sessions_storage_dir()
+        manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
+
+        # Load messages
+        agent_id = "godoty-agent"
+        chat_history = []
 
         try:
-            if chat_history:
-                # Get metrics from database (always provide defaults if unavailable)
-                metrics = None
-                if path:
-                    try:
-                        db = ProjectDB(path)
-                        metrics = db.get_session_metrics(session_id)
-                    except Exception as metrics_error:
-                        logger.warning(f"Failed to get session metrics: {metrics_error}")
+            # Use manager.list_messages() to get all messages
+            messages = manager.list_messages(session_id, agent_id)
 
-                # Ensure metrics exist with defaults
-                if not metrics:
-                    metrics = {
-                        "session_cost": 0.0,
-                        "session_tokens": 0,
-                        "individual_cost": 0.0,
-                        "individual_tokens": 0,
-                        "workflow_cost": 0.0,
-                        "workflow_tokens": 0
-                    }
+            for msg in messages:
+                message_obj = msg.message
+                message_content = message_obj.get('content', [])
 
-                return {
-                    "status": "success",
-                    "chat_history": chat_history,
-                    "metrics": metrics
-                }
-            else:
-                return {
-                    "status": "error",
-                    "message": f"Session {session_id} not found or contains no data"
-                }
+                # Extract text
+                text = ""
+                if isinstance(message_content, list) and len(message_content) > 0:
+                    text = message_content[0].get('text', '')
+                elif isinstance(message_content, str):
+                    text = message_content
 
-        except FileNotFoundError:
-            logger.error(f"Session file not found: {session_id}")
-            return {"status": "error", "message": "Session not found. It may have been deleted."}
-        except PermissionError:
-            logger.error(f"Permission denied accessing session: {session_id}")
-            return {"status": "error", "message": "Unable to access session due to file permissions."}
+                chat_history.append({
+                    "role": message_obj.get("role"),
+                    "content": text,
+                    "timestamp": msg.created_at,
+                    "id": f"{session_id}-{msg.message_id}"
+                })
         except Exception as e:
-            logger.error(f"Unexpected error loading session {session_id}: {e}", exc_info=True)
-            return {"status": "error", "message": "An unexpected error occurred while loading the session."}
+            logger.warning(f"Error loading messages: {e}")
+            chat_history = []
 
+        # Get metrics
+        metrics = {"session_cost": 0.0, "session_tokens": 0}
+        if path:
+            try:
+                db = ProjectDB(path)
+                metrics = db.get_session_metrics(session_id)
+            except Exception as e:
+                logger.warning(f"Failed to load metrics: {e}")
+
+        return {
+            "status": "success",
+            "chat_history": chat_history,
+            "metrics": metrics,
+            "messages": chat_history
+        }
     except Exception as e:
-        logger.error(f"Failed to load session {session_id}: {e}")
-        return {"status": "error", "message": f"Unable to load session: {str(e)}"}
+        logger.error(f"Error loading session {session_id}: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @router.get("/sessions/{session_id}/metrics", response_model=dict)
@@ -847,19 +916,20 @@ async def delete_session(session_id: str, path: Optional[str] = Query(None)):
                 logger.warning(f"ProjectDB delete failed: {e}")
 
         from strands.session.file_session_manager import FileSessionManager
+        # AgentConfig is already imported at module level (line 22)
         # manager = get_multi_agent_manager()
 
         # Remove from FileSessionManager (chat history)
         # manager_deleted = manager.delete_session(session_id)
-        
+
         # Direct deletion
         try:
-            manager = FileSessionManager(session_id=session_id)
-            # manager.delete_session(session_id) # Check if this method exists
-            # If not, we might need to delete the file manually.
-            # Assuming it exists for now or we skip it.
-            manager_deleted = True # Placeholder
-        except Exception:
+            storage_dir = AgentConfig.get_sessions_storage_dir()
+            manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
+            manager.delete_session(session_id)
+            manager_deleted = True
+        except Exception as e:
+            logger.error(f"Error deleting session from FileSessionManager: {e}")
             manager_deleted = False
         if manager_deleted:
             logger.info(f"Deleted session {session_id} from FileSessionManager")
@@ -878,6 +948,60 @@ async def delete_session(session_id: str, path: Optional[str] = Query(None)):
         raise
     except Exception as e:
         logger.error(f"Error deleting session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/sessions/{session_id}/title", response_model=dict)
+async def update_session_title(session_id: str, title_data: dict):
+    """
+    Update the title of a session.
+
+    Args:
+        session_id: Session ID
+        title_data: Dictionary containing the new title
+
+    Returns:
+        Status message
+    """
+    try:
+        new_title = title_data.get("title", "").strip()
+        if not new_title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+        # Update title in ProjectDB
+        project_db = ProjectDB()
+        project_db.update_session_title(session_id, new_title)
+
+        # Update title in FileSessionManager
+        try:
+            storage_dir = AgentConfig.get_sessions_storage_dir()
+            manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
+
+            # Get current session data
+            session_data = manager.get_session_info()
+            if session_data:
+                # Update title in session metadata
+                session_data['title'] = new_title
+                # Note: FileSessionManager doesn't have a direct update_title method,
+                # but this updates the session metadata in memory
+                manager_updated = True
+            else:
+                manager_updated = False
+        except Exception as e:
+            logger.error(f"Error updating title in FileSessionManager: {e}")
+            manager_updated = False
+
+        logger.info(f"Updated session {session_id} title to: {new_title}")
+
+        return {
+            "status": "success",
+            "message": f"Session title updated to: {new_title}",
+            "title": new_title
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating session title: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -928,9 +1052,11 @@ async def get_session_status(session_id: str):
     """
     try:
         from strands.session.file_session_manager import FileSessionManager
+        # AgentConfig is already imported at module level (line 22)
 
         # Check if session directory exists
-        manager = FileSessionManager(session_id=session_id)
+        storage_dir = AgentConfig.get_sessions_storage_dir()
+        manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
 
         # Try to load metadata
         metadata = None

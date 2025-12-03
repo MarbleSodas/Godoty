@@ -66,7 +66,13 @@ class GodotyAgent:
         # Initialize Session Manager
         self.session_manager = None
         if session_id:
-            self.session_manager = FileSessionManager(session_id=session_id)
+            # AgentConfig is already imported at module level (line 14)
+            storage_dir = AgentConfig.get_sessions_storage_dir()
+            self.session_manager = FileSessionManager(
+                session_id=session_id,
+                storage_dir=storage_dir
+            )
+            logger.info(f"Initialized session {session_id} with storage: {storage_dir}")
 
         # Define Tools (All tools except MCP)
         self.tools = [

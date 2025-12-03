@@ -74,17 +74,32 @@ interface Metrics {
         <div class="flex-1 overflow-y-auto py-2">
           <div class="px-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">History</div>
           @for (session of sessions(); track session.id) {
-            <button 
+            <div
               (click)="selectSession(session.id)"
-              class="w-full text-left px-4 py-3 text-sm truncate hover:bg-[#2d3546] transition-colors border-l-2"
+              (keydown.enter)="selectSession(session.id)"
+              (keydown.space)="selectSession(session.id); $event.preventDefault()"
+              role="button"
+              tabindex="0"
+              [attr.aria-label]="'Select session: ' + session.title"
+              class="relative w-full text-left px-4 py-3 text-sm hover:bg-[#2d3546] transition-colors border-l-2 flex justify-between items-center group cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#478cbf]/50"
               [class.border-[#478cbf]]="activeSessionId() === session.id"
               [class.bg-[#262c3b]]="activeSessionId() === session.id"
               [class.text-white]="activeSessionId() === session.id"
               [class.text-gray-400]="activeSessionId() !== session.id"
               [class.border-transparent]="activeSessionId() !== session.id"
             >
-              {{ session.title }}
-            </button>
+              <span class="flex-1 truncate">
+                {{ session.title }}
+              </span>
+              <button
+                (click)="deleteSession(session.id, $event)"
+                class="opacity-0 group-hover:opacity-100 transition-opacity p-2 hover:bg-red-500/10 rounded"
+                title="Delete session"
+                aria-label="Delete session"
+              >
+                🗑️
+              </button>
+            </div>
           }
         </div>
         
@@ -264,22 +279,29 @@ interface Metrics {
               (input)="autoResize($event.target)"
             ></textarea>
 
-            <button 
-              (click)="sendMessage()"
-              [disabled]="!currentInput() && !isGeneratiing()"
-              class="absolute right-2 bottom-2 p-1.5 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all"
-            >
-              @if (isGeneratiing()) {
-                 <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            @if (isGeneratiing()) {
+              <!-- Stop button when generating -->
+              <button
+                (click)="stopGeneration()"
+                class="absolute right-2 bottom-2 p-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-all"
+                title="Stop generation"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+                  <path d="M5.25 3A2.25 2.25 0 003 5.25v9.5A2.25 2.25 0 005.25 17h9.5A2.25 2.25 0 0017 14.75v-9.5A2.25 2.25 0 0014.75 3h-9.5z" />
                 </svg>
-              } @else {
+              </button>
+            } @else {
+              <!-- Send button when not generating -->
+              <button
+                (click)="sendMessage()"
+                [disabled]="!currentInput()"
+                class="absolute right-2 bottom-2 p-1.5 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all"
+              >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
                   <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2 2 0 005.635 9.75h5.736a.75.75 0 010 1.5H5.636a2 2 0 00-1.942 1.586l-1.414 4.925a.75.75 0 00.826.95 28.89 28.89 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
                 </svg>
-              }
-            </button>
+              </button>
+            }
           </div>
           <div class="text-center text-[10px] text-gray-600 mt-2 font-mono">
             Godoty can make mistakes. Check generated code in the Godot docs.
@@ -310,6 +332,7 @@ export class App implements OnInit, AfterViewChecked {
   sidebarOpen = signal(true);
   currentInput = signal('');
   isGeneratiing = signal(false);
+  private currentAbortController: AbortController | null = null;
   activeSessionId = signal<string | null>(null);
   isDraftMode = signal(false);
 
@@ -402,6 +425,35 @@ export class App implements OnInit, AfterViewChecked {
     });
   }
 
+  deleteSession(sessionId: string, event: Event): void {
+    event.stopPropagation(); // Prevent session selection when clicking delete
+
+    // Confirmation dialog
+    if (!confirm('Are you sure you want to delete this session? This action cannot be undone.')) {
+      return;
+    }
+
+    this.chatService.deleteSession(sessionId).subscribe({
+      next: (response) => {
+        console.log('Session deleted:', response);
+
+        // If the deleted session was active, clear the view
+        if (this.activeSessionId() === sessionId) {
+          this.activeSessionId.set(null);
+          this.messages.set([]);
+          this.isDraftMode.set(true);
+        }
+
+        // Reload session list
+        this.loadSessions();
+      },
+      error: (error) => {
+        console.error('Error deleting session:', error);
+        alert('Failed to delete session: ' + (error.error?.message || error.message));
+      }
+    });
+  }
+
   toggleSidebar() {
     this.sidebarOpen.update(v => !v);
   }
@@ -424,10 +476,10 @@ export class App implements OnInit, AfterViewChecked {
     // Normalize whitespace
     title = title.replace(/\s+/g, ' ');
 
-    // Truncate at 50 chars (word boundary)
-    if (title.length > 50) {
-      const truncated = title.substring(0, 50).split(' ').slice(0, -1).join(' ');
-      title = truncated.length > 20 ? truncated + '...' : title.substring(0, 50) + '...';
+    // Truncate at 16 chars (word boundary) - matching backend
+    if (title.length > 16) {
+      const truncated = title.substring(0, 16).split(' ').slice(0, -1).join(' ');
+      title = truncated.length > 8 ? truncated + '...' : title.substring(0, 16) + '...';
     }
 
     return title || 'New Session';
@@ -541,6 +593,12 @@ export class App implements OnInit, AfterViewChecked {
         return; // Exit early, user will need to send again
       }
 
+      // For existing sessions, update title with new message content
+      if (!this.isDraftMode() && sessionId) {
+        const newTitle = this.extractTitleFromMessage(userContent);
+        this.updateSessionTitle(sessionId, newTitle);
+      }
+
       // Double-check session is ready
       const isReady = await this.isSessionReady(sessionId);
       if (!isReady) {
@@ -571,6 +629,9 @@ export class App implements OnInit, AfterViewChecked {
     // 1. Add User Message (already added in sendMessage)
     this.isGeneratiing.set(true);
 
+    // Create AbortController for cancellation
+    this.currentAbortController = new AbortController();
+
     // 2. Prepare Assistant Stub
     const assistantId = (Date.now() + 1).toString();
     const assistantMsg: Message = {
@@ -587,7 +648,12 @@ export class App implements OnInit, AfterViewChecked {
 
     // 3. Stream Response
     try {
-      const stream = this.chatService.sendMessageStream(sessionId, userContent);
+      const stream = this.chatService.sendMessageStream(
+        sessionId,
+        userContent,
+        undefined,
+        this.currentAbortController.signal
+      );
       let startTime = Date.now();
       let tokenCount = 0;
 
@@ -720,16 +786,61 @@ export class App implements OnInit, AfterViewChecked {
         tokensPerSec: tokenCount / (duration / 1000)
       });
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error sending message:', error);
-      this.messages.update(msgs => msgs.map(m =>
-        m.id === assistantId ? { ...m, content: m.content + '\n[Error generating response]' } : m
-      ));
+
+      // Handle cancellation separately from errors
+      if (error.name === 'AbortError') {
+        console.log('Stream cancelled by user');
+        this.messages.update(msgs => msgs.map(m => {
+          if (m.id === assistantId) {
+            return {
+              ...m,
+              content: m.content || '',
+              isStreaming: false
+            };
+          }
+          return m;
+        }));
+      } else {
+        this.messages.update(msgs => msgs.map(m =>
+          m.id === assistantId ? { ...m, content: m.content + '\n[Error generating response]' } : m
+        ));
+      }
     } finally {
       this.isGeneratiing.set(false);
+      this.currentAbortController = null;
       this.messages.update(msgs => msgs.map(m =>
         m.id === assistantId ? { ...m, isStreaming: false } : m
       ));
+    }
+  }
+
+  updateSessionTitle(sessionId: string, newTitle: string): void {
+    this.chatService.updateSessionTitle(sessionId, newTitle).subscribe({
+      next: (response) => {
+        console.log('Session title updated:', response);
+        // Update session in the local list
+        this.sessions.update(sessions =>
+          sessions.map(session =>
+            session.id === sessionId
+              ? { ...session, title: newTitle }
+              : session
+          )
+        );
+      },
+      error: (error) => {
+        console.error('Error updating session title:', error);
+      }
+    });
+  }
+
+  stopGeneration(): void {
+    if (this.currentAbortController) {
+      console.log('Stopping generation...');
+      this.currentAbortController.abort();
+      this.currentAbortController = null;
+      this.isGeneratiing.set(false);
     }
   }
 }

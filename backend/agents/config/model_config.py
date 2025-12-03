@@ -8,6 +8,7 @@ Handles all model-related settings including:
 - Metrics tracking configuration (hardcoded)
 """
 import os
+import sys
 import logging
 from typing import Dict
 from dotenv import load_dotenv
@@ -74,3 +75,21 @@ class ModelConfig:
             "precise_cost_tracking": cls.ENABLE_PRECISE_COST_TRACKING,
             "cost_query_delay_ms": cls.COST_QUERY_DELAY_MS
         }
+
+    @classmethod
+    def get_sessions_storage_dir(cls) -> str:
+        """Get persistent storage directory for FileSessionManager sessions."""
+        app_name = "Godoty"
+
+        if sys.platform == "win32":
+            base_path = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
+        elif sys.platform == "darwin":
+            base_path = os.path.expanduser("~/Library/Application Support")
+        else:  # linux
+            base_path = os.path.expanduser("~/.local/share")
+
+        app_dir = os.path.join(base_path, app_name)
+        sessions_dir = os.path.join(app_dir, "sessions")
+        os.makedirs(sessions_dir, exist_ok=True)
+
+        return sessions_dir

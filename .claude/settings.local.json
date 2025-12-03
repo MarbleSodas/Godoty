@@ -18,7 +18,11 @@
       "Bash(powershell:*)",
       "Bash(npm run build)",
       "Bash(del:*)",
-      "Bash(npm start)"
+      "Bash(npm start)",
+      "WebFetch(domain:strandsagents.com)",
+      "Bash(python3:*)",
+      "Bash(cat:*)",
+      "mcp__sequential-thinking__sequentialthinking"
     ],
     "deny": [],
     "ask": []

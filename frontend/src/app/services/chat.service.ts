@@ -359,4 +359,10 @@ export class ChatService {
   updateConfig(config: { planning_model?: string; executor_model?: string; openrouter_api_key?: string }): Observable<any> {
     return this.http.post(`${this.apiUrl}/config`, config);
   }
+
+  // Session Title Management
+  updateSessionTitle(sessionId: string, title: string): Observable<any> {
+    const url = `${this.apiUrl}/agent/sessions/${sessionId}/title`;
+    return this.http.put(url, { title });
+  }
 }
