@@ -14,11 +14,14 @@ from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from core.model import GodotyOpenRouterModel
 from agents.config import AgentConfig
+from agents.config.prompts import Prompts
 from agents.tools import (
     # File system tools
     read_file, list_files, search_codebase,
     # Web tools
     search_documentation, fetch_webpage, get_godot_api_reference,
+    # Godot docs tools (simplified)
+    search_godot_docs, get_class_reference, get_documentation_status,
     # Godot bridge
     ensure_godot_connection,
     # Godot debug tools
@@ -79,6 +82,8 @@ class GodotyAgent:
         self.tools = [
             read_file, list_files, search_codebase,
             search_documentation, fetch_webpage, get_godot_api_reference,
+            # Godot documentation tools (simplified)
+            search_godot_docs, get_class_reference, get_documentation_status,
             ensure_godot_connection,
             get_project_overview, analyze_scene_tree, capture_visual_context,
             capture_editor_viewport, capture_game_viewport, get_visual_debug_info,
@@ -100,18 +105,11 @@ class GodotyAgent:
             should_truncate_results=True
         )
 
-        # Create Agent
-        self.agent = Agent(
-            model=self.model,
-            tools=self.tools,
-            system_prompt=AgentConfig.PLANNING_AGENT_SYSTEM_PROMPT, # Reusing prompt for now
-            conversation_manager=self.conversation_manager,
-            session_manager=self.session_manager,
-            agent_id="godoty-agent"
-        )
-        
         # Initialize project path
         self.project_path = None
+        
+        # Create Agent (will be recreated with scoped prompt on initialize_session)
+        self._create_agent()
 
         # Rehydrate metrics if session exists
         if self.session_manager:
@@ -261,9 +259,35 @@ class GodotyAgent:
                 except Exception as e:
                     logger.error(f"Failed to persist metrics to MetricsDB: {e}")
 
+    def _create_agent(self, project_path: str = None):
+        """
+        Create or recreate agent with optional project path scoping.
+        
+        Args:
+            project_path: Optional project path to scope agent operations to.
+        """
+        system_prompt = Prompts.get_system_prompt(project_path)
+        
+        self.agent = Agent(
+            model=self.model,
+            tools=self.tools,
+            system_prompt=system_prompt,
+            conversation_manager=self.conversation_manager,
+            session_manager=self.session_manager,
+            agent_id="godoty-agent"
+        )
+        
+        if project_path:
+            logger.info(f"Agent created with project scope: {project_path}")
+        else:
+            logger.info("Agent created without project scope")
+
     async def initialize_session(self, project_path: str):
         """Initialize session with project context."""
         self.project_path = project_path
+        
+        # Recreate agent with project-scoped prompt
+        self._create_agent(project_path)
         logger.info(f"Initialized session {self.session_id} with project path: {project_path}")
         
         # Ensure session exists in MetricsDB

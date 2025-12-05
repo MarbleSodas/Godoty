@@ -71,3 +71,4 @@ temp_*/
 # Backup files
 *.backup
 *.bak
+*godoty.spec

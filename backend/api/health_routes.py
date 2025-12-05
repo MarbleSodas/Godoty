@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException
 
 from agents.config import AgentConfig
 from agents.godoty_agent import get_godoty_agent
-from agents.tools.mcp_tools import MCPToolManager
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,6 @@ async def health_check():
             "details": {
                 "valid": config_result["valid"],
                 "godot_available": config_result["godot_available"],
-                "mcp_available": config_result["mcp_available"],
                 "errors": config_result["errors"],
                 "warnings": config_result["warnings"]
             }
@@ -53,46 +51,6 @@ async def health_check():
                 "npx_available": npx_available
             }
         }
-
-        # Check MCP integration
-        mcp_status = {"status": "healthy", "details": {}}
-        try:
-            if config_result["mcp_available"]:
-                manager = MCPToolManager.get_instance()
-                if not manager.is_connected():
-                    success = await manager.initialize(fail_silently=True)
-                    if success:
-                        servers = manager.get_connected_servers()
-                        tools_count = len(manager.get_all_tools())
-                        mcp_status["details"] = {
-                            "connected": True,
-                            "servers": servers,
-                            "tools_count": tools_count
-                        }
-                        await manager.cleanup()
-                    else:
-                        mcp_status["status"] = "unhealthy"
-                        mcp_status["details"] = {
-                            "connected": False,
-                            "error": "Failed to initialize MCP servers"
-                        }
-                else:
-                    servers = manager.get_connected_servers()
-                    tools_count = len(manager.get_all_tools())
-                    mcp_status["details"] = {
-                        "connected": True,
-                        "servers": servers,
-                        "tools_count": tools_count
-                    }
-            else:
-                mcp_status["status"] = "disabled"
-                mcp_status["details"] = {"enabled": False}
-        except Exception as e:
-            mcp_status["status"] = "unhealthy"
-            mcp_status["details"] = {"error": str(e)}
-            logger.error(f"MCP health check failed: {e}")
-
-        health_status["components"]["mcp"] = mcp_status
 
         # Check Godot integration
         godot_status = {"status": "healthy", "details": {}}
@@ -124,8 +82,7 @@ async def health_check():
             agent = get_godoty_agent()
             agent_status["details"] = {
                 "initialized": True,
-                "tools_count": len(agent.tools),
-                "mcp_manager_exists": getattr(agent, 'mcp_manager', None) is not None
+                "tools_count": len(agent.tools)
             }
         except Exception as e:
             agent_status["status"] = "unhealthy"
@@ -147,59 +104,6 @@ async def health_check():
         health_status["error"] = str(e)
 
     return health_status
-
-
-@router.get("/mcp", response_model=Dict[str, Any])
-async def mcp_health():
-    """
-    Detailed MCP (Model Context Protocol) health check.
-
-    Returns:
-        Dictionary containing MCP-specific health information
-    """
-    try:
-        manager = MCPToolManager.get_instance()
-
-        if not manager.is_connected():
-            success = await manager.initialize(fail_silently=True)
-            if not success:
-                return {
-                    "status": "unhealthy",
-                    "connected": False,
-                    "error": "Failed to initialize MCP servers",
-                    "servers": []
-                }
-
-        servers = manager.get_connected_servers()
-        all_tools = manager.get_all_tools()
-
-        # Get tools by server
-        tools_by_server = {}
-        for server_name in servers:
-            server_tools = manager.get_tools_by_server(server_name)
-            tools_by_server[server_name] = {
-                "count": len(server_tools) if server_tools else 0,
-                "tools": [getattr(tool, 'name', str(tool)) for tool in (server_tools or [])[:5]]  # First 5 tools
-            }
-
-        await manager.cleanup()
-
-        return {
-            "status": "healthy",
-            "connected": True,
-            "servers": servers,
-            "total_tools": len(all_tools),
-            "tools_by_server": tools_by_server
-        }
-
-    except Exception as e:
-        logger.error(f"MCP health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "connected": False,
-            "error": str(e),
-            "servers": []
-        }
 
 
 @router.get("/godot", response_model=Dict[str, Any])
@@ -290,20 +194,9 @@ async def tools_health():
                 "available": True
             }
 
-        # Check MCP tools
-        mcp_tools = 0
-        try:
-            manager = MCPToolManager.get_instance()
-            if manager.is_connected():
-                mcp_tools = len(manager.get_all_tools())
-                await manager.cleanup()
-        except:
-            pass
-
         return {
             "status": "healthy",
             "total_tools": len(agent.tools),
-            "mcp_tools": mcp_tools,
             "categories": available_tools
         }
 

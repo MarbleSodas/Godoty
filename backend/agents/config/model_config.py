@@ -2,7 +2,7 @@
 Model configuration for Godoty agent.
 
 Handles all model-related settings including:
-- Model ID from environment
+- Model ID from persistent configuration
 - Temperature and token limits (hardcoded)
 - OpenRouter configuration
 - Metrics tracking configuration (hardcoded)
@@ -10,20 +10,57 @@ Handles all model-related settings including:
 import os
 import sys
 import logging
+from pathlib import Path
 from typing import Dict
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
+from config_manager import get_config
 
 logger = logging.getLogger(__name__)
 
+
 class ModelConfig:
     """Configuration for Godoty agent model."""
-    
-    # Get model from environment with hardcoded fallback
-    _model_id = os.getenv("DEFAULT_GODOTY_MODEL", "x-ai/grok-4.1-fast:free")
-    _openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
+
+    def __init__(self):
+        self.config_manager = get_config()
+        self._migrate_from_env_if_needed()
+
+    def _migrate_from_env_if_needed(self):
+        """Auto-migrate from .env file if config is empty (developer convenience only)."""
+        # Only migrate if no API key is configured
+        if not self.config_manager.openrouter_api_key.strip():
+            try:
+                # Only attempt if .env exists (developer mode)
+                env_path = Path(__file__).parent.parent.parent / '.env'
+                if not env_path.exists():
+                    logger.debug("No .env file found - skipping migration")
+                    return
+
+                # Try to import dotenv (may not be installed for end users)
+                try:
+                    from dotenv import load_dotenv
+                    load_dotenv(env_path)
+                except ImportError:
+                    logger.debug("python-dotenv not installed - skipping .env migration")
+                    return
+
+                api_key = os.getenv('OPENROUTER_API_KEY', '')
+                model = os.getenv('DEFAULT_GODOTY_MODEL', 'anthropic/claude-3-opus-4.5')
+
+                if api_key.strip():
+                    self.config_manager.openrouter_api_key = api_key
+                    self.config_manager.default_model = model
+                    self.config_manager._save_config()
+                    logger.info("Migrated configuration from .env to persistent storage")
+            except Exception as e:
+                logger.debug(f"No .env migration needed: {e}")
+
+    @property
+    def _model_id(self):
+        return self.config_manager.default_model
+
+    @property
+    def _openrouter_api_key(self):
+        return self.config_manager.openrouter_api_key
     
     # Hardcoded Model Parameters
     AGENT_TEMPERATURE = 0.7
@@ -39,45 +76,44 @@ class ModelConfig:
     ENABLE_PRECISE_COST_TRACKING = False
     COST_QUERY_DELAY_MS = 1000
     
-    @classmethod
-    def update_config(cls, model_id: str = None, api_key: str = None):
-        """Update configuration dynamically."""
+    def update_config(self, model_id: str = None, api_key: str = None):
+        """Update configuration dynamically and persist to storage."""
         if model_id:
-            cls._model_id = model_id
+            self.config_manager.default_model = model_id
         if api_key is not None:  # Allow empty string to clear key
-            cls._openrouter_api_key = api_key
+            self.config_manager.openrouter_api_key = api_key
 
-    @classmethod
-    def get_model_config(cls) -> Dict:
+        # Save to persistent storage
+        self.config_manager._save_config()
+        logger.info("Configuration updated and saved")
+
+    def get_model_config(self) -> Dict:
         """Get model configuration as a dictionary."""
         return {
-            "temperature": cls.AGENT_TEMPERATURE,
-            "max_tokens": cls.AGENT_MAX_TOKENS,
-            "model_id": cls._model_id
-        }
-    
-    @classmethod
-    def get_openrouter_config(cls) -> Dict:
-        """Get OpenRouter configuration for Godoty agent."""
-        return {
-            "api_key": cls._openrouter_api_key,
-            "model_id": cls._model_id,
-            "app_name": cls.APP_NAME,
-            "app_url": cls.APP_URL
-        }
-    
-    @classmethod
-    def get_metrics_config(cls) -> Dict:
-        """Get metrics tracking configuration."""
-        return {
-            "enabled": cls.ENABLE_METRICS_TRACKING,
-            "db_path": cls.METRICS_DB_PATH,
-            "precise_cost_tracking": cls.ENABLE_PRECISE_COST_TRACKING,
-            "cost_query_delay_ms": cls.COST_QUERY_DELAY_MS
+            "temperature": self.AGENT_TEMPERATURE,
+            "max_tokens": self.AGENT_MAX_TOKENS,
+            "model_id": self._model_id
         }
 
-    @classmethod
-    def get_sessions_storage_dir(cls) -> str:
+    def get_openrouter_config(self) -> Dict:
+        """Get OpenRouter configuration for Godoty agent."""
+        return {
+            "api_key": self._openrouter_api_key,
+            "model_id": self._model_id,
+            "app_name": self.APP_NAME,
+            "app_url": self.APP_URL
+        }
+
+    def get_metrics_config(self) -> Dict:
+        """Get metrics tracking configuration."""
+        return {
+            "enabled": self.ENABLE_METRICS_TRACKING,
+            "db_path": self.METRICS_DB_PATH,
+            "precise_cost_tracking": self.ENABLE_PRECISE_COST_TRACKING,
+            "cost_query_delay_ms": self.COST_QUERY_DELAY_MS
+        }
+
+    def get_sessions_storage_dir(self) -> str:
         """Get persistent storage directory for FileSessionManager sessions."""
         app_name = "Godoty"
 
@@ -93,3 +129,30 @@ class ModelConfig:
         os.makedirs(sessions_dir, exist_ok=True)
 
         return sessions_dir
+
+# Create a singleton instance for backward compatibility
+_model_config_instance = None
+
+# Save references to original instance methods before overwriting
+_orig_get_model_config = ModelConfig.get_model_config
+_orig_get_openrouter_config = ModelConfig.get_openrouter_config
+_orig_get_metrics_config = ModelConfig.get_metrics_config
+_orig_get_sessions_storage_dir = ModelConfig.get_sessions_storage_dir
+_orig_update_config = ModelConfig.update_config
+
+
+def get_model_config():
+    """Get or create global ModelConfig instance."""
+    global _model_config_instance
+    if _model_config_instance is None:
+        _model_config_instance = ModelConfig()
+    return _model_config_instance
+
+
+# Backward compatibility: expose class methods that delegate to singleton instance
+# These allow calling ModelConfig.method() without instantiating
+ModelConfig.get_model_config = staticmethod(lambda: _orig_get_model_config(get_model_config()))
+ModelConfig.get_openrouter_config = staticmethod(lambda: _orig_get_openrouter_config(get_model_config()))
+ModelConfig.get_metrics_config = staticmethod(lambda: _orig_get_metrics_config(get_model_config()))
+ModelConfig.get_sessions_storage_dir = staticmethod(lambda: _orig_get_sessions_storage_dir(get_model_config()))
+ModelConfig.update_config = staticmethod(lambda model_id=None, api_key=None: _orig_update_config(get_model_config(), model_id, api_key))

@@ -1,4 +1,4 @@
-import multiprocessing
+import threading
 import signal
 import os
 import sys
@@ -13,6 +13,10 @@ sys.stderr.reconfigure(encoding='utf-8') if hasattr(sys.stderr, 'reconfigure') e
 # This must be set before importing uvicorn, fastapi, or agents
 os.environ['PYTHONWARNINGS'] = 'ignore'
 
+# Initialize user data directory early (~/.godoty/)
+from user_data import ensure_user_data_dir
+ensure_user_data_dir()
+
 import uvicorn
 import webview
 from fastapi import FastAPI
@@ -26,10 +30,15 @@ import warnings
 warnings.simplefilter("ignore", UserWarning)
 warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
 
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+def get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and PyInstaller."""
+    if getattr(sys, 'frozen', False):
+        # Running in PyInstaller bundle
+        base_path = sys._MEIPASS
+    else:
+        # Running in normal Python environment
+        base_path = os.path.dirname(__file__)
+    return os.path.join(base_path, relative_path)
 
 # Global shutdown flag
 shutdown_requested = False
@@ -50,10 +59,8 @@ if hasattr(signal, 'SIGBREAK'):
 def create_app():
     """
     Create and configure the FastAPI application.
-    This function is called inside the server process to avoid pickling issues.
     """
-    # CRITICAL: Suppress warnings in the server process
-    # This runs in a separate process, so parent warnings config doesn't apply
+    # CRITICAL: Suppress warnings
     import warnings
     warnings.simplefilter("ignore", UserWarning)
     warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
@@ -85,8 +92,10 @@ def create_app():
     from api.health_routes import router as health_router
     from api.metrics_routes import router as metrics_router
     from api.sse_routes import router as sse_router
+    from api.documentation_routes import router as documentation_router
+    from api.config_routes import router as config_router
 
-    app = FastAPI(title="PyWebView Desktop App", version="1.0.0")
+    app = FastAPI(title="Godoty Desktop App", version="1.0.0")
 
     # Add CORS middleware
     app.add_middleware(
@@ -108,6 +117,12 @@ def create_app():
 
     # Include SSE routes for real-time Godot status
     app.include_router(sse_router, prefix="/api")
+
+    # Include documentation management routes
+    app.include_router(documentation_router)
+
+    # Include configuration management routes
+    app.include_router(config_router)
 
     # FastAPI API Routes (must be defined before mounting static files)
     @app.get("/api/health")
@@ -134,7 +149,15 @@ def create_app():
 
     # Serve Angular static files
     # IMPORTANT: Mount static files LAST so API routes take precedence
-    dist_path = os.path.join(os.path.dirname(__file__), '..', 'dist', 'browser')
+    
+    # Path differs between dev mode and PyInstaller bundle
+    if getattr(sys, 'frozen', False):
+        # Running in PyInstaller bundle - dist is bundled at dist/browser
+        dist_path = os.path.join(sys._MEIPASS, 'dist', 'browser')
+    else:
+        # Running in dev mode - dist is at ../dist/browser relative to backend
+        dist_path = os.path.join(os.path.dirname(__file__), '..', 'dist', 'browser')
+    
     dist_path = os.path.abspath(dist_path)
 
     # Check if dist path exists
@@ -256,65 +279,63 @@ class DesktopApi:
         }
 
 
-# Uvicorn Server Process
-class UvicornServer(multiprocessing.Process):
+class UvicornServer:
     """
-    Wrapper for uvicorn server to run in a separate process.
-    This avoids conflicts with pywebview's event loop.
+    Run uvicorn server in a background thread.
+    This is simpler and more reliable than multiprocessing for PyInstaller builds.
     """
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8000):
-        super().__init__()
         self.host = host
         self.port = port
-        self._shutdown_event = None
+        self.server = None
+        self.thread = None
+
+    def start(self):
+        """Start the uvicorn server in a background thread."""
+        app = create_app()
+        config = uvicorn.Config(
+            app,
+            host=self.host,
+            port=self.port,
+            log_level="info"
+        )
+        self.server = uvicorn.Server(config=config)
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
+        self.thread.start()
 
     def stop(self):
-        """Stop the server process gracefully"""
-        if self.is_alive():
-            # Try graceful shutdown first
-            self.terminate()
-            # Wait a bit for graceful shutdown
-            self.join(timeout=3)
-            # Force kill if still alive
-            if self.is_alive():
-                self.kill()
-                self.join(timeout=2)
-
-    def run(self):
-        """Run the uvicorn server"""
-        try:
-            app = create_app()
-            config = uvicorn.Config(
-                app,
-                host=self.host,
-                port=self.port,
-                log_level="info"
-            )
-            server = uvicorn.Server(config=config)
-            server.run()
-        except Exception as e:
-            print(f"Server error: {e}")
-        finally:
-            # Ensure clean exit
-            import sys
-            sys.exit(0)
+        """Stop the uvicorn server gracefully."""
+        if self.server:
+            self.server.should_exit = True
+            if self.thread and self.thread.is_alive():
+                self.thread.join(timeout=3)
 
 
-def start_window(conn_send, url):
+def main():
     """
-    Start the pywebview window in a separate process.
-
-    Args:
-        conn_send: Pipe connection for sending close signal
-        url: URL to load in the window
+    Main application entry point.
+    Starts the FastAPI server in a background thread and pywebview in the main thread.
     """
+    # Start uvicorn server in background thread
+    server = UvicornServer(host="127.0.0.1", port=8000)
+    server.start()
+
+    # Give server time to start
+    print("Starting FastAPI server...")
+    time.sleep(2)
+    print("Server started on http://127.0.0.1:8000")
+    print("You can test the server at: http://127.0.0.1:8000/api/health")
+
     # Create Desktop API instance
     api = DesktopApi()
 
-    # Create window
+    # Create and start pywebview window in main thread
+    url = "http://127.0.0.1:8000"
+    print(f"Opening window at {url}")
+    
     window = webview.create_window(
-        'PyWebView Desktop App',
+        'Godoty',
         url,
         js_api=api,
         width=1200,
@@ -323,99 +344,13 @@ def start_window(conn_send, url):
         min_size=(800, 600)
     )
 
-    # Register closing event handler
-    def on_closing():
-        conn_send.send('closed')
-
-    window.events.closing += on_closing
-
-    # Start webview with debug mode enabled
+    # Start webview - this blocks until window is closed
+    print("Application running. Close the window to exit.")
     webview.start(debug=True)
 
-
-def main():
-    """
-    Main application entry point.
-    Starts both the FastAPI server and pywebview window using multiprocessing.
-    """
-    # Set multiprocessing start method
-    multiprocessing.set_start_method('spawn')
-
-    # Create pipe for inter-process communication
-    conn_recv, conn_send = multiprocessing.Pipe()
-
-    # Configure and start FastAPI server
-    server = UvicornServer(host="127.0.0.1", port=8000)
-    server.start()
-
-    # Give server time to start
-    print("Starting FastAPI server...")
-    time.sleep(3)
-    print("Server started on http://127.0.0.1:8000")
-    print("You can test the server at: http://127.0.0.1:8000/api/health")
-
-    # Start pywebview window
-    url = "http://127.0.0.1:8000"
-    print(f"Opening window at {url}")
-    window_process = multiprocessing.Process(target=start_window, args=(conn_send, url))
-    window_process.start()
-
-    # Wait for window to close
-    print("Application running. Close the window to exit.")
-    window_status = ''
-
-    try:
-        while 'closed' not in window_status and not shutdown_requested:
-            try:
-                # Use non-blocking recv with timeout
-                if conn_recv.poll(timeout=1):
-                    window_status = conn_recv.recv()
-                else:
-                    # Check if processes are still alive
-                    if not server.is_alive():
-                        print("Server process died unexpectedly.")
-                        break
-                    if not window_process.is_alive():
-                        print("Window process died unexpectedly.")
-                        break
-            except KeyboardInterrupt:
-                print("\nReceived keyboard interrupt, shutting down...")
-                break
-            except (EOFError, OSError):
-                # Connection closed unexpectedly
-                print("Connection to window process lost.")
-                break
-    except Exception as e:
-        print(f"Error in main loop: {e}")
-
-    # Cleanup
+    # Cleanup after window closes
     print("Shutting down...")
-
-    try:
-        # Stop window process first
-        if window_process.is_alive():
-            window_process.terminate()
-            window_process.join(timeout=3)
-            if window_process.is_alive():
-                print("Force killing window process...")
-                window_process.kill()
-                window_process.join(timeout=2)
-    except Exception as e:
-        print(f"Error stopping window process: {e}")
-
-    try:
-        # Stop server process
-        server.stop()
-    except Exception as e:
-        print(f"Error stopping server: {e}")
-
-    # Close pipe connections
-    try:
-        conn_recv.close()
-        conn_send.close()
-    except:
-        pass
-
+    server.stop()
     print("Application closed.")
 
 

@@ -1,0 +1,55 @@
+Godoty Build Information
+========================
+
+Version: 1.0.0
+Build Date: 2025-12-03
+Git Commit: 17b9fd8533cdb9051795f51762d334953d851d8a
+Python Version: 3.11.6
+PyInstaller Version: 6.17.0
+
+Platforms:
+- macOS (arm64, x86_64)
+- Windows (x64)
+- Linux (x64)
+
+Bundle Includes:
+- FastAPI 0.115.0
+- PyWebView 5.3
+- Strands Agents 1.17.0
+- Angular 20.3.0
+- OpenRouter Integration
+- Godot Engine Plugin Support
+
+Expected Sizes:
+- macOS: ~150-200 MB (app bundle)
+- Windows: ~100-150 MB (single executable)
+- Linux: ~120-170 MB (single binary)
+
+Build Configuration:
+- Single-file executable (--onefile)
+- Multiprocessing support with spawn method
+- Angular frontend bundled
+- Environment configuration in ~/.godoty/.env
+- SQLite databases for metrics and sessions
+- Cross-platform compatible
+
+Features:
+- AI-powered Godot development assistant
+- Real-time code analysis and suggestions
+- GDScript syntax support
+- Godot scene and node manipulation
+- Documentation search
+- File system operations
+- Web tools integration
+- Metrics tracking and cost calculation
+- Session persistence and restoration
+
+Requirements:
+- OpenRouter API key (https://openrouter.ai/)
+- Active Godot project with plugin installed
+- Internet connection for API calls
+
+For more information:
+- GitHub: https://github.com/your-repo/godoty
+- Documentation: https://docs.godoty.dev (if available)
+- Issues: https://github.com/your-repo/godoty/issues

@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ChatService, Session, Message as ServiceMessage, ToolCall as ServiceToolCall } from './services/chat.service';
 import { DesktopService, GodotStatus } from './services/desktop.service';
+import { DocumentationService, DocumentationStatus, RebuildProgress } from './services/documentation.service';
 import { catchError, of, switchMap, tap } from 'rxjs';
 
 // --- Interfaces ---
@@ -299,42 +300,52 @@ interface Metrics {
 
         <!-- Input Area -->
         <div class="p-4 bg-[#202531]">
-          <div class="max-w-3xl mx-auto flex items-end gap-2 bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200 p-2">
-            
-            <textarea
-              #messageInput
-              [(ngModel)]="currentInput"
-              (keydown.enter)="$event.preventDefault(); sendMessage()"
-              placeholder="Ask Godoty a question..."
-              class="flex-1 bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 rounded-xl focus:outline-none resize-none max-h-48 overflow-y-auto"
-              rows="1"
-              (input)="autoResize($event.target)"
-            ></textarea>
+          @if (!chatReady()) {
+            <!-- Disabled State Message -->
+            <div class="max-w-3xl mx-auto text-center py-4 bg-[#2d3546] rounded-xl border border-[#3b4458]">
+              <p class="text-gray-400 text-sm">{{ chatDisabledMessage() }}</p>
+              <button (click)="openSettings()" class="text-[#478cbf] hover:underline text-sm mt-2">
+                Open Settings
+              </button>
+            </div>
+          } @else {
+            <div class="max-w-3xl mx-auto flex items-end gap-2 bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200 p-2">
+              
+              <textarea
+                #messageInput
+                [(ngModel)]="currentInput"
+                (keydown.enter)="$event.preventDefault(); sendMessage()"
+                placeholder="Ask Godoty a question..."
+                class="flex-1 bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 rounded-xl focus:outline-none resize-none max-h-48 overflow-y-auto"
+                rows="1"
+                (input)="autoResize($event.target)"
+              ></textarea>
 
-            @if (isGeneratiing()) {
-              <!-- Stop button when generating -->
-              <button
-                (click)="stopGeneration()"
-                class="p-3 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-all flex-shrink-0"
-                title="Stop generation"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-                  <path d="M5.25 3A2.25 2.25 0 003 5.25v9.5A2.25 2.25 0 005.25 17h9.5A2.25 2.25 0 0017 14.75v-9.5A2.25 2.25 0 0014.75 3h-9.5z" />
-                </svg>
-              </button>
-            } @else {
-              <!-- Send button when not generating -->
-              <button
-                (click)="sendMessage()"
-                [disabled]="!currentInput()"
-                class="p-3 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all flex-shrink-0"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-                  <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2 2 0 005.635 9.75h5.736a.75.75 0 010 1.5H5.636a2 2 0 00-1.942 1.586l-1.414 4.925a.75.75 0 00.826.95 28.89 28.89 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
-                </svg>
-              </button>
-            }
-          </div>
+              @if (isGenerating()) {
+                <!-- Stop button when generating -->
+                <button
+                  (click)="stopGeneration()"
+                  class="p-3 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-all flex-shrink-0"
+                  title="Stop generation"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+                    <path d="M5.25 3A2.25 2.25 0 003 5.25v9.5A2.25 2.25 0 005.25 17h9.5A2.25 2.25 0 0017 14.75v-9.5A2.25 2.25 0 0014.75 3h-9.5z" />
+                  </svg>
+                </button>
+              } @else {
+                <!-- Send button when not generating -->
+                <button
+                  (click)="sendMessage()"
+                  [disabled]="!currentInput()"
+                  class="p-3 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all flex-shrink-0"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+                    <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2 2 0 005.635 9.75h5.736a.75.75 0 010 1.5H5.636a2 2 0 00-1.942 1.586l-1.414 4.925a.75.75 0 00.826.95 28.89 28.89 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
+                  </svg>
+                </button>
+              }
+            </div>
+          }
           <div class="text-center text-[10px] text-gray-600 mt-2 font-mono">
             Godoty can make mistakes. Check generated code in the Godot docs.
           </div>
@@ -344,7 +355,7 @@ interface Metrics {
     </div>
     <!-- Settings Modal -->
     @if (settingsOpen()) {
-      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" (click)="closeSettings()">
+      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
         <div class="bg-[#1a1e29] border border-[#2d3546] rounded-xl shadow-2xl w-full max-w-md overflow-hidden" (click)="$event.stopPropagation()">
           <!-- Modal Header -->
           <div class="px-6 py-4 border-b border-[#2d3546] flex justify-between items-center bg-[#202531]">
@@ -394,6 +405,105 @@ interface Metrics {
               </div>
               <p class="text-[10px] text-gray-500">Specify the model ID to use for generation.</p>
             </div>
+
+            <!-- Godot Documentation Section -->
+            <div class="space-y-2">
+              <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Godot Documentation Database</label>
+
+              <!-- Godot Version Info -->
+              <div class="bg-[#161922] border border-[#2d3546] rounded-lg p-2 text-xs">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-gray-400">Built Version:</span>
+                  @if (documentationStatus(); as status) {
+                    @if (status.godot_version) {
+                      <span class="text-[#478cbf] font-medium">{{ status.godot_version }}</span>
+                    } @else {
+                      <span class="text-gray-500">Not built</span>
+                    }
+                  } @else {
+                    <span class="text-gray-500">Loading...</span>
+                  }
+                </div>
+                <div class="text-[10px] text-gray-500">
+                  💡 Rebuild uses version from connected Godot editor, or defaults to 4.5.1-stable
+                </div>
+              </div>
+
+              <!-- Status Display -->
+              <div class="bg-[#161922] border border-[#2d3546] rounded-lg p-3">
+                @if (documentationStatus(); as status) {
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <span class="text-sm">
+                        @switch (status?.status) {
+                          @case ('not_built') {
+                            <span class="text-gray-400">📚 Not Built</span>
+                          }
+                          @case ('building') {
+                            <span class="text-yellow-400">🔄 Building...</span>
+                          }
+                          @case ('completed') {
+                            <span class="text-green-400">✅ Ready</span>
+                          }
+                          @case ('error') {
+                            <span class="text-red-400">❌ Error</span>
+                          }
+                        }
+                      </span>
+                      @if (status?.build_timestamp && status?.status === 'completed') {
+                        <span class="text-xs text-gray-500">
+                          Built: {{formatDate(status.build_timestamp!)}}
+                        </span>
+                      }
+                    </div>
+                    @if (status?.size_mb) {
+                      <span class="text-xs text-gray-500">{{status.size_mb}} MB</span>
+                    }
+                  </div>
+
+                  @if (status?.error_message) {
+                    <p class="text-xs text-red-400 mt-2">{{status.error_message}}</p>
+                  }
+                } @else {
+                  <span class="text-sm text-gray-500">Loading status...</span>
+                }
+              </div>
+
+              <!-- Rebuild Button -->
+              <button
+                (click)="rebuildDocumentation()"
+                  class="w-full bg-[#478cbf] hover:bg-[#367fa9] disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
+              >
+                @if (isRebuilding()) {
+                  <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>Rebuilding...</span>
+                } @else {
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                  </svg>
+                  <span>Rebuild Documentation</span>
+                }
+              </button>
+
+              <!-- Progress Bar -->
+              @if (rebuildProgress(); as progress) {
+                <div class="mt-2">
+                  <div class="flex justify-between text-xs text-gray-400 mb-1">
+                    <span>{{progress?.message}}</span>
+                    <span>{{progress?.progress}}%</span>
+                  </div>
+                  <div class="w-full bg-gray-700 rounded-full h-2">
+                    <div
+                      class="bg-[#478cbf] h-2 rounded-full transition-all duration-300"
+                      [style.width.%]="progress?.progress"
+                    ></div>
+                  </div>
+                </div>
+              }
+            </div>
           </div>
 
           <!-- Modal Footer -->
@@ -423,10 +533,11 @@ export class App implements OnInit, AfterViewChecked {
 
   private chatService = inject(ChatService);
   private desktopService = inject(DesktopService);
+  private documentationService = inject(DocumentationService);
 
   sidebarOpen = signal(true);
   currentInput = signal('');
-  isGeneratiing = signal(false);
+  isGenerating = signal(false);
   private currentAbortController: AbortController | null = null;
   activeSessionId = signal<string | null>(null);
   isDraftMode = signal(false);
@@ -434,6 +545,11 @@ export class App implements OnInit, AfterViewChecked {
   // Settings State
   settingsOpen = signal(false);
   settingsForm = { model_id: '', openrouter_api_key: '' };
+
+  // Documentation State
+  documentationStatus = signal<DocumentationStatus | null>(null);
+  isRebuilding = signal(false);
+  rebuildProgress = signal<RebuildProgress | null>(null);
 
   metrics = signal<Metrics>({
     latency: 0,
@@ -444,6 +560,10 @@ export class App implements OnInit, AfterViewChecked {
   messages = signal<Message[]>([]);
   godotStatus = signal<GodotStatus | null>(null);
   isGodotConnected = signal(false);
+
+  // Chat Readiness State
+  chatReady = signal(false);
+  chatDisabledMessage = signal('');
 
   sessionMetrics = signal<{ total_tokens: number; total_cost: number }>({
     total_tokens: 0,
@@ -473,11 +593,36 @@ export class App implements OnInit, AfterViewChecked {
       if (status.project_path) {
         this.chatService.setProjectPath(status.project_path);
       }
+
+      // Re-check chat readiness when Godot status changes
+      this.checkChatReadiness();
     });
 
     // Subscribe to Project Metrics
     this.chatService.projectMetrics$.subscribe(metrics => {
       // Update global metrics if needed, or just use per-message metrics
+    });
+
+    // Initial chat readiness check
+    this.checkChatReadiness();
+
+    // Poll chat readiness every 5 seconds
+    setInterval(() => this.checkChatReadiness(), 5000);
+  }
+
+  /**
+   * Check if chat is ready (Godot connected + API key configured)
+   */
+  private checkChatReadiness() {
+    this.chatService.checkChatReady().subscribe({
+      next: (result) => {
+        this.chatReady.set(result.ready);
+        this.chatDisabledMessage.set(result.ready ? '' : result.message);
+      },
+      error: () => {
+        this.chatReady.set(false);
+        this.chatDisabledMessage.set('Unable to connect to backend');
+      }
     });
   }
 
@@ -507,47 +652,219 @@ export class App implements OnInit, AfterViewChecked {
       next: (response) => {
         if (response.status === 'success' && response.config) {
           const config = response.config.model_config || {};
-          
+
           this.settingsForm = {
             model_id: config.model_id || '',
             openrouter_api_key: '' // Don't show existing key for security
           };
         }
         this.settingsOpen.set(true);
+
+        // Load documentation status
+        this.loadDocumentationStatus();
       },
       error: (err) => {
         console.error('Failed to load config:', err);
         // Open anyway with defaults
         this.settingsOpen.set(true);
+
+        // Load documentation status even on error
+        this.loadDocumentationStatus();
       }
     });
   }
 
   closeSettings() {
     this.settingsOpen.set(false);
+    this.resetRebuildState();
   }
 
   saveSettings() {
     const config = this.settingsForm;
-    
+
+    // Validate model_id format
+    if (config.model_id && !config.model_id.includes('/')) {
+      alert('Please enter a valid model ID (e.g., "anthropic/claude-opus-4.5")');
+      return;
+    }
+
     const updatePayload: any = {
       model_id: config.model_id
     };
-    
+
     if (config.openrouter_api_key) {
       updatePayload.openrouter_api_key = config.openrouter_api_key;
     }
 
     this.chatService.updateAgentConfig(updatePayload).subscribe({
-      next: () => {
+      next: (response) => {
         this.closeSettings();
-        // Optional: Show success toast
+        // Show success feedback
+        alert('Settings saved successfully!');
       },
       error: (err) => {
         console.error('Failed to save settings:', err);
-        alert('Failed to save settings');
+        const errorMessage = err.error?.detail || err.message || 'Unknown error occurred';
+        alert(`Failed to save settings: ${errorMessage}`);
       }
     });
+  }
+
+  /**
+   * Load documentation status when opening settings
+   */
+  private loadDocumentationStatus() {
+    this.documentationService.getDocumentationStatus().subscribe({
+      next: (status) => {
+        this.documentationStatus.set(status);
+        this.documentationService.updateStatus(status);
+      },
+      error: (error) => {
+        console.error('Failed to load documentation status:', error);
+        this.documentationStatus.set({
+          success: false,
+          status: 'error',
+          database_exists: false,
+          message: 'Failed to load status',
+          error_message: error.message
+        });
+      }
+    });
+  }
+
+  /**
+   * Rebuild documentation database
+   */
+  rebuildDocumentation() {
+    // Non-blocking: allow multiple requests, but show busy state during the actual API call
+    if (this.isRebuilding()) return;
+
+    this.rebuildProgress.set({
+      stage: 'starting',
+      progress: 0,
+      message: 'Starting rebuild in background...'
+    });
+
+    // Call rebuild without version parameter - it will auto-detect from connected Godot editor
+    this.documentationService.rebuildDocumentation().subscribe({
+      next: (response) => {
+        if (response.status === 'started') {
+          this.rebuildProgress.set({
+            stage: 'running',
+            progress: 10,
+            message: `Rebuild started in background (${response.estimated_time})`
+          });
+
+          // Start polling for rebuild status
+          this.startRebuildStatusPolling();
+        } else {
+          // Handle error starting rebuild
+          this.rebuildProgress.set({
+            stage: 'error',
+            progress: 0,
+            message: 'Failed to start rebuild',
+            error: response.error
+          });
+
+          setTimeout(() => {
+            this.resetRebuildState();
+          }, 5000);
+        }
+      },
+      error: (error) => {
+        // Handle API error
+        this.rebuildProgress.set({
+          stage: 'error',
+          progress: 0,
+          message: 'API error',
+          error: error.message
+        });
+
+        setTimeout(() => {
+          this.resetRebuildState();
+        }, 5000);
+      }
+    });
+  }
+
+  private startRebuildStatusPolling() {
+    // Poll every 1 second for rebuild status (more frequent for smoother progress)
+    const pollInterval = setInterval(() => {
+      this.documentationService.getRebuildStatus().subscribe({
+        next: (status: any) => {
+          if (status.running) {
+            // Use actual progress from backend
+            const progress = status.progress || 0;
+            const message = status.message || 'Rebuilding documentation...';
+            const filesInfo = status.files_total > 0
+              ? ` (${status.files_processed}/${status.files_total})`
+              : '';
+
+            this.rebuildProgress.set({
+              stage: status.stage || 'running',
+              progress: progress,
+              message: message + filesInfo
+            });
+          } else if (status.error) {
+            // Rebuild failed
+            clearInterval(pollInterval);
+            this.rebuildProgress.set({
+              stage: 'error',
+              progress: 0,
+              message: status.message || 'Rebuild failed',
+              error: status.error
+            });
+
+            setTimeout(() => {
+              this.resetRebuildState();
+            }, 5000);
+          } else {
+            // Rebuild completed
+            clearInterval(pollInterval);
+            this.rebuildProgress.set({
+              stage: 'completed',
+              progress: 100,
+              message: status.message || 'Documentation rebuild completed!'
+            });
+
+            // Reload documentation status after delay
+            setTimeout(() => {
+              this.loadDocumentationStatus();
+              this.resetRebuildState();
+            }, 2000);
+          }
+        },
+        error: (error) => {
+          clearInterval(pollInterval);
+          this.rebuildProgress.set({
+            stage: 'error',
+            progress: 0,
+            message: 'Status check failed',
+            error: error.message
+          });
+
+          setTimeout(() => {
+            this.resetRebuildState();
+          }, 5000);
+        }
+      });
+    }, 1000);
+  }
+
+  /**
+   * Reset rebuild state
+   */
+  private resetRebuildState() {
+    this.rebuildProgress.set(null);
+    this.documentationService.resetRebuildState();
+  }
+
+  /**
+   * Format date for display
+   */
+  formatDate(dateString: string): string {
+    const date = new Date(dateString);
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   selectSession(sessionId: string) {
@@ -824,13 +1141,13 @@ export class App implements OnInit, AfterViewChecked {
         };
         return [...updated, errorMsg];
       });
-      this.isGeneratiing.set(false);
+      this.isGenerating.set(false);
     }
   }
 
   private async sendActualMessage(userContent: string, sessionId: string): Promise<void> {
     // 1. Add User Message (already added in sendMessage)
-    this.isGeneratiing.set(true);
+    this.isGenerating.set(true);
 
     // Create AbortController for cancellation
     this.currentAbortController = new AbortController();
@@ -1157,7 +1474,7 @@ export class App implements OnInit, AfterViewChecked {
         ));
       }
     } finally {
-      this.isGeneratiing.set(false);
+      this.isGenerating.set(false);
       this.currentAbortController = null;
       this.messages.update(msgs => msgs.map(m =>
         m.id === assistantId ? { ...m, isStreaming: false } : m
@@ -1189,7 +1506,7 @@ export class App implements OnInit, AfterViewChecked {
       console.log('Stopping generation...');
       this.currentAbortController.abort();
       this.currentAbortController = null;
-      this.isGeneratiing.set(false);
+      this.isGenerating.set(false);
     }
   }
 }

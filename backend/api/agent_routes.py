@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from agents.godoty_agent import get_godoty_agent
 from agents.config import AgentConfig
 from agents.db import get_metrics_db
+from agents.event_utils import sanitize_event_data
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,65 @@ async def agent_health():
         )
 
 
+@router.get("/chat/ready", response_model=dict)
+async def check_chat_ready():
+    """
+    Check if chat is ready to accept messages.
+    
+    Chat requires both:
+    1. OpenRouter API key to be configured
+    2. Godot editor to be connected
+    
+    Returns:
+        Dictionary with:
+        - ready: bool - Whether chat is ready
+        - godot_connected: bool - Godot connection status
+        - api_key_configured: bool - OpenRouter key status
+        - message: str - User-facing status message
+    """
+    try:
+        from agents.tools.godot_bridge import get_godot_bridge
+        from config_manager import get_config
+        
+        bridge = get_godot_bridge()
+        config = get_config()
+        
+        # Check Godot connection
+        godot_connected = False
+        if hasattr(bridge, 'is_connected'):
+            godot_connected = bridge.is_connected()
+        elif hasattr(bridge, 'connection_state'):
+            godot_connected = bridge.connection_state.value == "connected"
+        
+        # Check API key configuration
+        api_key_configured = config.is_configured
+        
+        ready = godot_connected and api_key_configured
+        
+        # Generate user-facing message
+        if not api_key_configured:
+            message = "Please configure your OpenRouter API key in Settings to start chatting."
+        elif not godot_connected:
+            message = "Please connect to the Godot editor to start chatting."
+        else:
+            message = "Ready to chat!"
+        
+        return {
+            "ready": ready,
+            "godot_connected": godot_connected,
+            "api_key_configured": api_key_configured,
+            "message": message
+        }
+    except Exception as e:
+        logger.error(f"Chat ready check failed: {e}")
+        return {
+            "ready": False,
+            "godot_connected": False,
+            "api_key_configured": False,
+            "message": "Unable to check chat readiness"
+        }
+
+
 @router.post("/plan", response_model=PlanResponse)
 async def create_plan(request: PlanRequest):
     """
@@ -218,7 +278,7 @@ async def create_plan_stream(request: PlanRequest):
                             logger.debug(f"[SSE] Sending text event with {content_len} characters")
 
                     # Sanitize event data to ensure JSON serializability
-                    sanitized_data = sanitize_for_json(event_data)
+                    sanitized_data = sanitize_event_data(event_data)
 
                     # Create the event structure to send directly (consistent with other endpoint)
                     final_data = {
@@ -294,29 +354,36 @@ class UpdateConfigRequest(BaseModel):
 async def update_agent_config(request: UpdateConfigRequest):
     """
     Update agent configuration.
-    
+
     Args:
         request: Configuration updates
-        
+
     Returns:
         Updated configuration
     """
     try:
-        # 1. Update persistent configuration
-        AgentConfig.update_config(
-            model_id=request.model_id,
-            api_key=request.openrouter_api_key
-        )
+        # 1. Update persistent configuration using ConfigManager
+        from config_manager import get_config
+        config = get_config()
+
+        if request.openrouter_api_key is not None:
+            config.openrouter_api_key = request.openrouter_api_key
+
+        if request.model_id is not None:
+            config.default_model = request.model_id
+
+        # Save to persistent storage (this is sufficient - ModelConfig reads from ConfigManager)
+        config._save_config()
 
         # 2. Reset the agent to pick up new configuration
         # This ensures the model is re-initialized with new ID and API key
         from agents.godoty_agent import _godoty_agent_instance
         _godoty_agent_instance = None
         agent = get_godoty_agent()
-        
+
         # Get updated config from the fresh agent
         model_config = agent.model.get_config()
-        
+
         return {
             "status": "success",
             "message": "Configuration updated successfully",
@@ -325,7 +392,7 @@ async def update_agent_config(request: UpdateConfigRequest):
                 "model_config": model_config
             }
         }
-        
+
     except Exception as e:
         logger.error(f"Error updating config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -341,10 +408,6 @@ async def get_agent_config():
     """
     try:
         agent = get_godoty_agent()
-
-        # Ensure MCP tools are initialized before getting configuration
-        # await agent._ensure_mcp_initialized() # MCP removed
-
         model_config = agent.model.get_config()
         return {
             "status": "success",
@@ -1110,17 +1173,7 @@ async def hide_session(session_id: str):
         Status message
     """
     try:
-        # from agents.multi_agent_manager import get_multi_agent_manager
-        # manager = get_multi_agent_manager()
-        
-        # hidden = manager.hide_session(session_id)
-        
-        # Soft delete not implemented in GodotyAgent yet.
-        hidden = True
-        
-        if not hidden:
-             raise HTTPException(status_code=404, detail="Session not found")
-             
+        # Note: Soft delete not implemented in GodotyAgent yet - always returns success
         return {
             "status": "success",
             "message": "Session hidden successfully"
@@ -1351,43 +1404,6 @@ async def chat_session_stream(
     Returns:
         StreamingResponse with Server-Sent Events
     """
-
-    def sanitize_for_json(obj):
-        """
-        Recursively sanitize an object to ensure it's JSON serializable.
-        Filters out non-serializable objects like EventLoopMetrics.
-        """
-        if obj is None or isinstance(obj, (str, int, float, bool)):
-            return obj
-        elif isinstance(obj, dict):
-            # Filter out known non-serializable types and recursively sanitize values
-            sanitized = {}
-            for key, value in obj.items():
-                # Keep tool IDs and error information - only filter out EventLoopMetrics
-                if hasattr(value, '__class__') and 'EventLoopMetrics' in value.__class__.__name__:
-                    # Replace with a placeholder string instead of removing entirely
-                    sanitized[key] = f"[{value.__class__.__name__}]"
-                    continue
-                # Skip private/internal keys that might contain complex objects
-                if isinstance(key, str) and key.startswith('_'):
-                    continue
-                try:
-                    sanitized[key] = sanitize_for_json(value)
-                except (TypeError, ValueError):
-                    # If we can't serialize it, convert to string representation
-                    sanitized[key] = str(value)
-            return sanitized
-        elif isinstance(obj, (list, tuple)):
-            return [sanitize_for_json(item) for item in obj]
-        else:
-            # For any other type, try to convert to string
-            try:
-                # Check if it's actually JSON serializable first
-                json.dumps(obj)
-                return obj
-            except (TypeError, ValueError):
-                return str(obj)
-    
     try:
         # Create streaming generator
         async def event_generator():
@@ -1405,7 +1421,7 @@ async def chat_session_stream(
                     event_data = event.get("data", {})
 
                     # Sanitize event data to ensure JSON serializability
-                    sanitized_data = sanitize_for_json(event_data)
+                    sanitized_data = sanitize_event_data(event_data)
 
                     # Create the event structure to send directly
                     final_data = {

@@ -30,7 +30,6 @@ class AgentConfig(ModelConfig, ToolConfig, Prompts):
             - 'warnings': list of warning messages
             - 'errors': list of error messages
             - 'godot_available': bool indicating if Godot tools can be used
-            - 'mcp_available': bool indicating if MCP tools can be used
         """
         return ConfigValidator.validate_all(ModelConfig, ToolConfig)
 
@@ -49,4 +48,3 @@ if validation_result['warnings']:
 
 # Log availability status
 print(f"Godot tools available: {validation_result['godot_available']}")
-print(f"MCP tools available: {validation_result['mcp_available']}")

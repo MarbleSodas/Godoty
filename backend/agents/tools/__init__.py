@@ -64,6 +64,13 @@ from .gdscript_editor import (
     GDScriptClassInfo,
     GDScriptValidationResult
 )
+from .godot_docs_tools import (
+    search_godot_docs,
+    get_class_reference,
+    get_documentation_status,
+    GodotDocumentationTools,
+    get_godot_docs_tools
+)
 
 __all__ = [
     # File system tools
@@ -134,4 +141,10 @@ __all__ = [
     "GDScriptMethodInfo",
     "GDScriptClassInfo",
     "GDScriptValidationResult",
+    # Godot documentation tools (simplified)
+    "search_godot_docs",
+    "get_class_reference",
+    "get_documentation_status",
+    "GodotDocumentationTools",
+    "get_godot_docs_tools",
 ]

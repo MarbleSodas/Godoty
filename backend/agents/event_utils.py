@@ -5,7 +5,6 @@ Event utilities for transforming Strands events to frontend-compatible format.
 import logging
 import time
 from typing import Any, Dict, Optional, List, Union
-# from core.pricing import PricingService  # Module removed
 
 logger = logging.getLogger(__name__)
 
