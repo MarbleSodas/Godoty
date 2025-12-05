@@ -71,6 +71,17 @@ from .godot_docs_tools import (
     GodotDocumentationTools,
     get_godot_docs_tools
 )
+from .context_tools import (
+    retrieve_context,
+    get_signal_flow,
+    get_class_hierarchy,
+    find_usages,
+    get_file_context,
+    get_project_structure,
+    get_context_stats,
+    set_context_engine,
+    get_context_engine
+)
 
 __all__ = [
     # File system tools
@@ -147,4 +158,14 @@ __all__ = [
     "get_documentation_status",
     "GodotDocumentationTools",
     "get_godot_docs_tools",
+    # Context engine tools
+    "retrieve_context",
+    "get_signal_flow",
+    "get_class_hierarchy",
+    "find_usages",
+    "get_file_context",
+    "get_project_structure",
+    "get_context_stats",
+    "set_context_engine",
+    "get_context_engine",
 ]

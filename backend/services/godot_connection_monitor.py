@@ -91,6 +91,9 @@ class GodotConnectionMonitor:
 
         # Event listeners
         self._state_change_listeners: List[Callable[[ConnectionEvent], None]] = []
+        
+        # Register project_info callback to trigger indexing when project info is available
+        self.bridge.add_project_info_callback(self._on_project_info_received)
 
     def add_state_change_listener(self, callback: Callable[[ConnectionEvent], None]):
         """
@@ -105,6 +108,20 @@ class GodotConnectionMonitor:
         """Remove a state change listener."""
         if callback in self._state_change_listeners:
             self._state_change_listeners.remove(callback)
+
+    async def _on_project_info_received(self, project_info):
+        """Called when project_info is received from Godot."""
+        if project_info and project_info.project_path:
+            logger.info(f"Project info received, triggering indexing for: {project_info.project_path}")
+            await self._trigger_indexing(project_info.project_path)
+            
+            # Also notify the agent to reinitialize with project scope
+            try:
+                from agents.godoty_agent import get_godoty_agent
+                agent = get_godoty_agent()
+                await agent.on_project_connected(project_info.project_path)
+            except Exception as e:
+                logger.error(f"Failed to notify agent of project connection: {e}")
 
     async def _notify_state_change(self, state: ConnectionState, error: Optional[str] = None):
         """Notify all listeners of a state change."""
@@ -133,6 +150,73 @@ class GodotConnectionMonitor:
                         listener(event)
                 except Exception as e:
                     logger.error(f"Error in state change listener: {e}")
+
+    async def _trigger_indexing(self, project_path: str):
+        """Trigger context engine indexing for the connected project."""
+        try:
+            from context import GodotContextEngine
+            from agents.tools.context_tools import get_context_engine, set_context_engine
+            
+            logger.info(f"Triggering context engine indexing for: {project_path}")
+            
+            # Check if we already have an engine for this project
+            existing_engine = get_context_engine()
+            if existing_engine and existing_engine.project_path == project_path:
+                # Check if we need to re-index
+                if not existing_engine.needs_reindex():
+                    logger.info("Project already indexed and up-to-date")
+                    # Broadcast complete status
+                    await self._broadcast_index_status()
+                    return
+                logger.info("Project has changes, re-indexing...")
+            
+            # Create new context engine for this project
+            engine = GodotContextEngine(project_path)
+            set_context_engine(engine)
+            
+            # Add progress callback to broadcast updates via SSE
+            def on_progress(progress):
+                """Broadcast progress updates to SSE clients."""
+                try:
+                    import asyncio
+                    # Schedule the broadcast in the event loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(self._broadcast_index_status())
+                except Exception as e:
+                    logger.debug(f"Could not broadcast progress: {e}")
+            
+            engine.add_status_callback(on_progress)
+            
+            # Build index in background thread to avoid blocking
+            import asyncio
+            await asyncio.to_thread(engine.build_index)
+            
+            logger.info(f"Context engine indexing complete for: {project_path}")
+            
+            # Broadcast the final status
+            await self._broadcast_index_status()
+            
+        except Exception as e:
+            logger.error(f"Failed to trigger context engine indexing: {e}")
+    
+    async def _broadcast_index_status(self):
+        """Broadcast current index status to SSE clients."""
+        try:
+            from api.sse_routes import sse_manager
+            
+            # Create event with updated index status
+            project_info = self.bridge.project_info
+            event = ConnectionEvent(
+                state=self._last_state,
+                timestamp=datetime.now(),
+                project_path=project_info.project_path if project_info else None,
+                godot_version=project_info.godot_version if project_info else None,
+                plugin_version=project_info.plugin_version if project_info else None
+            )
+            await sse_manager.broadcast(event)
+        except Exception as e:
+            logger.debug(f"Could not broadcast index status: {e}")
 
     async def _attempt_connection(self) -> bool:
         """

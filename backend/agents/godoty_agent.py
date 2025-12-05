@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 import warnings
+import asyncio
 from typing import Optional, Dict, Any, AsyncIterable
 from datetime import datetime
 
@@ -39,7 +40,11 @@ from agents.tools import (
     remove_gdscript_method, modify_project_setting,
     # GDScript editor
     analyze_gdscript_structure, validate_gdscript_syntax,
-    refactor_gdscript_method, extract_gdscript_method
+    refactor_gdscript_method, extract_gdscript_method,
+    # Context engine tools
+    retrieve_context, get_signal_flow, get_class_hierarchy,
+    find_usages, get_file_context, get_project_structure,
+    get_context_stats, set_context_engine
 )
 
 logger = logging.getLogger(__name__)
@@ -96,7 +101,11 @@ class GodotyAgent:
             write_file, delete_file, modify_gdscript_method, add_gdscript_method,
             remove_gdscript_method, modify_project_setting,
             analyze_gdscript_structure, validate_gdscript_syntax,
-            refactor_gdscript_method, extract_gdscript_method
+            refactor_gdscript_method, extract_gdscript_method,
+            # Context engine tools
+            retrieve_context, get_signal_flow, get_class_hierarchy,
+            find_usages, get_file_context, get_project_structure,
+            get_context_stats
         ]
 
         # Initialize Conversation Manager
@@ -108,11 +117,17 @@ class GodotyAgent:
         # Initialize project path
         self.project_path = None
         
-        # Create Agent (will be recreated with scoped prompt on initialize_session)
-        self._create_agent()
+        # Initialize context engine (will be built on Godot connection)
+        self.context_engine: Optional[GodotContextEngine] = None
+        
+        # Defer agent creation - will be created when Godot connects with project info
+        # or lazily on first use
+        self.agent = None
+        self._agent_initialized = False
+        logger.info("GodotyAgent created - waiting for Godot connection to initialize")
 
         # Rehydrate metrics if session exists
-        if self.session_manager:
+        if self.session_manager and self.agent:
             try:
                 # This loads the agent state from disk
                 # Note: Agent constructor calls session_manager.read_agent() internally if session_manager is passed
@@ -130,11 +145,19 @@ class GodotyAgent:
                          logger.info(f"Resumed session {session_id}. Previous cost: ${metrics.get('total_cost', 0):.4f}")
             except Exception as e:
                 logger.warning(f"Failed to load session state: {e}")
+    
+    def _ensure_agent_initialized(self):
+        """Ensure agent is initialized before use."""
+        if not self._agent_initialized:
+            logger.info("Agent not yet initialized - creating without project scope")
+            self._create_agent()
+            self._agent_initialized = True
 
     async def run(self, prompt: str) -> Dict[str, Any]:
         """
         Run the agent synchronously (non-streaming).
         """
+        self._ensure_agent_initialized()
         try:
             result = await self.agent.invoke_async(prompt)
             
@@ -162,6 +185,7 @@ class GodotyAgent:
 
     async def run_stream(self, prompt: str) -> AsyncIterable[Dict[str, Any]]:
         """Run the agent with streaming."""
+        self._ensure_agent_initialized()
         try:
             from agents.event_utils import transform_strands_event
 
@@ -225,14 +249,15 @@ class GodotyAgent:
             except Exception as e:
                 logger.error(f"Failed to persist metrics: {e}")
 
-    def _create_agent(self, project_path: str = None):
+    def _create_agent(self, project_path: str = None, project_context: str = None):
         """
         Create or recreate agent with optional project path scoping.
         
         Args:
             project_path: Optional project path to scope agent operations to.
+            project_context: Optional project context map for prompt injection.
         """
-        system_prompt = Prompts.get_system_prompt(project_path)
+        system_prompt = Prompts.get_system_prompt(project_path, project_context)
         
         self.agent = Agent(
             model=self.model,
@@ -252,8 +277,30 @@ class GodotyAgent:
         """Initialize session with project context."""
         self.project_path = project_path
         
-        # Recreate agent with project-scoped prompt
-        self._create_agent(project_path)
+        # Get context engine that was set up by connection monitor
+        # (Indexing is now triggered on Godot connection, not session creation)
+        logger.info(f"Initializing session for project: {project_path}")
+        
+        try:
+            self.context_engine = get_context_engine()
+            if self.context_engine:
+                logger.info(f"Using context engine for: {self.context_engine.project_path}")
+            else:
+                logger.info("Context engine not yet initialized (will be set up on Godot connection)")
+        except Exception as e:
+            logger.warning(f"Could not get context engine: {e}")
+            self.context_engine = None
+        
+        # Get project context for prompt injection
+        project_context = None
+        if self.context_engine and self.context_engine.is_indexed():
+            try:
+                project_context = self.context_engine.get_project_map()
+            except Exception as e:
+                logger.warning(f"Failed to get project map: {e}")
+        
+        # Recreate agent with project-scoped prompt (including context)
+        self._create_agent(project_path, project_context=project_context)
         logger.info(f"Initialized session {self.session_id} with project path: {project_path}")
         
         # Ensure session exists in MetricsDB
@@ -263,6 +310,36 @@ class GodotyAgent:
             db.register_session(self.session_id)
         except Exception as e:
             logger.error(f"Failed to register session in MetricsDB: {e}")
+
+    async def on_project_connected(self, project_path: str):
+        """
+        Called when Godot connects and project info is available.
+        Reinitializes the agent with project scope.
+        """
+        logger.info(f"Project connected, reinitializing agent with scope: {project_path}")
+        self.project_path = project_path
+        
+        # Get context engine (should be set by connection monitor)
+        try:
+            self.context_engine = get_context_engine()
+            if self.context_engine:
+                logger.info(f"Context engine available for: {self.context_engine.project_path}")
+        except Exception as e:
+            logger.warning(f"Could not get context engine: {e}")
+            self.context_engine = None
+        
+        # Get project context if available
+        project_context = None
+        if self.context_engine and self.context_engine.is_indexed():
+            try:
+                project_context = self.context_engine.get_project_map()
+            except Exception as e:
+                logger.warning(f"Failed to get project map: {e}")
+        
+        # Create/recreate agent with project-scoped prompt
+        self._create_agent(project_path, project_context=project_context)
+        self._agent_initialized = True
+        logger.info(f"Agent initialized with project scope: {project_path}")
 
     def reset_conversation(self):
         """Reset the agent's conversation history and context."""

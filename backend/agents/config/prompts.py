@@ -171,18 +171,22 @@ When fulfilling user tasks, **PREFER using Godot tools over providing code snipp
 - Use warnings (⚠️) to highlight migration pitfalls when relevant"""
 
     @classmethod
-    def get_system_prompt(cls, project_path: str = None) -> str:
+    def get_system_prompt(cls, project_path: str = None, project_context: str = None) -> str:
         """
-        Get system prompt with project path scoping.
+        Get system prompt with project path scoping and context injection.
         
         Args:
             project_path: The Godot project root path to scope operations to.
                           If None, returns the base prompt without scoping.
+            project_context: Optional project structure map from the context engine.
         
         Returns:
-            The complete system prompt with optional project scope section prepended.
+            The complete system prompt with optional project scope and context.
         """
         prompt = cls.GODOTY_AGENT_SYSTEM_PROMPT
+        
+        sections = []
+        
         if project_path:
             scope_section = f"""## Project Scope
 You are working within a specific Godot project. All file operations MUST be restricted to this project directory.
@@ -194,7 +198,30 @@ You are working within a specific Godot project. All file operations MUST be res
 - NEVER use absolute paths that escape the project root
 - When using file tools, always verify paths are within the project scope
 - If a user requests operations outside the project, politely decline and explain the restriction
-
 """
-            prompt = scope_section + prompt
+            sections.append(scope_section)
+        
+        if project_context:
+            context_section = f"""## Project Context
+The following is a high-level map of your current project structure. Use this to understand the codebase architecture.
+
+{project_context}
+
+## Context Tools
+Use these tools to get deeper context when needed:
+- `retrieve_context(query)` - Search for relevant code, scenes, and documentation
+- `get_signal_flow(node_or_signal)` - Trace signal connections
+- `get_class_hierarchy(class_name)` - Understand class inheritance
+- `find_usages(entity_name)` - Find where a class/function/signal is used
+- `get_file_context(file_path)` - Get comprehensive context for a specific file
+- `get_project_structure()` - Refresh the project overview
+
+**IMPORTANT**: Use `retrieve_context()` before making assumptions about the codebase.
+When asked about existing code, always search first rather than guessing.
+"""
+            sections.append(context_section)
+        
+        if sections:
+            prompt = "\n".join(sections) + "\n" + prompt
+        
         return prompt

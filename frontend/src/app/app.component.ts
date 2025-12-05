@@ -410,62 +410,45 @@ interface Metrics {
             <div class="space-y-2">
               <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Godot Documentation Database</label>
 
-              <!-- Godot Version Info -->
-              <div class="bg-[#161922] border border-[#2d3546] rounded-lg p-2 text-xs">
-                <div class="flex items-center justify-between mb-1">
-                  <span class="text-gray-400">Built Version:</span>
-                  @if (documentationStatus(); as status) {
-                    @if (status.godot_version) {
-                      <span class="text-[#478cbf] font-medium">{{ status.godot_version }}</span>
-                    } @else {
-                      <span class="text-gray-500">Not built</span>
-                    }
-                  } @else {
-                    <span class="text-gray-500">Loading...</span>
-                  }
-                </div>
-                <div class="text-[10px] text-gray-500">
-                  💡 Rebuild uses version from connected Godot editor, or defaults to 4.5.1-stable
-                </div>
-              </div>
-
-              <!-- Status Display -->
-              <div class="bg-[#161922] border border-[#2d3546] rounded-lg p-3">
+              <!-- Documentation Status Capsule -->
+              <div class="bg-[#161922] border border-[#2d3546] rounded-lg px-3 py-2">
                 @if (documentationStatus(); as status) {
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-2">
-                      <span class="text-sm">
-                        @switch (status?.status) {
-                          @case ('not_built') {
-                            <span class="text-gray-400">📚 Not Built</span>
-                          }
-                          @case ('building') {
-                            <span class="text-yellow-400">🔄 Building...</span>
-                          }
-                          @case ('completed') {
-                            <span class="text-green-400">✅ Ready</span>
-                          }
-                          @case ('error') {
-                            <span class="text-red-400">❌ Error</span>
-                          }
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 min-w-0">
+                      <!-- Status Icon -->
+                      @switch (status?.status) {
+                        @case ('not_built') {
+                          <span class="text-gray-400 text-sm">📚</span>
                         }
+                        @case ('building') {
+                          <span class="text-yellow-400 text-sm">🔄</span>
+                        }
+                        @case ('completed') {
+                          <span class="text-green-400 text-sm">✅</span>
+                        }
+                        @case ('error') {
+                          <span class="text-red-400 text-sm">❌</span>
+                        }
+                      }
+                      <!-- Version -->
+                      <span class="text-xs font-medium" [class.text-[#478cbf]]="status.godot_version" [class.text-gray-500]="!status.godot_version">
+                        {{ status.godot_version || 'Not built' }}
                       </span>
+                      <!-- Build Date (if available) -->
                       @if (status?.build_timestamp && status?.status === 'completed') {
-                        <span class="text-xs text-gray-500">
-                          Built: {{formatDate(status.build_timestamp!)}}
-                        </span>
+                        <span class="text-[10px] text-gray-500 hidden sm:inline">• {{formatDate(status.build_timestamp!)}}</span>
                       }
                     </div>
+                    <!-- Size -->
                     @if (status?.size_mb) {
-                      <span class="text-xs text-gray-500">{{status.size_mb}} MB</span>
+                      <span class="text-[10px] text-gray-500 flex-shrink-0">{{status.size_mb}} MB</span>
                     }
                   </div>
-
                   @if (status?.error_message) {
-                    <p class="text-xs text-red-400 mt-2">{{status.error_message}}</p>
+                    <p class="text-[10px] text-red-400 mt-1 truncate">{{status.error_message}}</p>
                   }
                 } @else {
-                  <span class="text-sm text-gray-500">Loading status...</span>
+                  <span class="text-xs text-gray-500">Loading...</span>
                 }
               </div>
 
@@ -503,6 +486,80 @@ interface Metrics {
                   </div>
                 </div>
               }
+            </div>
+
+            <!-- Project Index Section -->
+            <div class="space-y-2">
+              <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Project Context Index</label>
+
+              <!-- Index Status Capsule -->
+              <div class="bg-[#161922] border border-[#2d3546] rounded-lg px-3 py-2">
+                @if (godotStatus()?.index_status; as indexStatus) {
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 min-w-0">
+                      <!-- Status Icon -->
+                      @switch (indexStatus.status) {
+                        @case ('not_started') {
+                          <span class="text-gray-400 text-sm">📂</span>
+                        }
+                        @case ('scanning') {
+                          <span class="text-yellow-400 text-sm animate-pulse">🔍</span>
+                        }
+                        @case ('building_graph') {
+                          <span class="text-yellow-400 text-sm animate-pulse">🔗</span>
+                        }
+                        @case ('building_vectors') {
+                          <span class="text-yellow-400 text-sm animate-pulse">🧠</span>
+                        }
+                        @case ('complete') {
+                          <span class="text-green-400 text-sm">✅</span>
+                        }
+                        @case ('failed') {
+                          <span class="text-red-400 text-sm">❌</span>
+                        }
+                      }
+                      <!-- Phase Text -->
+                      <span class="text-xs font-medium" 
+                        [class.text-[#478cbf]]="indexStatus.status === 'complete'"
+                        [class.text-yellow-400]="indexStatus.status === 'scanning' || indexStatus.status === 'building_graph' || indexStatus.status === 'building_vectors'"
+                        [class.text-red-400]="indexStatus.status === 'failed'"
+                        [class.text-gray-500]="indexStatus.status === 'not_started'">
+                        {{ indexStatus.phase || (indexStatus.status === 'complete' ? 'Indexed' : 'Not indexed') }}
+                      </span>
+                    </div>
+                    <!-- Progress Percent (when indexing) -->
+                    @if (indexStatus.progress_percent > 0 && indexStatus.status !== 'complete' && indexStatus.status !== 'failed') {
+                      <span class="text-[10px] text-gray-500 flex-shrink-0">{{indexStatus.progress_percent}}%</span>
+                    }
+                  </div>
+
+                  <!-- Progress Bar (when actively indexing) -->
+                  @if (indexStatus.status !== 'not_started' && indexStatus.status !== 'complete' && indexStatus.status !== 'failed') {
+                    <div class="mt-2">
+                      <div class="w-full bg-gray-700 rounded-full h-1.5">
+                        <div
+                          class="bg-[#478cbf] h-1.5 rounded-full transition-all duration-300"
+                          [style.width.%]="indexStatus.progress_percent"
+                        ></div>
+                      </div>
+                      @if (indexStatus.current_file) {
+                        <div class="text-[10px] text-gray-500 mt-1 truncate">{{indexStatus.current_file}}</div>
+                      }
+                    </div>
+                  }
+
+                  <!-- Error Message -->
+                  @if (indexStatus.error) {
+                    <p class="text-[10px] text-red-400 mt-1 truncate">{{indexStatus.error}}</p>
+                  }
+                } @else if (isGodotConnected()) {
+                  <span class="text-xs text-gray-500">Waiting for index status...</span>
+                } @else {
+                  <span class="text-xs text-gray-500">Connect to Godot to index project</span>
+                }
+              </div>
+
+              <p class="text-[10px] text-gray-500">The project is automatically indexed when you connect to Godot. This enables context-aware AI assistance.</p>
             </div>
           </div>
 

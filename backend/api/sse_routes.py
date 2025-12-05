@@ -50,6 +50,38 @@ class SSEManager:
             "plugin_version": status.get("plugin_version"),
             "project_settings": status.get("project_settings", {})
         })
+        
+        # Add context engine index status if available
+        try:
+            from agents.tools.context_tools import get_context_engine
+            engine = get_context_engine()
+            if engine:
+                progress = engine.get_index_progress()
+                event_data["index_status"] = progress.to_dict()
+            else:
+                event_data["index_status"] = {
+                    "status": "not_started",
+                    "phase": "Not indexed",
+                    "current_step": 0,
+                    "total_steps": 0,
+                    "current_file": "",
+                    "error": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "progress_percent": 0
+                }
+        except Exception:
+            event_data["index_status"] = {
+                "status": "not_started",
+                "phase": "Not indexed",
+                "current_step": 0,
+                "total_steps": 0,
+                "current_file": "",
+                "error": None,
+                "started_at": None,
+                "completed_at": None,
+                "progress_percent": 0
+            }
 
         # Send to all clients
         disconnected_clients = set()
@@ -93,6 +125,41 @@ async def event_generator(client_queue: asyncio.Queue) -> AsyncGenerator[str, No
             "plugin_version": initial_status.get("plugin_version"),
             "project_settings": initial_status.get("project_settings", {})
         }
+        
+        # Add context engine index status if available
+        try:
+            from agents.tools.context_tools import get_context_engine
+            engine = get_context_engine()
+            if engine:
+                progress = engine.get_index_progress()
+                initial_data["index_status"] = progress.to_dict()
+            else:
+                # No context engine yet - send default status
+                initial_data["index_status"] = {
+                    "status": "not_started",
+                    "phase": "Not indexed",
+                    "current_step": 0,
+                    "total_steps": 0,
+                    "current_file": "",
+                    "error": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "progress_percent": 0
+                }
+        except Exception as e:
+            logger.debug(f"Could not get index status: {e}")
+            initial_data["index_status"] = {
+                "status": "not_started",
+                "phase": "Not indexed",
+                "current_step": 0,
+                "total_steps": 0,
+                "current_file": "",
+                "error": None,
+                "started_at": None,
+                "completed_at": None,
+                "progress_percent": 0
+            }
+        
         yield f"data: {json.dumps(initial_data)}\n\n"
 
         # Stream events
@@ -155,6 +222,47 @@ async def get_godot_status():
     """
     monitor = get_connection_monitor()
     return monitor.get_status()
+
+
+@router.get("/context/index/status")
+async def get_context_index_status():
+    """
+    Get current context engine index status.
+    
+    Returns:
+        Dictionary with index progress and metadata
+    """
+    try:
+        from agents.tools.context_tools import get_context_engine
+        
+        engine = get_context_engine()
+        if engine is None:
+            return {
+                "status": "not_initialized",
+                "message": "Context engine not initialized. Connect to a Godot project first."
+            }
+        
+        progress = engine.get_index_progress()
+        metadata = engine.get_index_metadata()
+        
+        result = {
+            "status": "ok",
+            "progress": progress.to_dict(),
+            "indexed": engine.is_indexed(),
+            "project_path": engine.project_path
+        }
+        
+        if metadata:
+            result["metadata"] = metadata.to_dict()
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error getting context index status: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
 
 @router.get("/godoty/connection/status")

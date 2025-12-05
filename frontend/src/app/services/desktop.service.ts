@@ -26,6 +26,17 @@ export interface GodotStatus {
     viewport_height?: number;
     renderer?: string;
   };
+  index_status?: {
+    status: 'not_started' | 'scanning' | 'building_graph' | 'building_vectors' | 'complete' | 'failed';
+    phase: string;
+    current_step: number;
+    total_steps: number;
+    current_file: string;
+    error?: string;
+    started_at?: string;
+    completed_at?: string;
+    progress_percent: number;
+  };
 }
 
 @Injectable({
