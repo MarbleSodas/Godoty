@@ -157,7 +157,7 @@ async def check_chat_ready():
         # Check Godot connection
         godot_connected = False
         if hasattr(bridge, 'is_connected'):
-            godot_connected = bridge.is_connected()
+            godot_connected = await bridge.is_connected()
         elif hasattr(bridge, 'connection_state'):
             godot_connected = bridge.connection_state.value == "connected"
         
@@ -843,7 +843,9 @@ def parse_message_content_blocks(message_obj: Dict) -> Dict:
                 status = "failed"
                 error = tool_errors[tool_use_id]
             elif tool_use_id not in tool_results:
-                status = "running"
+                # If stored in session, tool completed but result might have been truncated
+                # Default to "completed" instead of "running" for persistence
+                status = "completed"
             else:
                 result = tool_results[tool_use_id]
 

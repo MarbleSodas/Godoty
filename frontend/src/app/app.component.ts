@@ -1361,9 +1361,18 @@ export class App implements OnInit, AfterViewChecked {
 
             // Fallback to original logic for backward compatibility
             if (toolIndex === -1) {
-              toolIndex = updated.toolCalls.findIndex(
+              // Match by name, prioritizing pending tools
+              const pendingIndex = updated.toolCalls.findIndex(
                 tc => tc.toolName === toolName && tc.status === 'pending'
               );
+              if (pendingIndex >= 0) {
+                toolIndex = pendingIndex;
+              } else {
+                // Last resort: find any matching tool name without output
+                toolIndex = updated.toolCalls.findIndex(
+                  tc => tc.toolName === toolName && !tc.output
+                );
+              }
             }
 
             if (toolIndex >= 0) {
@@ -1375,7 +1384,7 @@ export class App implements OnInit, AfterViewChecked {
                   null,
                   2
                 ),
-                status: 'success'
+                status: resultData.status || 'success'
               };
             } else {
               // Tool not found - might have been missed or out of order
@@ -1438,6 +1447,15 @@ export class App implements OnInit, AfterViewChecked {
           } else if (event.type === 'done') {
             // Stream finished
             updated.isStreaming = false;
+
+            // Mark any remaining pending tools as completed
+            // This ensures tools don't stay in 'pending' state if tool_result wasn't received
+            if (updated.toolCalls && updated.toolCalls.length > 0) {
+              updated.toolCalls = updated.toolCalls.map(tc => ({
+                ...tc,
+                status: tc.status === 'pending' ? 'success' : tc.status
+              }));
+            }
           }
 
           return updated;

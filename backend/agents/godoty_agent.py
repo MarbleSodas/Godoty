@@ -161,103 +161,69 @@ class GodotyAgent:
             raise
 
     async def run_stream(self, prompt: str) -> AsyncIterable[Dict[str, Any]]:
-        """
-        Run the agent with streaming.
-        """
+        """Run the agent with streaming."""
         try:
-            # Import shared event utility
             from agents.event_utils import transform_strands_event
 
-            async for event in self.agent.stream_async(prompt):
-                # Transform event
-                logger.debug(f"[SSE] Raw Strands event: {event}")
-                transformed = transform_strands_event(event)
-                logger.debug(f"[SSE] Transformed event: {transformed}")
+            logger.info(f"[STREAM] Starting stream for session {self.session_id}")
+            event_count = 0
+            metrics_received = False
 
-                # Add content length check for debugging
-                if transformed and transformed.get("type") == "text":
-                    content_length = len(transformed.get("content", ""))
-                    logger.debug(f"[SSE] Text event content length: {content_length}")
-                    if content_length == 0:
-                        logger.warning(f"[SSE] Empty content event detected: {transformed}")
+            async for event in self.agent.stream_async(prompt):
+                event_count += 1
+                event_keys = list(event.keys()) if isinstance(event, dict) else str(type(event))
+                logger.debug(f"[STREAM] Raw event #{event_count} keys: {event_keys}")
+                
+                transformed = transform_strands_event(event)
 
                 if transformed:
-                    yield transformed
+                    event_type = transformed.get("type", "unknown")
+                    logger.debug(f"[STREAM] Transformed event type: {event_type}")
                     
-                # Check for metrics update and persist
-                if "metrics" in event:
-                    await self._update_metrics(event["metrics"])
+                    # Capture and persist metrics from transformed events
+                    if event_type == "metrics":
+                        metrics_received = True
+                        metrics_data = transformed.get("data", {}).get("metrics", {})
+                        logger.info(f"[STREAM] METRICS EVENT RECEIVED: {metrics_data}")
+                        if metrics_data:
+                            await self._update_metrics(metrics_data)
+                    
+                    yield transformed
+
+            logger.info(f"[STREAM] Stream complete. Events: {event_count}, Metrics received: {metrics_received}")
 
         except Exception as e:
             logger.error(f"Error in agent stream: {e}", exc_info=True)
             yield {"type": "error", "data": {"error": str(e)}}
 
     async def _update_metrics(self, metrics: Dict[str, Any]):
-        """Update and persist metrics ledger."""
-        if not hasattr(self.agent, 'state'):
-            self.agent.state = {}
-            
-        if 'godoty_metrics' not in self.agent.state:
-            self.agent.state['godoty_metrics'] = {
-                'total_cost': 0.0,
-                'total_tokens': 0,
-                'run_history': []
-            }
-            
-        ledger = self.agent.state['godoty_metrics']
-        
+        """Persist metrics directly to MetricsDB."""
         # Extract metrics data
-        usage = metrics.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
-        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens", 0)
-        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+        prompt_tokens = metrics.get("input_tokens", 0)
+        completion_tokens = metrics.get("output_tokens", 0)
+        total_tokens = metrics.get("total_tokens", prompt_tokens + completion_tokens)
+        cost = metrics.get("estimated_cost") or metrics.get("cost", 0.0)
+        model_id = metrics.get("model_id") or self.model.model_id
+        generation_id = metrics.get("generation_id")
         
-        # Cost extraction
-        cost = metrics.get("openrouter_cost") or metrics.get("cost", 0.0)
-        actual_cost = metrics.get("actual_cost") # Might be populated if available
+        logger.info(f"Persisting metrics: tokens={total_tokens}, cost=${cost:.6f}, model={model_id}")
         
-        # Prefer actual cost if available, otherwise estimated
-        final_cost = float(actual_cost if actual_cost is not None else cost)
-
-        # Metadata
-        generation_id = metrics.get("id") or metrics.get("generation_id")
-        model_id = self.model.model_id
-        
-        if final_cost > 0 or total_tokens > 0:
-            ledger['total_cost'] += final_cost
-            ledger['total_tokens'] += total_tokens
-            ledger['run_history'].append({
-                'timestamp': datetime.utcnow().isoformat(),
-                'cost': final_cost,
-                'tokens': total_tokens,
-                'model': model_id
-            })
-            
-            # Persist to FileSessionManager (Agent State)
-            if self.session_manager and self.session_id:
-                try:
-                    self.session_manager.update_agent(self.session_id, self.agent.to_session_agent())
-                except Exception as e:
-                    logger.error(f"Failed to persist metrics to session manager: {e}")
-            
-            # Persist to Raw SQLite MetricsDB
-            if self.session_id:
-                try:
-                    from agents.db import get_metrics_db
-                    db = get_metrics_db()
-                    
-                    db.log_api_call(
-                        session_id=self.session_id,
-                        model=model_id,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        cost=final_cost,
-                        generation_id=generation_id
-                    )
-                    
-                    logger.debug(f"Persisted metrics to MetricsDB: cost=${final_cost:.6f}, tokens={total_tokens}")
-                except Exception as e:
-                    logger.error(f"Failed to persist metrics to MetricsDB: {e}")
+        # Persist to MetricsDB
+        if self.session_id and (cost > 0 or total_tokens > 0):
+            try:
+                from agents.db import get_metrics_db
+                db = get_metrics_db()
+                db.log_api_call(
+                    session_id=self.session_id,
+                    model=model_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost=cost,
+                    generation_id=generation_id
+                )
+                logger.info(f"Metrics saved: {total_tokens} tokens, ${cost:.6f}")
+            except Exception as e:
+                logger.error(f"Failed to persist metrics: {e}")
 
     def _create_agent(self, project_path: str = None):
         """

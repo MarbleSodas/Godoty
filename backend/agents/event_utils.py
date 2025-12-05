@@ -101,6 +101,46 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
     event_type = None
     event_data = {}
 
+    # Handle OpenRouter metrics events FIRST (from GodotyOpenRouterModel)
+    if "openrouter_metrics" in event:
+        usage = event["openrouter_metrics"]
+        logger.info(f"[METRICS] OpenRouter metrics event: {usage}")
+        return {
+            "type": "metrics",
+            "data": {
+                "metrics": {
+                    "total_tokens": usage.get("total_tokens", 0),
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "output_tokens": usage.get("completion_tokens", 0),
+                    "estimated_cost": usage.get("cost", 0.0),
+                    "cost": usage.get("cost", 0.0),
+                    "model_id": usage.get("model_id", "unknown"),
+                    "agent_type": agent_type,
+                    "session_id": session_id
+                }
+            }
+        }
+    
+    # Also check for openrouter_usage injected into other events
+    if "openrouter_usage" in event:
+        usage = event["openrouter_usage"]
+        logger.info(f"[METRICS] OpenRouter usage in event: {usage}")
+        return {
+            "type": "metrics",
+            "data": {
+                "metrics": {
+                    "total_tokens": usage.get("total_tokens", 0),
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "output_tokens": usage.get("completion_tokens", 0),
+                    "estimated_cost": usage.get("cost", 0.0),
+                    "cost": usage.get("cost", 0.0),
+                    "model_id": usage.get("model_id", "unknown"),
+                    "agent_type": agent_type,
+                    "session_id": session_id
+                }
+            }
+        }
+
     # Graph events - Check this FIRST as they have specific types
     # Graph events - Check this FIRST as they have specific types
     if "type" in event:
@@ -228,45 +268,75 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
             }
             
     elif "contentBlockStop" in event:
-        return None
+        # Content block stop might signal tool completion
+        block_stop = event.get("contentBlockStop", {})
+        content_block = block_stop.get("contentBlock", {})
+        
+        # Check if this is a tool result block
+        if "toolResult" in content_block:
+            tool_result = content_block["toolResult"]
+            event_type = "tool_result"
+            event_data = {
+                "tool_name": tool_result.get("name"),
+                "result": tool_result.get("content", []),
+                "tool_use_id": tool_result.get("toolUseId"),
+                "status": "success"  # Explicit success status
+            }
+        else:
+            return None
         
     elif "messageStop" in event:
         # Message stop event - often contains usage metrics from OpenRouter adapter
         stop_event = event["messageStop"]
-
-        # Extract usage if present (now provided by OpenRouterModel)
-        usage = stop_event.get("usage", {})
+        
+        # OpenRouter with stream_options.include_usage=true puts usage at top level or in stop_event
+        # Try multiple locations for usage data
+        usage = stop_event.get("usage") or event.get("usage") or {}
+        
+        # Log what we found for debugging
+        logger.debug(f"[METRICS] messageStop event keys: {list(event.keys())}")
+        logger.debug(f"[METRICS] stop_event keys: {list(stop_event.keys()) if isinstance(stop_event, dict) else 'not a dict'}")
+        logger.debug(f"[METRICS] usage found: {usage if usage else 'None'}")
+        
         if usage:
-            input_tokens = usage.get("input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
+            # Support both OpenAI SDK format (prompt_tokens) and OpenRouter format (input_tokens)
+            input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
+            output_tokens = usage.get("completion_tokens") or usage.get("output_tokens", 0)
             total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
 
-            # Get actual cost if available from OpenRouter
-            actual_cost = usage.get("actual_cost")
+            # Get cost from OpenRouter - can be in 'cost' or 'actual_cost'
+            actual_cost = usage.get("cost") or usage.get("actual_cost")
+            
+            logger.info(f"[METRICS] Extracted from messageStop: {input_tokens} in, {output_tokens} out, ${actual_cost or 0:.6f}")
 
             # Get model_id from event context if available
             # Check inside stop_event first (in case it was injected there)
             model_id = stop_event.get("model_id")
             if not model_id:
-                model_id = event.get("model_id", "anthropic/claude-3.5-sonnet")
+                model_id = event.get("model_id") or event.get("model", "unknown")
 
-            # Use actual cost if available, otherwise fallback to calculation
+            # Use actual cost if available, otherwise fallback to zero
             if actual_cost is not None:
                 estimated_cost = float(actual_cost)
             else:
-                # PricingService removed - fallback to zero cost
+                # No cost available - this is expected for some free models
                 estimated_cost = 0.0
+                logger.debug(f"[METRICS] No cost in usage data, defaulting to $0.00")
 
             # Finalize metrics in streaming tracker if session_id is provided
             if session_id:
-                final_metrics = streaming_tracker.finalize_metrics(session_id, event)
-                # Buffer the finalized metrics for recovery
-                if final_metrics:
-                    message_id = f"msg-{int(time.time()*1000)}"
-                    metrics_buffer.add_metric(session_id, message_id, agent_type or "unknown", final_metrics, is_finalized=True)
+                streaming_tracker = get_streaming_metrics_tracker()
+                metrics_buffer = get_metrics_buffer()
+                
+                if streaming_tracker:
+                    final_metrics = streaming_tracker.finalize_metrics(session_id, event)
+                    # Buffer the finalized metrics for recovery
+                    if final_metrics and metrics_buffer:
+                        message_id = f"msg-{int(time.time()*1000)}"
+                        metrics_buffer.add_metric(session_id, message_id, agent_type or "unknown", final_metrics, is_finalized=True)
 
-                # End tracking for this session
-                streaming_tracker.end_session_tracking(session_id)
+                    # End tracking for this session
+                    streaming_tracker.end_session_tracking(session_id)
 
             # Prepare metrics response with both actual and estimated cost
             metrics_data = {
@@ -279,6 +349,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
                 "session_id": session_id,
                 "cost": estimated_cost  # Add 'cost' field for consistency with database schema
             }
+            
+            logger.info(f"[METRICS] Emitting metrics event: {metrics_data}")
 
             return {
                 "type": "metrics",
@@ -286,69 +358,23 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
                     "metrics": metrics_data
                 }
             }
+        else:
+            # No usage data found - log for debugging
+            logger.warning(f"[METRICS] messageStop event without usage data. Event: {event}")
 
     elif "messageStart" in event:
         return None
 
-    elif "type" in event and event["type"] == "message_stop":
-         # Alternative message stop format (fallback handler)
-         if "amazon-bedrock-invocationMetrics" in event:
-             # Bedrock format
-             pass
-
-         # Check for usage
-         usage = event.get("usage", {})
-         if usage:
-             input_tokens = usage.get("input_tokens", 0)
-             output_tokens = usage.get("output_tokens", 0)
-             total_tokens = input_tokens + output_tokens
-
-             # Get actual cost if available
-             actual_cost = usage.get("actual_cost")
-
-             # Get model_id from event context
-             model_id = event.get("model_id", "anthropic/claude-3.5-sonnet")
-             if "model_id" not in event:
-                 logger.warning("No model_id in message_stop event, using default for cost calculation")
-
-             # Use actual cost if available, otherwise fallback to calculation
-             if actual_cost is not None:
-                 estimated_cost = float(actual_cost)
-             else:
-                 # PricingService removed - fallback to zero cost
-                 estimated_cost = 0.0
-
-             metrics_data = {
-                 "total_tokens": total_tokens,
-                 "estimated_cost": estimated_cost,
-                 "input_tokens": input_tokens,
-                 "output_tokens": output_tokens,
-                 "model_id": model_id,
-                 "agent_type": agent_type,
-                 "session_id": session_id,
-                 "cost": estimated_cost  # Add 'cost' field for consistency
-             }
-
-             return {
-                 "type": "metrics",
-                 "data": {
-                     "metrics": metrics_data
-                 }
-             }
-
     elif "data" in event:
-        # Skip Strands metadata events (they have agent, event_loop_cycle_id, etc.)
-        # These are duplicates of the contentBlockDelta events
+        # Skip Strands metadata events
         if "agent" in event or "event_loop_cycle_id" in event:
             return None
         
         # Handle graph events where 'data' might contain the actual event
         data_content = event["data"]
         if isinstance(data_content, dict) and "event" in data_content:
-             # Recursively transform nested graph event
              return transform_strands_event(data_content)
              
-        # Legacy text data streaming (might not be used)
         event_type = "data"
         event_data = {"text": event["data"]}
         
@@ -361,6 +387,30 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
             "tool_input": tool_info.get("input", {}),
             "tool_use_id": tool_info.get("toolUseId", f"tool-{int(time.time()*1000)}")
         }
+    elif "message" in event:
+        # Handle ToolResultMessageEvent from Strands - contains message with toolResult blocks
+        # This is the primary way tool results are streamed in real-time
+        message = event["message"]
+        if isinstance(message, dict) and message.get("role") == "user":
+            content = message.get("content", [])
+            # Emit a tool_result event for each toolResult in the message
+            tool_results_to_emit = []
+            for block in content:
+                if isinstance(block, dict) and "toolResult" in block:
+                    tool_result = block["toolResult"]
+                    tool_results_to_emit.append({
+                        "type": "tool_result",
+                        "data": sanitize_event_data({
+                            "tool_name": tool_result.get("name"),
+                            "result": tool_result.get("content", []),
+                            "tool_use_id": tool_result.get("toolUseId"),
+                            "status": tool_result.get("status", "success")
+                        })
+                    })
+            # If we have tool results, return the first one
+            # Note: Multiple tool results are rare; if needed, caller should handle message events
+            if tool_results_to_emit:
+                return tool_results_to_emit[0]
     elif "toolResult" in event:
         # Tool execution result (CamelCase from Strands/Claude)
         tool_result = event["toolResult"]
@@ -368,7 +418,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
         event_data = {
             "tool_name": tool_result.get("name"),
             "result": tool_result.get("content", []),
-            "tool_use_id": tool_result.get("toolUseId")
+            "tool_use_id": tool_result.get("toolUseId"),
+            "status": "success"  # Explicit success status
         }
     elif "tool_result" in event:
         # Tool execution result
@@ -377,7 +428,8 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
         event_data = {
             "tool_name": tool_result.get("name"),
             "result": tool_result.get("content", []),
-            "tool_use_id": tool_result.get("toolUseId")
+            "tool_use_id": tool_result.get("toolUseId"),
+            "status": "success"  # Explicit success status
         }
     elif "toolError" in event or "tool_cancelled" in event:
         # Handle tool errors/cancellations
@@ -390,22 +442,55 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
             "error_type": tool_error.get("type", "execution_error")
         }
     elif "result" in event:
-        # Final result - extract and yield end event
+        # Final result from Strands - extract metrics from result.metrics.accumulated_usage
         result = event["result"]
-        event_type = "end"
-        event_data = {
-            "stop_reason": getattr(result, 'stop_reason', 'end_turn')
-        }
-
-        # Include metrics if available (sanitized)
-        if hasattr(result, 'metrics'):
-            # Only include basic metrics, not complex objects
+        
+        # Try to extract metrics from Strands AgentResult
+        metrics_extracted = False
+        if hasattr(result, 'metrics') and result.metrics:
             try:
-                metrics = result.metrics
-                if isinstance(metrics, dict):
-                    event_data["metrics"] = sanitize_event_data(metrics)
+                accumulated_usage = getattr(result.metrics, 'accumulated_usage', None)
+                
+                if accumulated_usage:
+                    # Strands uses inputTokens/outputTokens format
+                    input_tokens = accumulated_usage.get("inputTokens", 0) or accumulated_usage.get("input_tokens", 0)
+                    output_tokens = accumulated_usage.get("outputTokens", 0) or accumulated_usage.get("output_tokens", 0)
+                    total_tokens = accumulated_usage.get("totalTokens", 0) or (input_tokens + output_tokens)
+                    cost = accumulated_usage.get("cost", 0.0)
+                    
+                    logger.info(f"[METRICS] Extracted from result.metrics: {input_tokens} in, {output_tokens} out, total={total_tokens}, cost=${cost}")
+                    
+                    metrics_data = {
+                        "total_tokens": total_tokens,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "estimated_cost": cost,
+                        "cost": cost,
+                        "model_id": "unknown",  # Model ID not available in result
+                        "agent_type": agent_type,
+                        "session_id": session_id
+                    }
+                    
+                    # Return metrics event FIRST, the caller will need to handle the end event separately
+                    # Actually, we can only return one event. Let's make the result include both.
+                    # No wait - we need to return metrics as a separate event before end.
+                    # The cleanest approach: return a metrics dict that can be processed
+                    metrics_extracted = True
+                    return {
+                        "type": "metrics",
+                        "data": {
+                            "metrics": metrics_data
+                        }
+                    }
             except Exception as e:
-                logger.debug(f"Could not include metrics: {e}")
+                logger.warning(f"[METRICS] Failed to extract from result.metrics: {e}")
+        
+        # If we didn't extract metrics, return the end event
+        if not metrics_extracted:
+            event_type = "end"
+            event_data = {
+                "stop_reason": getattr(result, 'stop_reason', 'end_turn')
+            }
                 
     elif "complete" in event and event["complete"]:
         # Stream completion marker
@@ -437,10 +522,39 @@ def transform_strands_event(event: Any, agent_type: Optional[str] = None, sessio
 
     elif "init_event_loop" in event or "start" in event or "start_event_loop" in event:
         return None
+    
+    # Handle standalone usage event (OpenRouter may send this separately with include_usage=true)
+    elif "usage" in event and "messageStop" not in event:
+        usage = event["usage"]
+        
+        # Support both OpenAI SDK format and OpenRouter format
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
+        output_tokens = usage.get("completion_tokens") or usage.get("output_tokens", 0)
+        total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
+        actual_cost = usage.get("cost") or usage.get("actual_cost")
+        model_id = event.get("model_id") or event.get("model", "unknown")
+        
+        logger.info(f"[METRICS] Standalone usage event: {input_tokens} in, {output_tokens} out, ${actual_cost or 0:.6f}")
+        
+        return {
+            "type": "metrics",
+            "data": {
+                "metrics": {
+                    "total_tokens": total_tokens,
+                    "estimated_cost": float(actual_cost) if actual_cost else 0.0,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "model_id": model_id,
+                    "agent_type": agent_type,
+                    "session_id": session_id,
+                    "cost": float(actual_cost) if actual_cost else 0.0
+                }
+            }
+        }
         
     else:
         # Other events - LOG THEM so we can see what we're missing!
-        # logger.warning(f"Unhandled event type with keys: {list(event.keys())}")
+        logger.debug(f"[EVENTS] Unhandled event type with keys: {list(event.keys())}")
         return None
 
     if event_type:
