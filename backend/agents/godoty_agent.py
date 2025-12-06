@@ -3,7 +3,8 @@ import os
 import threading
 import warnings
 import asyncio
-from typing import Optional, Dict, Any, AsyncIterable
+from enum import Enum
+from typing import Optional, Dict, Any, AsyncIterable, Literal
 from datetime import datetime
 
 # Suppress LangGraph warning
@@ -16,6 +17,7 @@ from strands.agent.conversation_manager import SlidingWindowConversationManager
 from core.model import GodotyOpenRouterModel
 from agents.config import AgentConfig
 from agents.config.prompts import Prompts
+from agents.config.planning_prompts import PlanningPrompts
 from agents.tools import (
     # File system tools
     read_file, list_files, search_codebase,
@@ -49,9 +51,27 @@ from agents.tools import (
 
 logger = logging.getLogger(__name__)
 
+
+class AgentMode(Enum):
+    """Agent modes for the two-phase planning workflow."""
+    PLANNING = "planning"     # Read-only information gathering
+    EXECUTION = "execution"   # Full execution with write access
+
+
+class PlanState(Enum):
+    """State of a pending plan."""
+    NONE = "none"             # No plan generated
+    PENDING = "pending"       # Plan generated, awaiting approval
+    APPROVED = "approved"     # Plan approved, ready/executing
+    REJECTED = "rejected"     # Plan rejected
+
+
 class GodotyAgent:
     """
-    Single Godoty Agent with access to all tools.
+    Godoty Agent with support for planning and execution modes.
+    
+    In PLANNING mode, the agent gathers information and proposes a plan.
+    In EXECUTION mode, the agent executes an approved plan with full tool access.
     """
 
     def __init__(self, session_id: Optional[str] = None):
@@ -83,30 +103,57 @@ class GodotyAgent:
             )
             logger.info(f"Initialized session {session_id} with storage: {storage_dir}")
 
-        # Define Tools (All tools except MCP)
-        self.tools = [
+        # Define Read-Only Tools for PLANNING mode
+        self._planning_tools = [
+            # File reading (no write)
             read_file, list_files, search_codebase,
+            # Web/documentation tools
             search_documentation, fetch_webpage, get_godot_api_reference,
-            # Godot documentation tools (simplified)
             search_godot_docs, get_class_reference, get_documentation_status,
+            # Connection check
             ensure_godot_connection,
+            # Scene analysis (read-only)
             get_project_overview, analyze_scene_tree, capture_visual_context,
             capture_editor_viewport, capture_game_viewport, get_visual_debug_info,
+            inspect_scene_file, search_nodes,
+            # Debug reading
             get_debug_output, get_debug_logs, search_debug_logs, monitor_debug_output,
-            get_performance_metrics, inspect_scene_file, search_nodes,
-            analyze_node_performance, get_scene_debug_overlays, compare_scenes,
-            get_debugger_state, access_debug_variables, get_call_stack_info,
-            create_node, modify_node_property, create_scene, open_scene,
-            select_nodes, play_scene, stop_playing,
-            write_file, delete_file, modify_gdscript_method, add_gdscript_method,
-            remove_gdscript_method, modify_project_setting,
+            get_performance_metrics, analyze_node_performance, get_scene_debug_overlays,
+            compare_scenes, get_debugger_state, access_debug_variables, get_call_stack_info,
+            # GDScript analysis (read-only)
             analyze_gdscript_structure, validate_gdscript_syntax,
-            refactor_gdscript_method, extract_gdscript_method,
             # Context engine tools
             retrieve_context, get_signal_flow, get_class_hierarchy,
             find_usages, get_file_context, get_project_structure,
             get_context_stats
         ]
+        
+        # Define Write/Modify Tools for EXECUTION mode (all planning tools + these)
+        self._execution_only_tools = [
+            # File modification
+            write_file, delete_file,
+            # GDScript modification
+            modify_gdscript_method, add_gdscript_method, remove_gdscript_method,
+            refactor_gdscript_method, extract_gdscript_method,
+            # Node/scene modification
+            create_node, modify_node_property, create_scene, open_scene, select_nodes,
+            # Execution control
+            play_scene, stop_playing,
+            # Settings
+            modify_project_setting,
+        ]
+        
+        # Full tools = planning + execution
+        self.tools = self._planning_tools + self._execution_only_tools
+        
+        # Current mode and pending plan
+        self._current_mode: AgentMode = AgentMode.PLANNING
+        self._pending_plan: Optional[str] = None
+        self._plan_state: PlanState = PlanState.NONE
+        self._plan_original_request: Optional[str] = None  # Original user request for plan regeneration
+        
+        # Try to restore plan from session
+        self._restore_plan_from_session()
 
         # Initialize Conversation Manager
         self.conversation_manager = SlidingWindowConversationManager(
@@ -153,11 +200,20 @@ class GodotyAgent:
             self._create_agent()
             self._agent_initialized = True
 
-    async def run(self, prompt: str) -> Dict[str, Any]:
+    async def run(self, prompt: str, mode: Literal["planning", "execution"] = "planning") -> Dict[str, Any]:
         """
         Run the agent synchronously (non-streaming).
+        
+        Args:
+            prompt: The user's request
+            mode: Either 'planning' (read-only) or 'execution' (full access)
+        
+        Returns:
+            Dict with response text and metrics
         """
-        self._ensure_agent_initialized()
+        # Set mode and recreate agent with appropriate tools/prompt
+        self._set_mode(AgentMode.PLANNING if mode == "planning" else AgentMode.EXECUTION)
+        
         try:
             result = await self.agent.invoke_async(prompt)
             
@@ -170,28 +226,46 @@ class GodotyAgent:
                      if text_parts:
                          response_text = '\n'.join(text_parts)
             
+            # Store plan if in planning mode
+            if mode == "planning":
+                self._pending_plan = response_text
+            
             # Metrics are handled by callback
             metrics = {}
             if hasattr(self.agent, 'state'):
                  metrics = self.agent.state.get("godoty_metrics", {})
 
             return {
-                "plan": response_text, # Keeping "plan" key for compatibility
+                "plan": response_text,
+                "mode": mode,
+                "has_pending_plan": self._pending_plan is not None,
                 "metrics": metrics
             }
         except Exception as e:
             logger.error(f"Error in agent run: {e}")
             raise
 
-    async def run_stream(self, prompt: str) -> AsyncIterable[Dict[str, Any]]:
-        """Run the agent with streaming."""
-        self._ensure_agent_initialized()
+    async def run_stream(self, prompt: str, mode: Literal["planning", "execution"] = "planning") -> AsyncIterable[Dict[str, Any]]:
+        """
+        Run the agent with streaming.
+        
+        Args:
+            prompt: The user's request
+            mode: Either 'planning' (read-only) or 'execution' (full access)
+        
+        Yields:
+            Transformed event dicts
+        """
+        # Set mode and recreate agent with appropriate tools/prompt
+        self._set_mode(AgentMode.PLANNING if mode == "planning" else AgentMode.EXECUTION)
+        
         try:
             from agents.event_utils import transform_strands_event
 
-            logger.info(f"[STREAM] Starting stream for session {self.session_id}")
+            logger.info(f"[STREAM] Starting {mode} stream for session {self.session_id}")
             event_count = 0
             metrics_received = False
+            collected_text = []  # Collect text for plan storage
 
             async for event in self.agent.stream_async(prompt):
                 event_count += 1
@@ -204,6 +278,13 @@ class GodotyAgent:
                     event_type = transformed.get("type", "unknown")
                     logger.debug(f"[STREAM] Transformed event type: {event_type}")
                     
+                    # Collect text content for plan storage
+                    if event_type == "text" or event_type == "data":
+                        # transform_strands_event returns {"text": ...} for text events
+                        text_content = transformed.get("data", {}).get("text", "")
+                        if text_content:
+                            collected_text.append(text_content)
+                    
                     # Capture and persist metrics from transformed events
                     if event_type == "metrics":
                         metrics_received = True
@@ -212,7 +293,14 @@ class GodotyAgent:
                         if metrics_data:
                             await self._update_metrics(metrics_data)
                     
+                    # Add mode info to events
+                    transformed["mode"] = mode
                     yield transformed
+
+            # Store plan if in planning mode
+            if mode == "planning" and collected_text:
+                plan_text = "".join(collected_text)
+                self.set_pending_plan(plan_text, original_request=prompt)
 
             logger.info(f"[STREAM] Stream complete. Events: {event_count}, Metrics received: {metrics_received}")
 
@@ -249,19 +337,54 @@ class GodotyAgent:
             except Exception as e:
                 logger.error(f"Failed to persist metrics: {e}")
 
-    def _create_agent(self, project_path: str = None, project_context: str = None):
+    def _set_mode(self, mode: AgentMode):
         """
-        Create or recreate agent with optional project path scoping.
+        Set the agent mode and recreate agent with appropriate tools/prompt.
+        
+        Args:
+            mode: AgentMode.PLANNING or AgentMode.EXECUTION
+        """
+        if self._current_mode != mode or not self._agent_initialized:
+            self._current_mode = mode
+            self._create_agent(
+                project_path=self.project_path,
+                mode=mode
+            )
+            self._agent_initialized = True
+            logger.info(f"Agent mode set to: {mode.value}")
+
+    def _create_agent(self, project_path: str = None, project_context: str = None, mode: AgentMode = None):
+        """
+        Create or recreate agent with optional project path scoping and mode.
         
         Args:
             project_path: Optional project path to scope agent operations to.
             project_context: Optional project context map for prompt injection.
+            mode: AgentMode for selecting tools and prompt (defaults to current mode).
         """
-        system_prompt = Prompts.get_system_prompt(project_path, project_context)
+        if mode is None:
+            mode = self._current_mode
+        
+        # Get base system prompt
+        base_prompt = Prompts.get_system_prompt(project_path, project_context)
+        
+        # Apply mode-specific prompt and select tools
+        if mode == AgentMode.PLANNING:
+            system_prompt = PlanningPrompts.get_planning_prompt(base_prompt)
+            tools = self._planning_tools
+            logger.info("Using PLANNING mode: read-only tools")
+        else:
+            # Execution mode - use full tools and optionally include pending plan
+            system_prompt = PlanningPrompts.get_execution_prompt(
+                base_prompt, 
+                approved_plan=self._pending_plan
+            )
+            tools = self.tools  # All tools
+            logger.info("Using EXECUTION mode: full tool access")
         
         self.agent = Agent(
             model=self.model,
-            tools=self.tools,
+            tools=tools,
             system_prompt=system_prompt,
             conversation_manager=self.conversation_manager,
             session_manager=self.session_manager,
@@ -364,6 +487,138 @@ class GodotyAgent:
         except Exception as e:
             logger.error(f"Error resetting conversation: {e}")
             raise
+
+    # Plan management methods for two-phase workflow
+    
+    def _restore_plan_from_session(self):
+        """Restore pending plan from session storage if exists."""
+        if not self.session_manager:
+            return
+        
+        try:
+            # Read session state file directly
+            import json
+            from pathlib import Path
+            
+            storage_dir = self.session_manager.storage_dir
+            session_id = self.session_manager.session_id
+            plan_file = Path(storage_dir) / f"session_{session_id}" / "plan_state.json"
+            
+            if plan_file.exists():
+                with open(plan_file, 'r') as f:
+                    plan_data = json.load(f)
+                
+                self._pending_plan = plan_data.get("plan")
+                self._plan_state = PlanState(plan_data.get("state", "none"))
+                self._plan_original_request = plan_data.get("original_request")
+                
+                if self._pending_plan and self._plan_state == PlanState.PENDING:
+                    logger.info(f"Restored pending plan from session ({len(self._pending_plan)} chars)")
+        except Exception as e:
+            logger.warning(f"Failed to restore plan from session: {e}")
+    
+    def _save_plan_to_session(self):
+        """Save current plan state to session storage."""
+        if not self.session_manager:
+            return
+        
+        try:
+            import json
+            from pathlib import Path
+            
+            storage_dir = self.session_manager.storage_dir
+            session_id = self.session_manager.session_id
+            session_dir = Path(storage_dir) / f"session_{session_id}"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            
+            plan_file = session_dir / "plan_state.json"
+            plan_data = {
+                "plan": self._pending_plan,
+                "state": self._plan_state.value,
+                "original_request": self._plan_original_request
+            }
+            
+            with open(plan_file, 'w') as f:
+                json.dump(plan_data, f, indent=2)
+            
+            logger.info(f"Saved plan state to session: {self._plan_state.value}")
+        except Exception as e:
+            logger.error(f"Failed to save plan to session: {e}")
+    
+    def get_pending_plan(self) -> Optional[str]:
+        """Get the currently pending plan awaiting approval."""
+        return self._pending_plan
+    
+    def get_plan_state(self) -> str:
+        """Get the current plan state as a string."""
+        return self._plan_state.value
+    
+    def get_plan_info(self) -> Dict[str, Any]:
+        """Get full plan info including state and original request."""
+        return {
+            "plan": self._pending_plan,
+            "state": self._plan_state.value,
+            "original_request": self._plan_original_request,
+            "has_pending_plan": self._plan_state == PlanState.PENDING
+        }
+    
+    def has_pending_plan(self) -> bool:
+        """Check if there's a pending plan awaiting approval."""
+        return self._plan_state == PlanState.PENDING and self._pending_plan is not None
+    
+    def set_pending_plan(self, plan: str, original_request: str = None):
+        """Set a new pending plan and save to session."""
+        self._pending_plan = plan
+        self._plan_state = PlanState.PENDING
+        self._plan_original_request = original_request
+        self._save_plan_to_session()
+        logger.info(f"Set pending plan ({len(plan)} chars)")
+    
+    def clear_pending_plan(self):
+        """Clear the pending plan (e.g., after rejection without regeneration)."""
+        self._pending_plan = None
+        self._plan_state = PlanState.NONE
+        self._plan_original_request = None
+        self._save_plan_to_session()
+        logger.info("Pending plan cleared")
+    
+    async def approve_and_execute(self, execution_prompt: str = None) -> AsyncIterable[Dict[str, Any]]:
+        """
+        Approve the pending plan and execute it.
+        
+        Args:
+            execution_prompt: Optional additional instructions for execution.
+                              If not provided, uses the plan content.
+        
+        Yields:
+            Execution stream events
+        """
+        if not self._pending_plan:
+            yield {"type": "error", "data": {"error": "No pending plan to execute"}}
+            return
+        
+        # Mark plan as approved
+        self._plan_state = PlanState.APPROVED
+        self._save_plan_to_session()
+        
+        # Build execution prompt including the plan
+        plan_content = self._pending_plan
+        if execution_prompt:
+            prompt = f"{execution_prompt}\n\n## Approved Plan to Execute:\n{plan_content}"
+        else:
+            prompt = f"Execute the following approved plan step by step:\n\n{plan_content}"
+        
+        logger.info(f"Executing approved plan ({len(plan_content)} chars)")
+        
+        async for event in self.run_stream(prompt, mode="execution"):
+            yield event
+        
+        # Clear plan after execution
+        self.clear_pending_plan()
+    
+    def get_current_mode(self) -> str:
+        """Get the current agent mode as a string."""
+        return self._current_mode.value
 
 # Singleton management
 _godoty_agent_instance: Optional[GodotyAgent] = None

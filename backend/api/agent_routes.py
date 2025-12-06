@@ -441,7 +441,8 @@ class SessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     """Request model for chat message."""
     message: str = Field(..., description="User message", min_length=1)
-    mode: str = Field("planning", description="Execution mode: 'planning' or 'fast'")
+    mode: str = Field("planning", description="Execution mode: 'planning' or 'execution'")
+    plan_feedback: Optional[str] = Field(None, description="Feedback for plan regeneration")
 
 
 @router.post("/sessions", response_model=dict)
@@ -1412,7 +1413,18 @@ async def chat_session_stream(
             """Generate Server-Sent Events from agent stream."""
             try:
                 agent = get_godoty_agent(session_id=session_id)
-                async for event in agent.run_stream(chat_request.message):
+                
+                # Determine mode - default to planning unless explicitly set to execution
+                mode = chat_request.mode if chat_request.mode in ["planning", "execution"] else "planning"
+                
+                # If feedback is provided, prepend it to the message for plan regeneration
+                message = chat_request.message
+                if chat_request.plan_feedback:
+                    message = f"[User Feedback: {chat_request.plan_feedback}]\n\n{message}"
+                
+                logger.info(f"Starting {mode} mode stream for session {session_id}")
+                
+                async for event in agent.run_stream(message, mode=mode):
                     # Check if client has disconnected
                     if await request.is_disconnected():
                         logger.info(f"Client disconnected for session {session_id}, stopping stream")
@@ -1424,6 +1436,9 @@ async def chat_session_stream(
 
                     # Sanitize event data to ensure JSON serializability
                     sanitized_data = sanitize_event_data(event_data)
+                    
+                    # Include mode in the event data
+                    sanitized_data["mode"] = mode
 
                     # Create the event structure to send directly
                     final_data = {
@@ -1444,9 +1459,13 @@ async def chat_session_stream(
                     yield f"event: {event_type}\n"
                     yield f"data: {data_json}\n\n"
                 
-                # Send done event
+                # Send done event with plan info
+                done_data = {
+                    "mode": mode,
+                    "has_pending_plan": agent.has_pending_plan()
+                }
                 yield "event: done\n"
-                yield "data: {}\n\n"
+                yield f"data: {json.dumps(done_data)}\n\n"
 
             except asyncio.CancelledError:
                 logger.info(f"Stream cancelled for session {session_id}")
@@ -1475,4 +1494,203 @@ async def chat_session_stream(
         
     except Exception as e:
         logger.error(f"Error setting up chat stream: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Plan Management Routes
+
+@router.get("/sessions/{session_id}/plan", response_model=dict)
+async def get_plan_status(session_id: str):
+    """
+    Get the current pending plan and its status.
+    
+    Returns:
+        Full plan info including state and original request
+    """
+    try:
+        agent = get_godoty_agent(session_id=session_id)
+        plan_info = agent.get_plan_info()
+        
+        return {
+            "status": "success",
+            **plan_info,
+            "current_mode": agent.get_current_mode()
+        }
+    except Exception as e:
+        logger.error(f"Error getting plan status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/plan/approve")
+async def approve_plan_stream(
+    session_id: str,
+    request: Request,
+    execution_prompt: Optional[str] = None
+):
+    """
+    Approve the pending plan and execute it with streaming response.
+    
+    Args:
+        session_id: Session ID
+        execution_prompt: Optional additional instructions for execution
+    
+    Returns:
+        StreamingResponse with execution events
+    """
+    try:
+        agent = get_godoty_agent(session_id=session_id)
+        
+        if not agent.has_pending_plan():
+            raise HTTPException(status_code=400, detail="No pending plan to approve")
+        
+        async def event_generator():
+            try:
+                async for event in agent.approve_and_execute(execution_prompt):
+                    if await request.is_disconnected():
+                        break
+                    
+                    event_type = event.get("type", "data")
+                    event_data = event.get("data", {})
+                    sanitized_data = sanitize_event_data(event_data)
+                    sanitized_data["mode"] = "execution"
+                    
+                    final_data = {"type": event_type, "data": sanitized_data}
+                    yield f"event: {event_type}\n"
+                    yield f"data: {json.dumps(final_data)}\n\n"
+                
+                yield "event: done\n"
+                yield f'data: {{"mode": "execution", "execution_complete": true}}\n\n'
+                
+            except Exception as e:
+                logger.error(f"Error in execution stream: {e}")
+                yield "event: error\n"
+                yield f'data: {{"error": "{str(e)}"}}\n\n'
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/plan/reject", response_model=dict)
+async def reject_plan(session_id: str, feedback: Optional[dict] = None):
+    """
+    Reject/clear the pending plan.
+    
+    Args:
+        session_id: Session ID
+        feedback: Optional dict with 'reason' field
+    
+    Returns:
+        Status confirmation
+    """
+    try:
+        agent = get_godoty_agent(session_id=session_id)
+        agent.clear_pending_plan()
+        
+        return {
+            "status": "success",
+            "message": "Plan rejected and cleared",
+            "feedback_received": feedback.get("reason") if feedback else None
+        }
+    except Exception as e:
+        logger.error(f"Error rejecting plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RegeneratePlanRequest(BaseModel):
+    """Request model for plan regeneration."""
+    feedback: str = Field(..., description="User feedback for plan changes")
+
+
+@router.post("/sessions/{session_id}/plan/regenerate")
+async def regenerate_plan_stream(
+    session_id: str,
+    regen_request: RegeneratePlanRequest,
+    request: Request
+):
+    """
+    Regenerate a plan with user feedback.
+    
+    Args:
+        session_id: Session ID
+        regen_request: Feedback for regeneration
+    
+    Returns:
+        StreamingResponse with new plan
+    """
+    try:
+        agent = get_godoty_agent(session_id=session_id)
+        
+        # Get the original request
+        plan_info = agent.get_plan_info()
+        original_request = plan_info.get("original_request")
+        
+        if not original_request:
+            raise HTTPException(status_code=400, detail="No original request found for regeneration")
+        
+        # Clear old plan
+        agent.clear_pending_plan()
+        
+        # Construct regeneration prompt with feedback
+        regen_prompt = f"""[User Feedback on Previous Plan]
+{regen_request.feedback}
+
+[Original Request]
+{original_request}
+
+Please generate a new plan addressing the user's feedback."""
+
+        async def event_generator():
+            try:
+                async for event in agent.run_stream(regen_prompt, mode="planning"):
+                    if await request.is_disconnected():
+                        break
+                    
+                    event_type = event.get("type", "data")
+                    event_data = event.get("data", {})
+                    sanitized_data = sanitize_event_data(event_data)
+                    sanitized_data["mode"] = "planning"
+                    
+                    final_data = {"type": event_type, "data": sanitized_data}
+                    yield f"event: {event_type}\n"
+                    yield f"data: {json.dumps(final_data)}\n\n"
+                
+                done_data = {
+                    "mode": "planning",
+                    "has_pending_plan": agent.has_pending_plan()
+                }
+                yield "event: done\n"
+                yield f"data: {json.dumps(done_data)}\n\n"
+                
+            except Exception as e:
+                logger.error(f"Error in regeneration stream: {e}")
+                yield "event: error\n"
+                yield f'data: {{"error": "{str(e)}"}}\n\n'
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error regenerating plan: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -37,6 +37,12 @@ export interface GodotStatus {
     completed_at?: string;
     progress_percent: number;
   };
+  chat_ready?: {
+    ready: boolean;
+    godot_connected: boolean;
+    api_key_configured: boolean;
+    message: string;
+  };
 }
 
 @Injectable({

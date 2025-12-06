@@ -8,6 +8,7 @@ Import from here to get all config options:
 from .model_config import ModelConfig
 from .tool_config import ToolConfig
 from .prompts import Prompts
+from .planning_prompts import PlanningPrompts
 from .validators import ConfigValidator
 
 

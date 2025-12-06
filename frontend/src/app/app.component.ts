@@ -309,41 +309,164 @@ interface Metrics {
               </button>
             </div>
           } @else {
-            <div class="max-w-3xl mx-auto flex items-end gap-2 bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200 p-2">
-              
+            <!-- Plan Review Card (shown when plan is pending or regenerating) -->
+            @if (hasPendingPlan()) {
+              <div class="max-w-3xl mx-auto mb-4 bg-[#262c3b] rounded-xl border border-[#478cbf]/30 overflow-hidden">
+                <!-- Header -->
+                <div class="flex items-center justify-between px-4 py-3 bg-[#1e2330] border-b border-[#2d3546]">
+                  <div class="flex items-center gap-2 text-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 text-yellow-400">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z" />
+                    </svg>
+                    @if (isGenerating() && !pendingPlanContent()) {
+                      <span class="font-medium text-gray-200">Generating Plan...</span>
+                      <span class="w-4 h-4 border-2 border-yellow-400/30 border-t-yellow-400 rounded-full animate-spin"></span>
+                    } @else if (isGenerating()) {
+                      <span class="font-medium text-gray-200">Plan (Updating...)</span>
+                      <span class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse"></span>
+                    } @else {
+                      <span class="font-medium text-gray-200">Plan Generated</span>
+                      <span class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse"></span>
+                    }
+                  </div>
+                </div>
+
+                <!-- Plan Content -->
+                <div class="px-4 py-3 max-h-80 overflow-y-auto">
+                  @if (!pendingPlanContent() && isGenerating()) {
+                    <!-- Loading state -->
+                    <div class="flex items-center justify-center py-8">
+                      <div class="flex flex-col items-center gap-3">
+                        <div class="w-8 h-8 border-3 border-[#478cbf]/30 border-t-[#478cbf] rounded-full animate-spin"></div>
+                        <span class="text-sm text-gray-400">Agent is thinking...</span>
+                      </div>
+                    </div>
+                  } @else if (pendingPlanContent()) {
+                    <div class="prose prose-invert prose-sm max-w-none text-gray-300 leading-relaxed whitespace-pre-wrap">{{ stripPlanFences(pendingPlanContent()) }}@if (isGenerating()) {<span class="inline-block w-1.5 h-4 bg-[#478cbf] align-middle ml-0.5 animate-pulse"></span>}</div>
+                  } @else {
+                    <div class="text-gray-500 text-sm">No plan content available.</div>
+                  }
+                </div>
+
+                <!-- Feedback Input (shown when requesting changes) -->
+                @if (showFeedbackInput()) {
+                  <div class="px-4 py-3 border-t border-[#2d3546] bg-[#1e2330]">
+                    <label class="block text-xs text-gray-400 mb-2">What changes would you like?</label>
+                    <textarea
+                      [(ngModel)]="planFeedback"
+                      placeholder="Describe the changes you want..."
+                      class="w-full bg-[#161922] border border-[#2d3546] rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-[#478cbf] resize-none"
+                      rows="3"
+                    ></textarea>
+                  </div>
+                }
+
+                <!-- Action Buttons (only show when not generating) -->
+                @if (!isGenerating()) {
+                <div class="flex items-center justify-end gap-2 px-4 py-3 border-t border-[#2d3546] bg-[#1e2330]">
+                  @if (showFeedbackInput()) {
+                    <button
+                      (click)="cancelFeedback()"
+                      class="px-4 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-[#2d3546] transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      (click)="submitFeedback()"
+                      [disabled]="!planFeedback()"
+                      class="px-4 py-2 rounded-lg text-sm font-medium bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 transition-colors"
+                    >
+                      Regenerate Plan
+                    </button>
+                  } @else {
+                    <button
+                      (click)="requestChanges()"
+                      class="px-4 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-[#2d3546] transition-colors"
+                    >
+                      Request Changes
+                    </button>
+                    <button
+                      (click)="approvePlan()"
+                      [disabled]="isApproving()"
+                      class="px-4 py-2 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                    >
+                      @if (isApproving()) {
+                        <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        Executing...
+                      } @else {
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                        Accept & Execute
+                      }
+                    </button>
+                  }
+                </div>
+                }
+              </div>
+            }
+
+            <div class="max-w-3xl mx-auto bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200 overflow-hidden">
+              <!-- Textarea -->
               <textarea
                 #messageInput
                 [(ngModel)]="currentInput"
                 (keydown.enter)="$event.preventDefault(); sendMessage()"
                 placeholder="Ask Godoty a question..."
-                class="flex-1 bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 rounded-xl focus:outline-none resize-none max-h-48 overflow-y-auto"
+                class="w-full bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 focus:outline-none resize-none max-h-48 overflow-y-auto"
                 rows="1"
                 (input)="autoResize($event.target)"
               ></textarea>
 
-              @if (isGenerating()) {
-                <!-- Stop button when generating -->
+              <!-- Bottom Action Bar -->
+              <div class="flex items-center justify-between px-3 py-2 border-t border-[#3b4458]/50">
+                <!-- Left: Mode Toggle -->
                 <button
-                  (click)="stopGeneration()"
-                  class="p-3 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-all flex-shrink-0"
-                  title="Stop generation"
+                  (click)="toggleMode()"
+                  class="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all hover:bg-[#3b4458]/50"
+                  [class.text-yellow-400]="currentMode() === 'planning'"
+                  [class.text-green-400]="currentMode() === 'execution'"
+                  [title]="currentMode() === 'planning' ? 'Planning Mode: Agent will propose a plan for approval' : 'Execution Mode: Agent will directly execute actions'"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-                    <path d="M5.25 3A2.25 2.25 0 003 5.25v9.5A2.25 2.25 0 005.25 17h9.5A2.25 2.25 0 0017 14.75v-9.5A2.25 2.25 0 0014.75 3h-9.5z" />
+                  @if (currentMode() === 'planning') {
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
+                    </svg>
+                    <span>Planning</span>
+                  } @else {
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+                    </svg>
+                    <span>Execution</span>
+                  }
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3 h-3 opacity-50">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 15L12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" />
                   </svg>
                 </button>
-              } @else {
-                <!-- Send button when not generating -->
-                <button
-                  (click)="sendMessage()"
-                  [disabled]="!currentInput()"
-                  class="p-3 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all flex-shrink-0"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-                    <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2 2 0 005.635 9.75h5.736a.75.75 0 010 1.5H5.636a2 2 0 00-1.942 1.586l-1.414 4.925a.75.75 0 00.826.95 28.89 28.89 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
-                  </svg>
-                </button>
-              }
+
+                <!-- Right: Send/Stop Button -->
+                @if (isGenerating()) {
+                  <button
+                    (click)="stopGeneration()"
+                    class="flex items-center justify-center w-8 h-8 rounded-full bg-red-500 text-white hover:bg-red-600 transition-all"
+                    title="Stop generation"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+                      <path d="M5.25 3A2.25 2.25 0 003 5.25v9.5A2.25 2.25 0 005.25 17h9.5A2.25 2.25 0 0017 14.75v-9.5A2.25 2.25 0 0014.75 3h-9.5z" />
+                    </svg>
+                  </button>
+                } @else {
+                  <button
+                    (click)="sendMessage()"
+                    [disabled]="!currentInput()"
+                    class="flex items-center justify-center w-8 h-8 rounded-full bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-30 disabled:bg-[#3b4458] disabled:text-gray-500 transition-all"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+                      <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2 2 0 005.635 9.75h5.736a.75.75 0 010 1.5H5.636a2 2 0 00-1.942 1.586l-1.414 4.925a.75.75 0 00.826.95 28.89 28.89 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
+                    </svg>
+                  </button>
+                }
+              </div>
             </div>
           }
           <div class="text-center text-[10px] text-gray-600 mt-2 font-mono">
@@ -627,6 +750,14 @@ export class App implements OnInit, AfterViewChecked {
     total_cost: 0
   });
 
+  // Planning Mode State
+  hasPendingPlan = signal(false);
+  isApproving = signal(false);
+  currentMode = signal<'planning' | 'execution'>('planning');
+  pendingPlanContent = signal<string | null>(null);
+  showFeedbackInput = signal(false);
+  planFeedback = signal('');
+
   constructor() {
     // Effect to scroll to bottom when messages change
     effect(() => {
@@ -641,7 +772,7 @@ export class App implements OnInit, AfterViewChecked {
 
     this.loadSessions();
 
-    // Subscribe to Godot Status
+    // Subscribe to Godot Status (includes chat readiness)
     this.desktopService.streamGodotStatus().subscribe(status => {
       this.godotStatus.set(status);
       this.isGodotConnected.set(status.state === 'connected');
@@ -651,8 +782,11 @@ export class App implements OnInit, AfterViewChecked {
         this.chatService.setProjectPath(status.project_path);
       }
 
-      // Re-check chat readiness when Godot status changes
-      this.checkChatReadiness();
+      // Update chat readiness from SSE stream (no polling needed!)
+      if (status.chat_ready) {
+        this.chatReady.set(status.chat_ready.ready);
+        this.chatDisabledMessage.set(status.chat_ready.ready ? '' : status.chat_ready.message);
+      }
     });
 
     // Subscribe to Project Metrics
@@ -660,11 +794,9 @@ export class App implements OnInit, AfterViewChecked {
       // Update global metrics if needed, or just use per-message metrics
     });
 
-    // Initial chat readiness check
+    // Only do initial chat readiness check for fallback
+    // (SSE will provide updates, no polling needed)
     this.checkChatReadiness();
-
-    // Poll chat readiness every 5 seconds
-    setInterval(() => this.checkChatReadiness(), 5000);
   }
 
   /**
@@ -924,10 +1056,36 @@ export class App implements OnInit, AfterViewChecked {
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
+  /**
+   * Strip markdown code block fences from plan content
+   * Removes ```plan, ```markdown, or generic ``` fences
+   */
+  stripPlanFences(content: string | null): string {
+    if (!content) return '';
+    let stripped = content.trim();
+
+    // Remove opening fence (```plan, ```markdown, or just ```)
+    const openFenceRegex = /^```(?:plan|markdown)?\s*\n?/;
+    stripped = stripped.replace(openFenceRegex, '');
+
+    // Remove closing fence
+    const closeFenceRegex = /\n?```\s*$/;
+    stripped = stripped.replace(closeFenceRegex, '');
+
+    return stripped.trim();
+  }
+
+
   selectSession(sessionId: string) {
     this.activeSessionId.set(sessionId);
     this.messages.set([]); // Clear current messages
     this.isDraftMode.set(false); // Exit draft mode when selecting a session
+
+    // Clear any previous plan state
+    this.hasPendingPlan.set(false);
+    this.pendingPlanContent.set(null);
+    this.showFeedbackInput.set(false);
+    this.planFeedback.set('');
 
     this.chatService.getSession(sessionId).subscribe(sessionData => {
       // Assuming sessionData contains messages. If not, we might need another endpoint or the data structure is different.
@@ -985,6 +1143,18 @@ export class App implements OnInit, AfterViewChecked {
           this.messages.set(mappedMessages);
         }
       }
+    });
+
+    // Check for pending plan in this session
+    this.chatService.getPlanStatus(sessionId).subscribe({
+      next: (planStatus) => {
+        if (planStatus.has_pending_plan && planStatus.plan) {
+          this.hasPendingPlan.set(true);
+          this.pendingPlanContent.set(planStatus.plan);
+          console.log('Restored pending plan for session');
+        }
+      },
+      error: (err) => console.log('No plan status available:', err)
     });
   }
 
@@ -1229,11 +1399,12 @@ export class App implements OnInit, AfterViewChecked {
       const stream = this.chatService.sendMessageStream(
         sessionId,
         userContent,
-        undefined,
+        this.currentMode(),
         this.currentAbortController.signal
       );
       let startTime = Date.now();
       let tokenCount = 0;
+      let accumulatedContent = '';  // Track content outside the map for plan capture
 
       for await (const event of stream) {
         this.messages.update(msgs => msgs.map(m => {
@@ -1245,10 +1416,18 @@ export class App implements OnInit, AfterViewChecked {
           if (event.type === 'data' && event.data?.text) {
             updated.content += event.data.text;
             updated.chunks = [...(updated.chunks || []), event.data.text];
+            accumulatedContent += event.data.text;
             tokenCount++; // Rough estimation
+          } else if (event.type === 'text' && event.data?.content) {
+            // Backend sends {type: 'text', data: {content: ...}}
+            updated.content += event.data.content;
+            updated.chunks = [...(updated.chunks || []), event.data.content];
+            accumulatedContent += event.data.content;
+            tokenCount++;
           } else if (event.type === 'text' && event.content) {
             updated.content += event.content;
             updated.chunks = [...(updated.chunks || []), event.content];
+            accumulatedContent += event.content;
             tokenCount++; // Rough estimation
           } else if (event.type === 'reasoning' && event.data?.text) {
             updated.reasoning = (updated.reasoning || '') + event.data.text;
@@ -1505,6 +1684,29 @@ export class App implements OnInit, AfterViewChecked {
             // Stream finished
             updated.isStreaming = false;
 
+            // Debug: Log the done event
+            console.log('[PLAN DEBUG] Done event received:', event);
+            console.log('[PLAN DEBUG] accumulatedContent length:', accumulatedContent.length);
+
+            // Check if there's a pending plan from planning mode
+            const doneData = event.data || event;
+            console.log('[PLAN DEBUG] doneData:', doneData);
+
+            if (doneData.has_pending_plan !== undefined) {
+              console.log('[PLAN DEBUG] has_pending_plan:', doneData.has_pending_plan);
+              this.hasPendingPlan.set(doneData.has_pending_plan);
+              if (doneData.has_pending_plan && accumulatedContent) {
+                // Capture the plan content from accumulated text
+                this.pendingPlanContent.set(accumulatedContent);
+                console.log('[PLAN DEBUG] Plan captured! Length:', accumulatedContent.length);
+              }
+              if (doneData.mode) {
+                this.currentMode.set(doneData.mode as 'planning' | 'execution');
+              }
+            } else {
+              console.log('[PLAN DEBUG] has_pending_plan is undefined in doneData');
+            }
+
             // Mark any remaining pending tools as completed
             // This ensures tools don't stay in 'pending' state if tool_result wasn't received
             if (updated.toolCalls && updated.toolCalls.length > 0) {
@@ -1583,5 +1785,207 @@ export class App implements OnInit, AfterViewChecked {
       this.currentAbortController = null;
       this.isGenerating.set(false);
     }
+  }
+
+  // Plan Management Methods
+  async approvePlan(): Promise<void> {
+    const sessionId = this.activeSessionId();
+    if (!sessionId) return;
+
+    this.isApproving.set(true);
+    this.isGenerating.set(true);
+    this.currentAbortController = new AbortController();
+
+    // Create assistant message for execution
+    const assistantId = crypto.randomUUID();
+    const assistantMsg: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '**🚀 Executing approved plan...**\n\n',
+      timestamp: new Date(),
+      isStreaming: true,
+      toolCalls: []
+    };
+    this.messages.update(msgs => [...msgs, assistantMsg]);
+
+    try {
+      const stream = this.chatService.approvePlanStream(
+        sessionId,
+        undefined,
+        this.currentAbortController.signal
+      );
+
+      for await (const event of stream) {
+        this.messages.update(msgs => msgs.map(m => {
+          if (m.id !== assistantId) return m;
+          const updated = { ...m };
+
+          // Handle text events (multiple formats)
+          if (event.type === 'data' && event.data?.text) {
+            updated.content += event.data.text;
+          } else if (event.type === 'text' && event.data?.content) {
+            updated.content += event.data.content;
+          } else if (event.type === 'text' && event.data?.text) {
+            updated.content += event.data.text;
+          } else if (event.type === 'tool_use') {
+            // Handle tool use
+            const toolData = event.data || {};
+            const newToolCall = {
+              toolName: toolData.tool_name || 'unknown',
+              toolUseId: toolData.tool_use_id || `tool-${Date.now()}`,
+              input: typeof toolData.tool_input === 'string'
+                ? toolData.tool_input
+                : JSON.stringify(toolData.tool_input || {}, null, 2),
+              output: '',
+              status: 'pending' as const,
+            };
+            updated.toolCalls = [...(updated.toolCalls || []), newToolCall];
+          } else if (event.type === 'tool_result') {
+            // Handle tool result
+            const resultData = event.data || {};
+            const toolUseId = resultData.tool_use_id;
+            if (toolUseId && updated.toolCalls) {
+              updated.toolCalls = updated.toolCalls.map(tc => {
+                if (tc.toolUseId === toolUseId) {
+                  let output = '';
+                  if (typeof resultData.result === 'string') {
+                    output = resultData.result;
+                  } else if (Array.isArray(resultData.result)) {
+                    output = resultData.result.map((r: any) =>
+                      typeof r === 'string' ? r : (r.text || JSON.stringify(r))
+                    ).join('\n');
+                  } else if (resultData.result) {
+                    output = JSON.stringify(resultData.result, null, 2);
+                  }
+                  return { ...tc, output, status: 'success' as const };
+                }
+                return tc;
+              });
+            }
+          } else if (event.type === 'done') {
+            updated.isStreaming = false;
+            this.hasPendingPlan.set(false);
+            this.pendingPlanContent.set(null);
+            this.currentMode.set('planning');
+          }
+
+          return updated;
+        }));
+      }
+    } catch (error) {
+      console.error('Error executing plan:', error);
+      this.messages.update(msgs => msgs.map(m =>
+        m.id === assistantId
+          ? { ...m, content: m.content + '\n\n❌ Error executing plan', isStreaming: false }
+          : m
+      ));
+    } finally {
+      this.isApproving.set(false);
+      this.isGenerating.set(false);
+      this.hasPendingPlan.set(false);
+      this.currentAbortController = null;
+    }
+  }
+
+  rejectPlan(): void {
+    const sessionId = this.activeSessionId();
+    if (!sessionId) return;
+
+    this.chatService.rejectPlan(sessionId).subscribe({
+      next: () => {
+        this.hasPendingPlan.set(false);
+        this.pendingPlanContent.set(null);
+        this.currentMode.set('planning');
+        console.log('Plan rejected');
+      },
+      error: (error) => {
+        console.error('Error rejecting plan:', error);
+      }
+    });
+  }
+
+  requestChanges(): void {
+    this.showFeedbackInput.set(true);
+  }
+
+  cancelFeedback(): void {
+    this.showFeedbackInput.set(false);
+    this.planFeedback.set('');
+  }
+
+  async submitFeedback(): Promise<void> {
+    const sessionId = this.activeSessionId();
+    const feedback = this.planFeedback();
+    if (!sessionId || !feedback.trim()) return;
+
+    this.isGenerating.set(true);
+    this.showFeedbackInput.set(false);
+    this.currentAbortController = new AbortController();
+
+    // Clear old plan content and show loading state
+    this.hasPendingPlan.set(true); // Keep true to show the card
+    this.pendingPlanContent.set(null); // Clear content to show loading
+    this.planFeedback.set(''); // Clear feedback immediately
+
+    try {
+      const stream = this.chatService.regeneratePlanStream(
+        sessionId,
+        feedback,
+        this.currentAbortController.signal
+      );
+
+      let planText = '';
+      for await (const event of stream) {
+        console.log('[REGEN DEBUG] Event received:', event.type, event);
+
+        // Handle all text event types - matching sendActualMessage logic
+        if (event.type === 'data' && event.data?.text) {
+          // Primary case: Backend sends {type: 'data', data: {text: ...}}
+          planText += event.data.text;
+          this.pendingPlanContent.set(planText);
+        } else if (event.type === 'text' && event.data?.content) {
+          // Alternate case: {type: 'text', data: {content: ...}}
+          planText += event.data.content;
+          this.pendingPlanContent.set(planText);
+        } else if (event.type === 'text' && event.data?.text) {
+          // Another alternate: {type: 'text', data: {text: ...}}
+          planText += event.data.text;
+          this.pendingPlanContent.set(planText);
+        } else if (event.type === 'text' && event.content) {
+          // Legacy format: {type: 'text', content: ...}
+          planText += event.content;
+          this.pendingPlanContent.set(planText);
+        } else if (event.type === 'done') {
+          console.log('[REGEN DEBUG] Done event, planText length:', planText.length);
+          // If we received plan content, keep the card visible
+          // This is the key fix: prioritize having content over the done event flag
+          if (planText.trim()) {
+            this.hasPendingPlan.set(true);
+            this.pendingPlanContent.set(planText);
+            console.log('[REGEN DEBUG] Plan set successfully');
+          } else {
+            // Only hide if we truly got no content
+            const doneData = event.data || event;
+            console.log('[REGEN DEBUG] Done data:', doneData);
+            if (!doneData.has_pending_plan) {
+              this.hasPendingPlan.set(false);
+              this.pendingPlanContent.set(null);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error regenerating plan:', error);
+      // Show error in the plan card area
+      this.pendingPlanContent.set('❌ Error regenerating plan: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      this.isGenerating.set(false);
+      this.currentAbortController = null;
+    }
+
+  }
+
+  toggleMode(): void {
+    this.currentMode.update(mode => mode === 'planning' ? 'execution' : 'planning');
   }
 }

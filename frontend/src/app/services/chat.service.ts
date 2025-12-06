@@ -144,7 +144,7 @@ export class ChatService {
   }
 
   // Chat Interaction
-  sendMessage(sessionId: string, message: string, mode: 'planning' | 'fast' = 'planning'): Observable<any> {
+  sendMessage(sessionId: string, message: string, mode: 'planning' | 'execution' = 'planning'): Observable<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}/chat`;
     if (this.currentProjectPath) {
       url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
@@ -156,7 +156,136 @@ export class ChatService {
     return this.http.post(`${this.apiUrl}/sessions/${sessionId}/stop`, {});
   }
 
-  async *sendMessageStream(sessionId: string, message: string, mode: 'planning' | 'fast' = 'planning', signal?: AbortSignal): AsyncGenerator<any> {
+  // Plan Management
+  getPlanStatus(sessionId: string): Observable<{
+    has_pending_plan: boolean;
+    plan: string | null;
+    state: string;
+    original_request: string | null;
+    current_mode: string;
+  }> {
+    return this.http.get<any>(`${this.apiUrl}/sessions/${sessionId}/plan`);
+  }
+
+  rejectPlan(sessionId: string, feedback?: string): Observable<any> {
+    const body = feedback ? { reason: feedback } : {};
+    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/plan/reject`, body);
+  }
+
+  async *regeneratePlanStream(sessionId: string, feedback: string, signal?: AbortSignal): AsyncGenerator<any> {
+    const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/plan/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback }),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEventType = 'data';  // Default event type
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine) continue;
+
+          // Track SSE event type from "event: xxx" lines
+          if (trimmedLine.startsWith('event: ')) {
+            currentEventType = trimmedLine.slice(7).trim();
+            continue;
+          }
+
+          if (trimmedLine.startsWith('data: ')) {
+            const data = trimmedLine.slice(6).trim();
+            if (data === '[DONE]') {
+              currentEventType = 'data';  // Reset for next event
+              continue;
+            }
+
+            try {
+              const parsed = JSON.parse(data);
+              // Include the SSE event type if not present in the JSON
+              if (!parsed.type) {
+                parsed.type = currentEventType;
+              }
+              yield parsed;
+            } catch {
+              yield { type: currentEventType, error: 'Failed to parse server response', details: data };
+            }
+            currentEventType = 'data';  // Reset for next event
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+
+  async *approvePlanStream(sessionId: string, executionPrompt?: string, signal?: AbortSignal): AsyncGenerator<any> {
+    const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/plan/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ execution_prompt: executionPrompt }),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
+
+          const data = trimmedLine.slice(6).trim();
+          if (data && data !== '[DONE]') {
+            try {
+              yield JSON.parse(data);
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  async *sendMessageStream(sessionId: string, message: string, mode: 'planning' | 'execution' = 'planning', signal?: AbortSignal): AsyncGenerator<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}/chat/stream`;
     if (this.currentProjectPath) {
       url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
@@ -192,19 +321,35 @@ export class ChatService {
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
+        let currentEventType = 'data';  // Default event type
         for (const line of lines) {
           const trimmedLine = line.trim();
           if (!trimmedLine) continue;
 
+          // Track SSE event type from "event: xxx" lines
+          if (trimmedLine.startsWith('event: ')) {
+            currentEventType = trimmedLine.slice(7).trim();
+            continue;
+          }
+
           if (trimmedLine.startsWith('data: ')) {
             const data = trimmedLine.slice(6).trim();
-            if (data === '[DONE]') continue;
+            if (data === '[DONE]') {
+              currentEventType = 'data';  // Reset for next event
+              continue;
+            }
 
             try {
-              yield JSON.parse(data);
+              const parsed = JSON.parse(data);
+              // Include the SSE event type if not present in the JSON
+              if (!parsed.type) {
+                parsed.type = currentEventType;
+              }
+              yield parsed;
             } catch {
-              yield { type: 'error', error: 'Failed to parse server response', details: data };
+              yield { type: currentEventType, error: 'Failed to parse server response', details: data };
             }
+            currentEventType = 'data';  // Reset for next event
           }
         }
       }
@@ -216,7 +361,9 @@ export class ChatService {
           const data = trimmedBuffer.slice(6).trim();
           if (data && data !== '[DONE]') {
             try {
-              yield JSON.parse(data);
+              const parsed = JSON.parse(data);
+              if (!parsed.type) parsed.type = 'data';
+              yield parsed;
             } catch { /* ignore parse errors in final buffer */ }
           }
         }

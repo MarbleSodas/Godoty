@@ -51,6 +51,36 @@ class SSEManager:
             "project_settings": status.get("project_settings", {})
         })
         
+        # Add chat readiness info
+        try:
+            from config_manager import get_config
+            config = get_config()
+            api_key_configured = config.is_configured
+            godot_connected = status.get("state") == "connected"
+            chat_ready = godot_connected and api_key_configured
+            
+            if not api_key_configured:
+                chat_message = "Please configure your OpenRouter API key in Settings to start chatting."
+            elif not godot_connected:
+                chat_message = "Please connect to the Godot editor to start chatting."
+            else:
+                chat_message = "Ready to chat!"
+            
+            event_data["chat_ready"] = {
+                "ready": chat_ready,
+                "godot_connected": godot_connected,
+                "api_key_configured": api_key_configured,
+                "message": chat_message
+            }
+        except Exception:
+            event_data["chat_ready"] = {
+                "ready": False,
+                "godot_connected": False,
+                "api_key_configured": False,
+                "message": "Unable to check chat readiness"
+            }
+
+
         # Add context engine index status if available
         try:
             from agents.tools.context_tools import get_context_engine
@@ -126,6 +156,35 @@ async def event_generator(client_queue: asyncio.Queue) -> AsyncGenerator[str, No
             "project_settings": initial_status.get("project_settings", {})
         }
         
+        # Add chat readiness info
+        try:
+            from config_manager import get_config
+            config = get_config()
+            api_key_configured = config.is_configured
+            godot_connected = initial_status.get("state") == "connected"
+            chat_ready_status = godot_connected and api_key_configured
+            
+            if not api_key_configured:
+                chat_message = "Please configure your OpenRouter API key in Settings to start chatting."
+            elif not godot_connected:
+                chat_message = "Please connect to the Godot editor to start chatting."
+            else:
+                chat_message = "Ready to chat!"
+            
+            initial_data["chat_ready"] = {
+                "ready": chat_ready_status,
+                "godot_connected": godot_connected,
+                "api_key_configured": api_key_configured,
+                "message": chat_message
+            }
+        except Exception:
+            initial_data["chat_ready"] = {
+                "ready": False,
+                "godot_connected": False,
+                "api_key_configured": False,
+                "message": "Unable to check chat readiness"
+            }
+
         # Add context engine index status if available
         try:
             from agents.tools.context_tools import get_context_engine
