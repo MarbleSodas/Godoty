@@ -42,6 +42,15 @@ from .godot_executor_tools import (
     select_nodes,
     play_scene,
     stop_playing,
+    # New EditorInterface tools
+    close_scene,
+    edit_script,
+    save_scene_as,
+    save_all_scenes,
+    reload_scene,
+    switch_main_screen,
+    get_open_scenes,
+    scan_filesystem,
 )
 from .file_tools import (
     FileTools,
@@ -133,6 +142,15 @@ __all__ = [
     "select_nodes",
     "play_scene",
     "stop_playing",
+    # New EditorInterface tools
+    "close_scene",
+    "edit_script",
+    "save_scene_as",
+    "save_all_scenes",
+    "reload_scene",
+    "switch_main_screen",
+    "get_open_scenes",
+    "scan_filesystem",
     # File management tools
     "FileTools",
     "write_file",

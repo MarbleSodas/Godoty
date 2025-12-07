@@ -94,6 +94,7 @@ def create_app():
     from api.sse_routes import router as sse_router
     from api.documentation_routes import router as documentation_router
     from api.config_routes import router as config_router
+    from api.auth_routes import router as auth_router
 
     app = FastAPI(title="Godoty Desktop App", version="1.0.0")
 
@@ -123,6 +124,9 @@ def create_app():
 
     # Include configuration management routes
     app.include_router(config_router)
+
+    # Include authentication routes
+    app.include_router(auth_router)
 
     # FastAPI API Routes (must be defined before mounting static files)
     @app.get("/api/health")

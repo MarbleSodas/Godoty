@@ -66,6 +66,23 @@ class ModelConfig:
     AGENT_TEMPERATURE = 0.7
     AGENT_MAX_TOKENS = 4000
     
+    # Task-based Temperature Settings
+    # Lower temperature for code generation to ensure consistency
+    # Higher temperature for planning/discussion for creativity
+    TEMPERATURE_BY_TASK = {
+        "code_generation": 0.3,    # Precise, deterministic code output
+        "code_modification": 0.3,  # Precise edits
+        "planning": 0.7,           # Creative problem-solving
+        "learning": 0.7,           # Exploratory research
+        "execution": 0.5,          # Balanced for tool use
+        "default": 0.7,            # Fallback
+    }
+    
+    @classmethod
+    def get_temperature_for_task(cls, task_type: str = "default") -> float:
+        """Get appropriate temperature for a task type."""
+        return cls.TEMPERATURE_BY_TASK.get(task_type, cls.TEMPERATURE_BY_TASK["default"])
+    
     # Hardcoded App Info
     APP_NAME = "Godoty"
     APP_URL = "http://localhost:8000"
@@ -75,6 +92,34 @@ class ModelConfig:
     METRICS_DB_PATH = ".godoty_metrics.db"
     ENABLE_PRECISE_COST_TRACKING = False
     COST_QUERY_DELAY_MS = 1000
+    
+    # Web Search Capable Models (support :online suffix via OpenRouter)
+    # These models are known to work well with OpenRouter's web search feature
+    WEB_SEARCH_CAPABLE_MODELS = [
+        # Anthropic models
+        "anthropic/claude-sonnet-4",
+        "anthropic/claude-opus-4", 
+        "anthropic/claude-haiku-4",
+        # OpenAI models
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "openai/gpt-4-turbo",
+        # Google models
+        "google/gemini-2.0-flash-001",
+        "google/gemini-pro-1.5",
+        # xAI models
+        "x-ai/grok-2",
+        "x-ai/grok-2-mini",
+        # DeepSeek
+        "deepseek/deepseek-chat",
+        # Meta
+        "meta-llama/llama-3.3-70b-instruct",
+    ]
+    
+    @classmethod
+    def get_allowed_models(cls) -> list:
+        """Get list of models that support web search (global restriction)."""
+        return cls.WEB_SEARCH_CAPABLE_MODELS.copy()
     
     def update_config(self, model_id: str = None, api_key: str = None):
         """Update configuration dynamically and persist to storage."""

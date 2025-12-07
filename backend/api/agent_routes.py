@@ -441,7 +441,7 @@ class SessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     """Request model for chat message."""
     message: str = Field(..., description="User message", min_length=1)
-    mode: str = Field("planning", description="Execution mode: 'planning' or 'execution'")
+    mode: str = Field("planning", description="Execution mode: 'learning', 'planning', or 'execution'")
     plan_feedback: Optional[str] = Field(None, description="Feedback for plan regeneration")
 
 

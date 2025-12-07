@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { ChatService, Session, Message as ServiceMessage, ToolCall as ServiceToolCall } from './services/chat.service';
 import { DesktopService, GodotStatus } from './services/desktop.service';
 import { DocumentationService, DocumentationStatus, RebuildProgress } from './services/documentation.service';
+import { AuthService, CreditPack, Transaction } from './services/auth.service';
 import { catchError, of, switchMap, tap } from 'rxjs';
 
 // --- Interfaces ---
@@ -166,6 +167,44 @@ interface Metrics {
               </svg>
               <span>{{ sessionMetrics().total_tokens | number:'1.0-0' }}</span>
             </div>
+          </div>
+          
+          <!-- User Account / Balance -->
+          <div class="flex items-center gap-2">
+            @if (authService.isAuthenticated()) {
+              <!-- Balance Display -->
+              <button 
+                (click)="openTopUpModal()"
+                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-[#1a1e29] border border-[#2d3546] hover:border-green-500/50 transition-colors"
+                title="Credits - Click to top up"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 text-green-400">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a2.25 2.25 0 00-2.25-2.25H15a3 3 0 11-6 0H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v3" />
+                </svg>
+                <span class="text-green-400"><span>$</span>{{ authService.creditBalance() | number: '1.2-2' }}</span>
+              </button>
+              <!-- User Menu Button -->
+              <button 
+                (click)="openAccountMenu()"
+                class="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs bg-[#1a1e29] border border-[#2d3546] hover:border-[#478cbf]/50 transition-colors"
+                title="Account"
+              >
+                <div class="w-5 h-5 rounded-full bg-gradient-to-tr from-[#478cbf] to-cyan-400 flex items-center justify-center text-[10px] font-bold text-white">
+                  {{ authService.currentUser()?.email?.charAt(0)?.toUpperCase() || 'U' }}
+                </div>
+              </button>
+            } @else {
+              <!-- Login Button -->
+              <button 
+                (click)="openAuthModal()"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-[#478cbf] text-white hover:bg-[#367fa9] transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+                </svg>
+                Sign In
+              </button>
+            }
           </div>
         </header>
 
@@ -424,11 +463,17 @@ interface Metrics {
                 <button
                   (click)="toggleMode()"
                   class="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all hover:bg-[#3b4458]/50"
+                  [class.text-blue-400]="currentMode() === 'learning'"
                   [class.text-yellow-400]="currentMode() === 'planning'"
                   [class.text-green-400]="currentMode() === 'execution'"
-                  [title]="currentMode() === 'planning' ? 'Planning Mode: Agent will propose a plan for approval' : 'Execution Mode: Agent will directly execute actions'"
+                  [title]="currentMode() === 'learning' ? 'Learning Mode: Agent will research and gather information with web search' : currentMode() === 'planning' ? 'Planning Mode: Agent will propose a plan for approval' : 'Execution Mode: Agent will directly execute actions'"
                 >
-                  @if (currentMode() === 'planning') {
+                  @if (currentMode() === 'learning') {
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+                    </svg>
+                    <span>Learning</span>
+                  } @else if (currentMode() === 'planning') {
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
                     </svg>
@@ -492,18 +537,6 @@ interface Metrics {
           
           <!-- Modal Body -->
           <div class="p-6 space-y-4">
-            <!-- API Key Input -->
-            <div class="space-y-2">
-              <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">OpenRouter API Key</label>
-              <input 
-                type="password" 
-                [(ngModel)]="settingsForm.openrouter_api_key" 
-                placeholder="sk-or-..." 
-                class="w-full bg-[#161922] border border-[#2d3546] rounded-lg px-4 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-[#478cbf] focus:ring-1 focus:ring-[#478cbf] transition-all placeholder-gray-600"
-              >
-              <p class="text-[10px] text-gray-500">Required for accessing models via OpenRouter.</p>
-            </div>
-
             <!-- Model Selection -->
             <div class="space-y-2">
               <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Model ID</label>
@@ -694,6 +727,209 @@ interface Metrics {
         </div>
       </div>
     }
+    
+    <!-- Auth Modal (Login/Signup) -->
+    @if (authModalOpen()) {
+      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" (click)="closeAuthModal()">
+        <div class="bg-[#1a1e29] border border-[#2d3546] rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" (click)="$event.stopPropagation()">
+          <!-- Header -->
+          <div class="px-6 py-4 border-b border-[#2d3546] flex justify-between items-center bg-[#202531]">
+            <h3 class="text-lg font-semibold text-gray-200">
+              {{ authModalMode() === 'login' ? 'Sign In' : 'Create Account' }}
+            </h3>
+            <button (click)="closeAuthModal()" class="text-gray-500 hover:text-white transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          <!-- Form -->
+          <div class="p-6 space-y-4">
+            @if (authError()) {
+              <div class="bg-red-900/30 border border-red-500/50 rounded-lg px-4 py-2 text-sm text-red-300">
+                {{ authError() }}
+              </div>
+            }
+            
+            <div class="space-y-2">
+              <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Email</label>
+              <input 
+                type="email" 
+                [(ngModel)]="authForm.email" 
+                placeholder="you@example.com" 
+                class="w-full bg-[#161922] border border-[#2d3546] rounded-lg px-4 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-[#478cbf] focus:ring-1 focus:ring-[#478cbf] transition-all placeholder-gray-600"
+              >
+            </div>
+            
+            <div class="space-y-2">
+              <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Password</label>
+              <input 
+                type="password" 
+                [(ngModel)]="authForm.password" 
+                placeholder="••••••••"
+                (keydown.enter)="submitAuth()"
+                class="w-full bg-[#161922] border border-[#2d3546] rounded-lg px-4 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-[#478cbf] focus:ring-1 focus:ring-[#478cbf] transition-all placeholder-gray-600"
+              >
+            </div>
+          </div>
+          
+          <!-- Footer -->
+          <div class="px-6 py-4 border-t border-[#2d3546] bg-[#202531] space-y-3">
+            <button 
+              (click)="submitAuth()" 
+              [disabled]="authService.isLoading() || !authForm.email || !authForm.password"
+              class="w-full px-4 py-2.5 rounded-lg text-sm font-medium bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+            >
+              @if (authService.isLoading()) {
+                <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+              }
+              {{ authModalMode() === 'login' ? 'Sign In' : 'Create Account' }}
+            </button>
+            
+            <!-- Magic Link Option -->
+            @if (authModalMode() === 'login') {
+              <button 
+                (click)="sendMagicLink()"
+                [disabled]="authService.isLoading() || !authForm.email"
+                class="w-full px-4 py-2 rounded-lg text-sm font-medium text-gray-300 border border-[#2d3546] hover:border-[#478cbf]/50 hover:bg-[#2d3546]/50 disabled:opacity-50 transition-colors"
+              >
+                Send Magic Link Instead
+              </button>
+            }
+            
+            <!-- Divider -->
+            <div class="flex items-center gap-3 py-1">
+              <div class="flex-1 h-px bg-[#2d3546]"></div>
+              <span class="text-xs text-gray-500 uppercase">or continue with</span>
+              <div class="flex-1 h-px bg-[#2d3546]"></div>
+            </div>
+            
+            <!-- OAuth Buttons -->
+            <div class="flex gap-2">
+              <button 
+                (click)="signInWithOAuth('google')"
+                [disabled]="authService.isLoading()"
+                class="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 bg-[#161922] border border-[#2d3546] hover:border-[#478cbf]/50 hover:bg-[#2d3546]/50 disabled:opacity-50 transition-colors"
+              >
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                Google
+              </button>
+              
+              <button 
+                (click)="signInWithOAuth('github')"
+                [disabled]="authService.isLoading()"
+                class="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 bg-[#161922] border border-[#2d3546] hover:border-[#478cbf]/50 hover:bg-[#2d3546]/50 disabled:opacity-50 transition-colors"
+              >
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                </svg>
+                GitHub
+              </button>
+              
+              <button 
+                (click)="signInWithOAuth('discord')"
+                [disabled]="authService.isLoading()"
+                class="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 bg-[#161922] border border-[#2d3546] hover:border-[#478cbf]/50 hover:bg-[#2d3546]/50 disabled:opacity-50 transition-colors"
+              >
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028 14.09 14.09 0 001.226-1.994.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
+                </svg>
+                Discord
+              </button>
+            </div>
+            
+            <div class="text-center text-sm text-gray-400">
+              @if (authModalMode() === 'login') {
+                Don't have an account? 
+                <button (click)="switchAuthMode()" class="text-[#478cbf] hover:underline">Sign up</button>
+              } @else {
+                Already have an account?
+                <button (click)="switchAuthMode()" class="text-[#478cbf] hover:underline">Sign in</button>
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    }
+    
+    <!-- Top-Up Modal -->
+    @if (topUpModalOpen()) {
+      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" (click)="closeTopUpModal()">
+        <div class="bg-[#1a1e29] border border-[#2d3546] rounded-xl shadow-2xl w-full max-w-md overflow-hidden" (click)="$event.stopPropagation()">
+          <!-- Header -->
+          <div class="px-6 py-4 border-b border-[#2d3546] flex justify-between items-center bg-[#202531]">
+            <div>
+              <h3 class="text-lg font-semibold text-gray-200">Add Credits</h3>
+              <p class="text-xs text-gray-500">Current balance: <span class="text-green-400"><span>$</span>{{ authService.creditBalance() | number: '1.2-2' }}</span></p>
+            </div>
+            <button (click)="closeTopUpModal()" class="text-gray-500 hover:text-white transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          <!-- Credit Packs -->
+          <div class="p-6 space-y-3">
+            @for (pack of creditPacks(); track pack.id) {
+              <button 
+                (click)="purchasePack(pack.variant_id)"
+                class="w-full flex items-center justify-between p-4 bg-[#161922] border border-[#2d3546] rounded-lg hover:border-[#478cbf]/50 transition-colors text-left"
+              >
+                <div>
+                  <div class="font-medium text-gray-200">{{ pack.name }}</div>
+                  <div class="text-xs text-gray-500">{{ pack.amount | number:'1.2-2' }} credits</div>
+                </div>
+                <div class="text-lg font-bold text-green-400"><span>$</span>{{ pack.amount | number:'1.2-2' }}</div>
+              </button>
+            } @empty {
+              <div class="text-center text-gray-500 py-4">No credit packs available</div>
+            }
+          </div>
+          
+          <div class="px-6 py-4 border-t border-[#2d3546] bg-[#202531]">
+            <p class="text-[10px] text-gray-500 text-center">Secure payment via Lemon Squeezy. Opens in external browser.</p>
+          </div>
+        </div>
+      </div>
+    }
+    
+    <!-- Insufficient Credits Modal -->
+    @if (insufficientCreditsOpen()) {
+      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div class="bg-[#1a1e29] border border-red-500/30 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+          <div class="p-6 text-center space-y-4">
+            <div class="w-16 h-16 mx-auto bg-red-500/10 rounded-full flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-8 h-8 text-red-400">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+            </div>
+            <h3 class="text-lg font-semibold text-gray-200">Insufficient Credits</h3>
+            <p class="text-sm text-gray-400">Your credit balance is too low to continue. Please add more credits to keep using Godoty.</p>
+            <div class="flex gap-3 pt-2">
+              <button 
+                (click)="closeInsufficientCreditsModal()"
+                class="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-[#2d3546] transition-colors"
+              >
+                Later
+              </button>
+              <button 
+                (click)="closeInsufficientCreditsModal(); openTopUpModal()"
+                class="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
+              >
+                Add Credits
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    }
   `,
   styles: [`
     ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -714,6 +950,7 @@ export class App implements OnInit, AfterViewChecked {
   private chatService = inject(ChatService);
   private desktopService = inject(DesktopService);
   private documentationService = inject(DocumentationService);
+  authService = inject(AuthService);
 
   sidebarOpen = signal(true);
   currentInput = signal('');
@@ -724,7 +961,7 @@ export class App implements OnInit, AfterViewChecked {
 
   // Settings State
   settingsOpen = signal(false);
-  settingsForm = { model_id: '', openrouter_api_key: '' };
+  settingsForm = { model_id: '' };
 
   // Documentation State
   documentationStatus = signal<DocumentationStatus | null>(null);
@@ -753,10 +990,26 @@ export class App implements OnInit, AfterViewChecked {
   // Planning Mode State
   hasPendingPlan = signal(false);
   isApproving = signal(false);
-  currentMode = signal<'planning' | 'execution'>('planning');
+  currentMode = signal<'learning' | 'planning' | 'execution'>('planning');
   pendingPlanContent = signal<string | null>(null);
   showFeedbackInput = signal(false);
   planFeedback = signal('');
+
+  // Auth Modal State
+  authModalOpen = signal(false);
+  authModalMode = signal<'login' | 'signup'>('login');
+  authForm = { email: '', password: '' };
+  authError = signal<string | null>(null);
+
+  // Top-Up Modal State
+  topUpModalOpen = signal(false);
+  creditPacks = signal<CreditPack[]>([]);
+
+  // Account Menu State
+  accountMenuOpen = signal(false);
+
+  // Insufficient Credits Modal
+  insufficientCreditsOpen = signal(false);
 
   constructor() {
     // Effect to scroll to bottom when messages change
@@ -843,8 +1096,7 @@ export class App implements OnInit, AfterViewChecked {
           const config = response.config.model_config || {};
 
           this.settingsForm = {
-            model_id: config.model_id || '',
-            openrouter_api_key: '' // Don't show existing key for security
+            model_id: config.model_id || ''
           };
         }
         this.settingsOpen.set(true);
@@ -880,10 +1132,6 @@ export class App implements OnInit, AfterViewChecked {
     const updatePayload: any = {
       model_id: config.model_id
     };
-
-    if (config.openrouter_api_key) {
-      updatePayload.openrouter_api_key = config.openrouter_api_key;
-    }
 
     this.chatService.updateAgentConfig(updatePayload).subscribe({
       next: (response) => {
@@ -1176,6 +1424,12 @@ export class App implements OnInit, AfterViewChecked {
           this.messages.set([]);
           this.isDraftMode.set(true);
           this.sessionMetrics.set({ total_tokens: 0, total_cost: 0 });
+
+          // Clear any previous plan state
+          this.hasPendingPlan.set(false);
+          this.pendingPlanContent.set(null);
+          this.showFeedbackInput.set(false);
+          this.planFeedback.set('');
         }
 
         // Reload session list
@@ -1199,6 +1453,12 @@ export class App implements OnInit, AfterViewChecked {
     this.messages.set([]);
     this.isDraftMode.set(true);
     this.sessionMetrics.set({ total_tokens: 0, total_cost: 0 });
+
+    // Clear any previous plan state
+    this.hasPendingPlan.set(false);
+    this.pendingPlanContent.set(null);
+    this.showFeedbackInput.set(false);
+    this.planFeedback.set('');
   }
 
   private extractTitleFromMessage(message: string): string {
@@ -1211,10 +1471,10 @@ export class App implements OnInit, AfterViewChecked {
     // Normalize whitespace
     title = title.replace(/\s+/g, ' ');
 
-    // Truncate at 16 chars (word boundary) - matching backend
-    if (title.length > 16) {
-      const truncated = title.substring(0, 16).split(' ').slice(0, -1).join(' ');
-      title = truncated.length > 8 ? truncated + '...' : title.substring(0, 16) + '...';
+    // Truncate at 60 chars (was 16)
+    if (title.length > 60) {
+      const truncated = title.substring(0, 60).split(' ').slice(0, -1).join(' ');
+      title = truncated.length > 20 ? truncated + '...' : title.substring(0, 60) + '...';
     }
 
     return title || 'New Session';
@@ -1754,7 +2014,7 @@ export class App implements OnInit, AfterViewChecked {
       this.isGenerating.set(false);
       this.currentAbortController = null;
       this.messages.update(msgs => msgs.map(m =>
-        m.id === assistantId ? { ...m, isStreaming: false } : m
+        m.id === assistantId ? { ...m, content: m.content.trimEnd(), isStreaming: false } : m
       ));
     }
   }
@@ -1880,6 +2140,9 @@ export class App implements OnInit, AfterViewChecked {
           : m
       ));
     } finally {
+      this.messages.update(msgs => msgs.map(m =>
+        m.id === assistantId ? { ...m, content: m.content.trimEnd(), isStreaming: false } : m
+      ));
       this.isApproving.set(false);
       this.isGenerating.set(false);
       this.hasPendingPlan.set(false);
@@ -1986,6 +2249,139 @@ export class App implements OnInit, AfterViewChecked {
   }
 
   toggleMode(): void {
-    this.currentMode.update(mode => mode === 'planning' ? 'execution' : 'planning');
+    this.currentMode.update(mode => {
+      if (mode === 'learning') return 'planning';
+      if (mode === 'planning') return 'execution';
+      return 'learning';
+    });
+  }
+
+  // === Auth Modal Methods ===
+
+  openAuthModal(): void {
+    this.authModalMode.set('login');
+    this.authForm = { email: '', password: '' };
+    this.authError.set(null);
+    this.authModalOpen.set(true);
+  }
+
+  closeAuthModal(): void {
+    this.authModalOpen.set(false);
+    this.authError.set(null);
+  }
+
+  switchAuthMode(): void {
+    this.authModalMode.update(mode => mode === 'login' ? 'signup' : 'login');
+    this.authError.set(null);
+  }
+
+  submitAuth(): void {
+    const { email, password } = this.authForm;
+    if (!email || !password) return;
+
+    this.authError.set(null);
+
+    if (this.authModalMode() === 'login') {
+      this.authService.login(email, password).subscribe(result => {
+        if (result.success) {
+          this.closeAuthModal();
+        } else {
+          this.authError.set(result.error || 'Login failed');
+        }
+      });
+    } else {
+      this.authService.signup(email, password).subscribe(result => {
+        if (result.success) {
+          // After signup, switch to login
+          this.authModalMode.set('login');
+          this.authError.set(null);
+          // Show success message briefly
+          alert(result.message || 'Account created! Please check your email for confirmation.');
+        } else {
+          this.authError.set(result.error || 'Signup failed');
+        }
+      });
+    }
+  }
+
+  // === Top-Up Modal Methods ===
+
+  openTopUpModal(): void {
+    this.authService.getCreditPacks().subscribe(packs => {
+      this.creditPacks.set(packs);
+    });
+    this.topUpModalOpen.set(true);
+  }
+
+  closeTopUpModal(): void {
+    this.topUpModalOpen.set(false);
+  }
+
+  purchasePack(variantId: string): void {
+    this.authService.createCheckout(variantId).subscribe(result => {
+      if (result.success) {
+        // Close modal - browser will open externally
+        this.closeTopUpModal();
+      } else {
+        alert('Failed to create checkout: ' + (result.error || 'Unknown error'));
+      }
+    });
+  }
+
+  // === Account Menu Methods ===
+
+  openAccountMenu(): void {
+    // For now, just logout - could expand to dropdown menu
+    if (confirm('Sign out of your account?')) {
+      this.authService.logout().subscribe(() => {
+        // Auth state will be updated by the service
+      });
+    }
+  }
+
+  // === Insufficient Credits Modal ===
+
+  showInsufficientCreditsModal(): void {
+    this.insufficientCreditsOpen.set(true);
+  }
+
+  closeInsufficientCreditsModal(): void {
+    this.insufficientCreditsOpen.set(false);
+  }
+
+  /**
+   * Handle 402 errors from API responses
+   */
+  handleInsufficientCredits(): void {
+    this.isGenerating.set(false);
+    this.showInsufficientCreditsModal();
+  }
+
+  // === OAuth and Magic Link Methods ===
+
+  sendMagicLink(): void {
+    const email = this.authForm.email;
+    if (!email) return;
+
+    this.authService.sendMagicLink(email).subscribe(result => {
+      if (result.success) {
+        this.authError.set(null);
+        alert(result.message || 'Check your email for the login link!');
+        this.closeAuthModal();
+      } else {
+        this.authError.set(result.error || 'Failed to send magic link');
+      }
+    });
+  }
+
+  signInWithOAuth(provider: string): void {
+    this.authService.signInWithOAuth(provider).subscribe(result => {
+      if (result.success) {
+        // OAuth flow opened in browser - close modal
+        this.closeAuthModal();
+      } else {
+        this.authError.set(result.error || `${provider} sign-in failed`);
+      }
+    });
   }
 }

@@ -144,7 +144,7 @@ export class ChatService {
   }
 
   // Chat Interaction
-  sendMessage(sessionId: string, message: string, mode: 'planning' | 'execution' = 'planning'): Observable<any> {
+  sendMessage(sessionId: string, message: string, mode: 'learning' | 'planning' | 'execution' = 'planning'): Observable<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}/chat`;
     if (this.currentProjectPath) {
       url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
@@ -285,7 +285,7 @@ export class ChatService {
     }
   }
 
-  async *sendMessageStream(sessionId: string, message: string, mode: 'planning' | 'execution' = 'planning', signal?: AbortSignal): AsyncGenerator<any> {
+  async *sendMessageStream(sessionId: string, message: string, mode: 'learning' | 'planning' | 'execution' = 'planning', signal?: AbortSignal): AsyncGenerator<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}/chat/stream`;
     if (this.currentProjectPath) {
       url += `?path=${encodeURIComponent(this.currentProjectPath)}`;

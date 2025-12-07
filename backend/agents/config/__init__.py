@@ -9,7 +9,9 @@ from .model_config import ModelConfig
 from .tool_config import ToolConfig
 from .prompts import Prompts
 from .planning_prompts import PlanningPrompts
+from .learning_prompts import LearningPrompts
 from .validators import ConfigValidator
+from .prompt_builder import build_prompt, AgentMode as PromptAgentMode, format_tool_documentation
 
 
 class AgentConfig(ModelConfig, ToolConfig, Prompts):

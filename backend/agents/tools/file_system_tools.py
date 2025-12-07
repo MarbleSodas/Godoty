@@ -1,14 +1,17 @@
 """
-File system tools for the planning agent.
+File READ-ONLY Tools for Godot Assistant (Planning/Learning Mode).
 
-This module provides comprehensive file system manipulation tools including:
-- File reading with proper error handling and encoding support
-- Directory listing with pattern filtering and organized output
-- Codebase searching with regex support and result limiting
-- Path validation and security checks
+This module provides READ-ONLY file system tools for the planning agent.
+For FILE MODIFICATION tools, see file_tools.py.
 
-All tools use consistent error handling patterns and return standardized responses.
+Tools in this module:
+- read_file: Read file contents safely
+- list_files: List directory contents with pattern filtering
+- search_codebase: Search for patterns with regex support
+
+All tools use consistent error handling and return standardized responses.
 """
+
 
 import logging
 import os

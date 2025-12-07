@@ -35,3 +35,7 @@ networkx>=3.0
 # Context Engine - Vector Store
 chromadb>=0.4.0
 sentence-transformers>=2.2.0
+
+# Monetization (Supabase Auth + Secure Token Storage)
+supabase>=2.0.0
+keyring>=25.0.0

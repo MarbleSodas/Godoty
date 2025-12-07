@@ -18,6 +18,7 @@ from core.model import GodotyOpenRouterModel
 from agents.config import AgentConfig
 from agents.config.prompts import Prompts
 from agents.config.planning_prompts import PlanningPrompts
+from agents.config.learning_prompts import LearningPrompts
 from agents.tools import (
     # File system tools
     read_file, list_files, search_codebase,
@@ -51,9 +52,15 @@ from agents.tools import (
 
 logger = logging.getLogger(__name__)
 
+# Agent Safety Constants for Monetization
+MAX_AGENT_STEPS = 15  # Maximum tool calls per user request
+MIN_BALANCE_FOR_STEP = 0.01  # Minimum balance ($0.01) to continue
+BALANCE_CHECK_INTERVAL = 5  # Check balance every N steps
+
 
 class AgentMode(Enum):
-    """Agent modes for the two-phase planning workflow."""
+    """Agent modes for the three-phase workflow."""
+    LEARNING = "learning"     # Deep research with web search
     PLANNING = "planning"     # Read-only information gathering
     EXECUTION = "execution"   # Full execution with write access
 
@@ -108,6 +115,32 @@ class GodotyAgent:
             # File reading (no write)
             read_file, list_files, search_codebase,
             # Web/documentation tools
+            search_documentation, fetch_webpage, get_godot_api_reference,
+            search_godot_docs, get_class_reference, get_documentation_status,
+            # Connection check
+            ensure_godot_connection,
+            # Scene analysis (read-only)
+            get_project_overview, analyze_scene_tree, capture_visual_context,
+            capture_editor_viewport, capture_game_viewport, get_visual_debug_info,
+            inspect_scene_file, search_nodes,
+            # Debug reading
+            get_debug_output, get_debug_logs, search_debug_logs, monitor_debug_output,
+            get_performance_metrics, analyze_node_performance, get_scene_debug_overlays,
+            compare_scenes, get_debugger_state, access_debug_variables, get_call_stack_info,
+            # GDScript analysis (read-only)
+            analyze_gdscript_structure, validate_gdscript_syntax,
+            # Context engine tools
+            retrieve_context, get_signal_flow, get_class_hierarchy,
+            find_usages, get_file_context, get_project_structure,
+            get_context_stats
+        ]
+        
+        # Define Learning Mode Tools (focused on research + documentation)
+        # These are the same as planning tools - web search is enabled via model suffix
+        self._learning_tools = [
+            # File reading (no write)
+            read_file, list_files, search_codebase,
+            # Web/documentation tools (primary focus for learning)
             search_documentation, fetch_webpage, get_godot_api_reference,
             search_godot_docs, get_class_reference, get_documentation_status,
             # Connection check
@@ -192,6 +225,12 @@ class GodotyAgent:
                          logger.info(f"Resumed session {session_id}. Previous cost: ${metrics.get('total_cost', 0):.4f}")
             except Exception as e:
                 logger.warning(f"Failed to load session state: {e}")
+        
+        # Agent safety tracking for monetization
+        self._step_count = 0
+        self._supabase_auth = None
+        self._cached_balance = None
+        self._last_balance_check = 0
     
     def _ensure_agent_initialized(self):
         """Ensure agent is initialized before use."""
@@ -200,19 +239,24 @@ class GodotyAgent:
             self._create_agent()
             self._agent_initialized = True
 
-    async def run(self, prompt: str, mode: Literal["planning", "execution"] = "planning") -> Dict[str, Any]:
+    async def run(self, prompt: str, mode: Literal["learning", "planning", "execution"] = "planning") -> Dict[str, Any]:
         """
         Run the agent synchronously (non-streaming).
         
         Args:
             prompt: The user's request
-            mode: Either 'planning' (read-only) or 'execution' (full access)
+            mode: 'learning' (research), 'planning' (read-only), or 'execution' (full access)
         
         Returns:
             Dict with response text and metrics
         """
         # Set mode and recreate agent with appropriate tools/prompt
-        self._set_mode(AgentMode.PLANNING if mode == "planning" else AgentMode.EXECUTION)
+        mode_map = {
+            "learning": AgentMode.LEARNING,
+            "planning": AgentMode.PLANNING,
+            "execution": AgentMode.EXECUTION
+        }
+        self._set_mode(mode_map.get(mode, AgentMode.PLANNING))
         
         try:
             result = await self.agent.invoke_async(prompt)
@@ -245,19 +289,24 @@ class GodotyAgent:
             logger.error(f"Error in agent run: {e}")
             raise
 
-    async def run_stream(self, prompt: str, mode: Literal["planning", "execution"] = "planning") -> AsyncIterable[Dict[str, Any]]:
+    async def run_stream(self, prompt: str, mode: Literal["learning", "planning", "execution"] = "planning") -> AsyncIterable[Dict[str, Any]]:
         """
         Run the agent with streaming.
         
         Args:
             prompt: The user's request
-            mode: Either 'planning' (read-only) or 'execution' (full access)
+            mode: 'learning' (research), 'planning' (read-only), or 'execution' (full access)
         
         Yields:
             Transformed event dicts
         """
         # Set mode and recreate agent with appropriate tools/prompt
-        self._set_mode(AgentMode.PLANNING if mode == "planning" else AgentMode.EXECUTION)
+        mode_map = {
+            "learning": AgentMode.LEARNING,
+            "planning": AgentMode.PLANNING,
+            "execution": AgentMode.EXECUTION
+        }
+        self._set_mode(mode_map.get(mode, AgentMode.PLANNING))
         
         try:
             from agents.event_utils import transform_strands_event
@@ -266,6 +315,10 @@ class GodotyAgent:
             event_count = 0
             metrics_received = False
             collected_text = []  # Collect text for plan storage
+            
+            # Reset step count for this request
+            self._step_count = 0
+            tool_call_count = 0
 
             async for event in self.agent.stream_async(prompt):
                 event_count += 1
@@ -277,6 +330,25 @@ class GodotyAgent:
                 if transformed:
                     event_type = transformed.get("type", "unknown")
                     logger.debug(f"[STREAM] Transformed event type: {event_type}")
+                    
+                    # Count tool calls for safety limits
+                    if event_type == "tool_start" or event_type == "tool_result":
+                        tool_call_count += 1
+                        self._step_count = tool_call_count
+                        
+                        # Check step limit
+                        if tool_call_count >= MAX_AGENT_STEPS:
+                            logger.warning(f"Agent reached max step limit: {MAX_AGENT_STEPS}")
+                            yield {"type": "warning", "data": {"message": f"Agent reached maximum step limit ({MAX_AGENT_STEPS})"}}
+                            break
+                        
+                        # Periodic balance check (every N steps)
+                        if tool_call_count % BALANCE_CHECK_INTERVAL == 0:
+                            can_continue, balance_msg = await self._check_balance()
+                            if not can_continue:
+                                logger.warning(f"Agent stopped: {balance_msg}")
+                                yield {"type": "error", "data": {"error": balance_msg, "code": 402}}
+                                break
                     
                     # Collect text content for plan storage
                     if event_type == "text" or event_type == "data":
@@ -336,13 +408,54 @@ class GodotyAgent:
                 logger.info(f"Metrics saved: {total_tokens} tokens, ${cost:.6f}")
             except Exception as e:
                 logger.error(f"Failed to persist metrics: {e}")
+    
+    async def _check_balance(self) -> tuple[bool, str]:
+        """
+        Check if user has sufficient balance to continue.
+        
+        Returns:
+            Tuple of (can_continue: bool, message: str)
+        """
+        try:
+            # Lazy-load supabase auth to avoid circular imports
+            if self._supabase_auth is None:
+                try:
+                    from services.supabase_auth import get_supabase_auth
+                    self._supabase_auth = get_supabase_auth()
+                except ImportError:
+                    # Supabase not available - allow continuation
+                    return (True, "")
+            
+            # Only check if user is authenticated (monetization enabled)
+            if not self._supabase_auth.is_authenticated:
+                return (True, "")
+            
+            # Get current balance
+            balance = self._supabase_auth.get_balance()
+            if balance is None:
+                # Unable to check - allow continuation but log warning
+                logger.warning("Unable to check balance, allowing continuation")
+                return (True, "")
+            
+            self._cached_balance = balance
+            
+            if balance < MIN_BALANCE_FOR_STEP:
+                return (False, f"Insufficient credits (${balance:.4f}). Please top up to continue.")
+            
+            logger.debug(f"Balance check OK: ${balance:.4f}")
+            return (True, "")
+            
+        except Exception as e:
+            logger.error(f"Balance check error: {e}")
+            # On error, allow continuation to avoid blocking users
+            return (True, "")
 
     def _set_mode(self, mode: AgentMode):
         """
         Set the agent mode and recreate agent with appropriate tools/prompt.
         
         Args:
-            mode: AgentMode.PLANNING or AgentMode.EXECUTION
+            mode: AgentMode.LEARNING, AgentMode.PLANNING, or AgentMode.EXECUTION
         """
         if self._current_mode != mode or not self._agent_initialized:
             self._current_mode = mode
@@ -369,7 +482,20 @@ class GodotyAgent:
         base_prompt = Prompts.get_system_prompt(project_path, project_context)
         
         # Apply mode-specific prompt and select tools
-        if mode == AgentMode.PLANNING:
+        if mode == AgentMode.LEARNING:
+            # Learning mode: research-focused with web search via model
+            godot_version = None
+            # Try to get Godot version from status for doc references
+            try:
+                from services.godot_manager import godot_manager
+                status = godot_manager.get_status()
+                godot_version = status.godot_version if status else None
+            except Exception:
+                pass
+            system_prompt = LearningPrompts.get_learning_prompt(base_prompt, godot_version)
+            tools = self._learning_tools
+            logger.info("Using LEARNING mode: research tools with web search")
+        elif mode == AgentMode.PLANNING:
             system_prompt = PlanningPrompts.get_planning_prompt(base_prompt)
             tools = self._planning_tools
             logger.info("Using PLANNING mode: read-only tools")

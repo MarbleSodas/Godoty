@@ -1,9 +1,19 @@
 """
-File Management Tools for Godot Assistant.
+File WRITE/MODIFY Tools for Godot Assistant (Execution Mode).
 
-This module provides comprehensive file management tools for the executor agent
-to handle operations not possible through Godot's API, including direct file
-modification, GDScript editing, and project file management.
+This module provides FILE MODIFICATION tools used by the executor agent.
+For READ-ONLY file operations, see file_system_tools.py.
+
+Tools in this module:
+- write_file: Write content to files with backup
+- delete_file: Delete files with backup
+- modify_gdscript_method: Edit existing GDScript methods
+- add_gdscript_method: Add new methods to GDScript files
+- remove_gdscript_method: Remove methods from GDScript files
+- modify_project_setting: Edit project.godot settings
+
+Note: There is a read_file_safe() helper method in FileTools class for
+internal use, but the primary read_file TOOL is in file_system_tools.py.
 """
 
 import asyncio
@@ -934,19 +944,8 @@ async def write_file(file_path: str, content: str, **kwargs) -> FileOperationRes
     return await tools.write_file_safe(file_path, content, **filtered_kwargs)
 
 
-@tool
-async def read_file(file_path: str, **kwargs) -> FileOperationResult:
-    """Read content from a file safely.
-
-    Args:
-        file_path: Path to the file to read
-        **kwargs: Additional options (encoding, etc.)
-
-    Returns:
-        FileOperationResult containing file content
-    """
-    tools = FileTools()
-    return await tools.read_file_safe(file_path, **kwargs)
+# NOTE: read_file tool is defined in file_system_tools.py, not here.
+# FileTools.read_file_safe() exists as an INTERNAL helper method only.
 
 
 @tool
