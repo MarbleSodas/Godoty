@@ -1,7 +1,8 @@
-import { Component, signal, ViewChild, ElementRef, AfterViewChecked, ChangeDetectionStrategy, model, OnInit, inject, EffectRef, effect } from '@angular/core';
+import { Component, signal, ViewChild, ElementRef, AfterViewChecked, ChangeDetectionStrategy, model, OnInit, inject, EffectRef, effect, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ChatService, Session, Message as ServiceMessage, ToolCall as ServiceToolCall } from './services/chat.service';
+import { MarkdownPipe } from './pipes/markdown.pipe';
 import { DesktopService, GodotStatus } from './services/desktop.service';
 import { DocumentationService, DocumentationStatus, RebuildProgress } from './services/documentation.service';
 import { AuthService, CreditPack, Transaction } from './services/auth.service';
@@ -47,7 +48,7 @@ interface Metrics {
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, MarkdownPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="flex h-screen w-full bg-[#202531] text-gray-200 font-sans overflow-hidden selection:bg-[#478cbf] selection:text-white">
@@ -94,7 +95,7 @@ interface Metrics {
               role="button"
               tabindex="0"
               [attr.aria-label]="'Select session: ' + session.title"
-              class="relative w-full text-left px-4 py-3 text-sm hover:bg-[#2d3546] transition-colors border-l-2 flex justify-between items-center group cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#478cbf]/50"
+              class="relative w-full text-left px-4 py-2 text-sm hover:bg-[#2d3546] transition-colors border-l-2 flex justify-between items-center group cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#478cbf]/50"
               [class.border-[#478cbf]]="activeSessionId() === session.id"
               [class.bg-[#262c3b]]="activeSessionId() === session.id"
               [class.text-white]="activeSessionId() === session.id"
@@ -162,10 +163,7 @@ interface Metrics {
             </div>
             <div class="w-px h-3 bg-[#2d3546]"></div>
             <div class="flex items-center gap-1.5" title="Session Tokens">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3 h-3">
-                <path fill-rule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clip-rule="evenodd" />
-              </svg>
-              <span>{{ sessionMetrics().total_tokens | number:'1.0-0' }}</span>
+              <span>{{ sessionMetrics().total_tokens | number:'1.0-0' }} tok</span>
             </div>
           </div>
           
@@ -270,13 +268,16 @@ interface Metrics {
                     <!-- Tool Calls -->
                     @if (msg.toolCalls && msg.toolCalls.length > 0) {
                         @for (tool of msg.toolCalls; track tool) {
-                            <div class="my-2 border border-[#3b4458] rounded-md bg-[#161922] overflow-hidden font-mono text-xs shadow-sm">
-                                <div class="bg-[#1f2430] px-3 py-2 flex items-center justify-between border-b border-[#2d3546]">
+                            <details class="my-2 border border-[#3b4458] rounded-md bg-[#161922] overflow-hidden font-mono text-xs shadow-sm group/tool" [open]="tool.status === 'pending'">
+                                <summary class="bg-[#1f2430] px-3 py-2 flex items-center justify-between border-b border-[#2d3546] cursor-pointer select-none hover:bg-[#252b3a] transition-colors list-none">
                                     <div class="flex items-center gap-2 text-gray-300">
                                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 text-[#478cbf]">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 18" />
                                         </svg>
-                                        <span>Called: <span class="text-[#478cbf]">{{ tool.toolName }}</span></span>
+                                        <span>{{ tool.toolName }}</span>
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3 h-3 text-gray-500 transition-transform group-open/tool:rotate-90">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                                        </svg>
                                     </div>
                                     @if (tool.status === 'pending') {
                                         <div class="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold bg-yellow-900 text-yellow-200">
@@ -295,7 +296,7 @@ interface Metrics {
                                             {{ tool.status }}
                                         </span>
                                     }
-                                </div>
+                                </summary>
                                 <div class="p-3 text-gray-400">
                                     <div class="mb-1 text-gray-500 select-none">// Input</div>
                                     <div class="mb-2 text-[#a5b6cf] whitespace-pre-wrap">{{ tool.input }}</div>
@@ -312,21 +313,21 @@ interface Metrics {
                                         </div>
                                     }
                                 </div>
-                            </div>
+                            </details>
                         }
                     }
 
                     <!-- Main Content -->
-                    <div class="prose prose-invert prose-sm max-w-none text-gray-300 leading-relaxed whitespace-pre-wrap">
+                    <div class="prose prose-invert prose-sm max-w-none text-gray-300 leading-relaxed break-words [&>*:last-child]:mb-0">
                       @if (msg.isStreaming && msg.chunks) {
                          @for (chunk of msg.chunks; track $index) {
-                           <span class="relative animate-fade-in-up">{{ chunk }}</span>
+                           <span class="relative animate-fade-in-up whitespace-pre-wrap">{{ chunk }}</span>
+                         }
+                         @if (!msg.reasoning) {
+                            <span class="inline-block w-1.5 h-4 bg-[#478cbf] align-middle ml-0.5 animate-pulse"></span>
                          }
                       } @else {
-                         {{ msg.content }}
-                      }
-                      @if (msg.isStreaming && !msg.reasoning) {
-                        <span class="inline-block w-1.5 h-4 bg-[#478cbf] align-middle ml-0.5 animate-pulse"></span>
+                         <div [innerHTML]="msg.content | markdown"></div>
                       }
                     </div>
 
@@ -1012,11 +1013,40 @@ export class App implements OnInit, AfterViewChecked {
   insufficientCreditsOpen = signal(false);
 
   constructor() {
-    // Effect to scroll to bottom when messages change
+    // Effect to scroll to bottom when messages change DURING generation
     effect(() => {
       this.messages();
-      setTimeout(() => this.scrollToBottom(), 0);
+      // Only auto-scroll if actively generating a response
+      if (this.isGenerating()) {
+        setTimeout(() => this.scrollToBottom(), 0);
+      }
     });
+  }
+
+  @HostListener('click', ['$event'])
+  onDocumentClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const copyBtn = target.closest('.copy-btn');
+
+    if (copyBtn) {
+      const group = copyBtn.closest('.group');
+      const codeBlock = group?.querySelector('code');
+      if (codeBlock && codeBlock.textContent) {
+        navigator.clipboard.writeText(codeBlock.textContent).then(() => {
+          // Visual feedback
+          const originalContent = copyBtn.innerHTML;
+          copyBtn.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="#4ade80" class="w-3.5 h-3.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+            <span class="text-green-400">Copied!</span>
+          `;
+          setTimeout(() => {
+            copyBtn.innerHTML = originalContent;
+          }, 2000);
+        }).catch(err => console.error('Failed to copy functionality:', err));
+      }
+    }
   }
 
   ngOnInit() {

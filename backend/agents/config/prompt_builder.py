@@ -51,6 +51,7 @@ TOOL_CATEGORIES = {
             ("find_usages", "Find where a class/function/signal is used"),
             ("get_file_context", "Get comprehensive context for a specific file"),
             ("get_project_structure", "Refresh the project overview"),
+            ("get_context_stats", "Check what has been indexed"),
         ],
         "connection": [
             ("ensure_godot_connection", "Verify connection to Godot editor"),
@@ -213,8 +214,53 @@ ARCHITECTURAL_PATTERNS = """## Architectural Best Practices
 **Resource Usage:**
 - Use `Resource` subclasses (`.tres`) for static data instead of JSON or Dictionaries."""
 
+THINKING_FORMAT = """## Thinking and Progress Format
+When working through tasks, structure your thoughts clearly:
+
+**For analysis steps:**
+- Explain WHAT you're examining and WHY
+- Share key findings as you discover them
+
+**For code changes:**
+- Show GDScript code in ```gdscript blocks
+- Node/scene structural changes should be described in notes, NOT as code blocks
+
+**Progress indicators:**
+- 🔍 Analyzing: [what you're looking at]
+- ⚡ Executing: [action being taken]
+- ✅ Completed: [what was done]
+- ⚠️ Issue: [problem encountered]"""
+
+GODOT_NODE_ARCHITECTURE = """## Godot Node-Based Architecture
+
+**Scene Tree Fundamentals:**
+- Every game entity is a Node in the scene tree
+- Scenes are reusable node compositions (`.tscn` files)
+- Scripts extend nodes to add behavior
+
+**Node Communication Patterns:**
+- **Call Down**: Parents call children's methods directly
+- **Signal Up**: Children emit signals, parents connect
+- Use signals for loose coupling between unrelated nodes
+
+**Common Node Types:**
+| Type | Purpose |
+|------|---------|
+| Node2D/Node3D | Spatial positioning |
+| CharacterBody2D/3D | Player/NPC movement |
+| Area2D/3D | Collision detection without physics |
+| Control | UI elements |
+| AnimationPlayer | Animation playback |
+
+**Best Practices:**
+- Prefer scene composition over deep inheritance
+- Use Resources (.tres) for shared data
+- Autoloads for global managers (GameState, Events)"""
+
 SESSION_CONTINUATION = """## Session Continuation
 When continuing a conversation or resuming a session:
+- **FIRST**: Call `get_project_structure()` to understand the current codebase
+- Use `retrieve_context(query)` to find relevant code before making changes
 - **ALWAYS use tools** to verify current project state before making recommendations
 - DON'T rely solely on previous conversation context - the project state may have changed
 - Use `get_project_overview()` and `analyze_scene_tree()` to refresh your understanding
@@ -224,7 +270,8 @@ When continuing a conversation or resuming a session:
 RESPONSE_STYLE = """## Response Style
 - Professional, authoritative, and concise
 - Focus on technical correctness and performance
-- Present code in valid Markdown code blocks with `gdscript` language tag
+- Present GDScript code in ```gdscript blocks
+- Describe node/scene changes as notes, not code blocks
 - Use warnings (⚠️) to highlight migration pitfalls when relevant"""
 
 
@@ -284,6 +331,8 @@ def build_prompt(
         GODOT_VERSION_COMPLIANCE,
         GDSCRIPT_STANDARDS,
         ARCHITECTURAL_PATTERNS,
+        GODOT_NODE_ARCHITECTURE,
+        THINKING_FORMAT,
         SESSION_CONTINUATION,
         RESPONSE_STYLE,
     ])

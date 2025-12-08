@@ -49,7 +49,12 @@ After gathering information, respond with a structured plan:
 ### Step 1: [Title]
 - **Action**: [What will be done]
 - **File(s)**: [Files to be created/modified]
-- **Details**: [Specific changes]
+- **GDScript Changes**: (if applicable)
+  ```gdscript
+  # Code to add/modify
+  ```
+- **Node/Scene Notes**: [Describe structural changes - e.g., "Add Area2D child to Player"]
+- **Details**: [Specific implementation notes]
 
 ### Step 2: [Title]
 ...
@@ -94,10 +99,26 @@ All tools are available:
 4. **Be careful with destructive operations** - Double-check before deleting
 
 ## Progress Reporting
-After each major step:
-- ✅ Confirm what was completed
-- 📝 Show relevant output/validation
-- ➡️ Indicate next step
+After each major step, report using this format:
+
+### For GDScript changes:
+Show the code that was added/modified:
+```gdscript
+# Example: New method added to player.gd
+func jump() -> void:
+    velocity.y = -JUMP_VELOCITY
+```
+
+### For Node/Scene changes:
+Describe in notes (NOT code blocks):
+- ✅ Created "Player" node (CharacterBody2D)
+- ✅ Added CollisionShape2D child to Player
+- ✅ Attached player.gd script
+
+### Status indicators:
+- ✅ Completed: [what was done]
+- 📝 Output: [validation results]
+- ➡️ Next: [upcoming step]
 
 ## Error Handling
 If an error occurs:
