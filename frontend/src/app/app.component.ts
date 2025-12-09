@@ -880,7 +880,7 @@ interface Metrics {
           <div class="p-6 space-y-3">
             @for (pack of creditPacks(); track pack.id) {
               <button 
-                (click)="purchasePack(pack.variant_id)"
+                (click)="purchasePack(pack.price_id)"
                 class="w-full flex items-center justify-between p-4 bg-[#161922] border border-[#2d3546] rounded-lg hover:border-[#478cbf]/50 transition-colors text-left"
               >
                 <div>
@@ -2347,8 +2347,8 @@ export class App implements OnInit, AfterViewChecked {
     this.topUpModalOpen.set(false);
   }
 
-  purchasePack(variantId: string): void {
-    this.authService.createCheckout(variantId).subscribe(result => {
+  purchasePack(priceId: string): void {
+    this.authService.createCheckout(priceId).subscribe(result => {
       if (result.success) {
         // Close modal - browser will open externally
         this.closeTopUpModal();

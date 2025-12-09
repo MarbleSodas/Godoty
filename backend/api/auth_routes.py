@@ -29,14 +29,15 @@ class ConfigureRequest(BaseModel):
 
 class CheckoutRequest(BaseModel):
     """Request model for checkout creation."""
-    variant_id: str = Field(..., description="Lemon Squeezy variant ID for credit pack")
+    price_id: str = Field(..., description="Stripe Price ID for credit pack")
 
 
-# Product variant IDs - Configure these in implementation
+# Stripe Price IDs - Configure these in Stripe Dashboard
+# Add metadata key 'credit_amount' to each Price in Stripe
 CREDIT_PACKS = {
-    "starter": {"name": "Starter Pack", "amount": 10.00, "variant_id": ""},
-    "pro": {"name": "Pro Pack", "amount": 25.00, "variant_id": ""},
-    "premium": {"name": "Premium Pack", "amount": 50.00, "variant_id": ""},
+    "starter": {"name": "Starter Pack", "amount": 5.00, "credits": 5, "price_id": "price_1ScAkbGmQGk163sYaA52t1qi"},
+    "pro": {"name": "Pro Pack", "amount": 10.00, "credits": 12, "price_id": "price_1ScAibGmQGk163sYydbNSl0s"},
+    "premium": {"name": "Premium Pack", "amount": 20.00, "credits": 25, "price_id": "price_1ScAcnGmQGk163sYDkFnyPAf"},
 }
 
 
@@ -284,12 +285,12 @@ async def get_credit_packs():
     """
     packs = []
     for pack_id, pack_info in CREDIT_PACKS.items():
-        if pack_info["variant_id"]:  # Only include configured packs
+        if pack_info["price_id"]:  # Only include configured packs
             packs.append({
                 "id": pack_id,
                 "name": pack_info["name"],
                 "amount": pack_info["amount"],
-                "variant_id": pack_info["variant_id"]
+                "price_id": pack_info["price_id"]
             })
     return {"packs": packs}
 
@@ -297,13 +298,13 @@ async def get_credit_packs():
 @router.post("/topup")
 async def create_topup(request: CheckoutRequest):
     """
-    Create checkout URL and open in external browser.
+    Create Stripe checkout URL and open in external browser.
     
     Args:
-        request: Checkout request with variant_id.
+        request: Checkout request with Stripe price_id.
     
     Returns:
-        Checkout URL for the payment page.
+        Checkout URL for the Stripe payment page.
     """
     auth = get_supabase_auth()
     
@@ -311,10 +312,10 @@ async def create_topup(request: CheckoutRequest):
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        # Call Edge Function to create checkout
+        # Call Edge Function to create Stripe checkout session
         response = auth.client.functions.invoke(
-            "create-checkout",
-            invoke_options={"body": {"variant_id": request.variant_id}}
+            "stripe-checkout",
+            invoke_options={"body": {"price_id": request.price_id}}
         )
         
         if isinstance(response, dict) and response.get("url"):

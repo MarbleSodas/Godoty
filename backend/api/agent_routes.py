@@ -1414,8 +1414,8 @@ async def chat_session_stream(
             try:
                 agent = get_godoty_agent(session_id=session_id)
                 
-                # Determine mode - default to planning unless explicitly set to execution
-                mode = chat_request.mode if chat_request.mode in ["planning", "execution"] else "planning"
+                # Determine mode - default to planning unless explicitly set to learning or execution
+                mode = chat_request.mode if chat_request.mode in ["learning", "planning", "execution"] else "planning"
                 
                 # If feedback is provided, prepend it to the message for plan regeneration
                 message = chat_request.message

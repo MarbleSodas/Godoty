@@ -11,7 +11,7 @@ export interface CreditPack {
     id: string;
     name: string;
     amount: number;
-    variant_id: string;
+    price_id: string;
 }
 
 export interface Transaction {
@@ -156,8 +156,8 @@ export class AuthService {
     /**
      * Create checkout and open in browser
      */
-    createCheckout(variantId: string): Observable<{ success: boolean; url?: string; error?: string }> {
-        return this.http.post<any>(`${this.apiUrl}/topup`, { variant_id: variantId }).pipe(
+    createCheckout(priceId: string): Observable<{ success: boolean; url?: string; error?: string }> {
+        return this.http.post<any>(`${this.apiUrl}/topup`, { price_id: priceId }).pipe(
             map(response => ({ success: response.success, url: response.url, error: undefined })),
             catchError((error: HttpErrorResponse) => {
                 const message = error.error?.detail || error.message || 'Failed to create checkout';
