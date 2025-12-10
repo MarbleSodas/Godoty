@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import Stripe from "https://esm.sh/stripe@14?target=denonext";
+import Stripe from "https://esm.sh/stripe@20.0.0?target=denonext";
 
 /**
  * Stripe Webhook Handler - The "Dumb Pipe"
@@ -9,8 +9,19 @@ import Stripe from "https://esm.sh/stripe@14?target=denonext";
  * 1. Verify the Stripe signature (security)
  * 2. Hand off data to the database RPC (logic lives in Postgres)
  * 
- * Credit amount comes from Stripe Price metadata (configured in Stripe Dashboard).
+ * Credit amount comes from:
+ * 1. Stripe Price metadata (credit_amount field) - preferred
+ * 2. Fallback: hardcoded CREDIT_MAP based on amount
+ * 
+ * Idempotency is handled by the database via external_id (Stripe session ID).
  */
+
+// Fallback credit mapping for known packs (when metadata not set)
+const CREDIT_MAP: Record<number, number> = {
+    500: 5,    // $5.00 -> 5 credits
+    1000: 12,  // $10.00 -> 12 credits
+    2000: 25   // $20.00 -> 25 credits
+};
 
 Deno.serve(async (req: Request) => {
     if (req.method !== "POST") {
@@ -25,7 +36,7 @@ Deno.serve(async (req: Request) => {
         return new Response("Server configuration error", { status: 500 });
     }
 
-    const stripe = new Stripe(stripeSecretKey, { apiVersion: "2024-11-20" });
+    const stripe = new Stripe(stripeSecretKey, { apiVersion: "2025-11-17.clover" });
     const cryptoProvider = Stripe.createSubtleCryptoProvider();
 
     const signature = req.headers.get("Stripe-Signature")!;
@@ -53,24 +64,37 @@ Deno.serve(async (req: Request) => {
                 return new Response("Missing user ID", { status: 400 });
             }
 
-            // Get credit amount from line items
-            // In production, configure credit_amount in Stripe Price metadata
-            // Fallback: Map amount_total to credits based on known packs
-            const amountCents = session.amount_total || 0;
+            // Get credit amount - try metadata first, then fallback to CREDIT_MAP
             let credits = 0;
+            const amountCents = session.amount_total || 0;
 
-            // Map cents to credits (hardcoded fallback)
-            const CREDIT_MAP: Record<number, number> = {
-                500: 5,    // $5.00 -> 5 credits
-                1000: 12,  // $10.00 -> 12 credits
-                2000: 25   // $20.00 -> 25 credits
-            };
+            // Try to get credits from line items metadata
+            try {
+                const lineItems = await stripe.checkout.sessions.listLineItems(session.id, {
+                    expand: ['data.price']
+                });
+                
+                if (lineItems.data.length > 0) {
+                    const price = lineItems.data[0].price;
+                    if (price?.metadata?.credit_amount) {
+                        credits = parseInt(price.metadata.credit_amount, 10);
+                        console.log(`Credits from metadata: ${credits}`);
+                    }
+                }
+            } catch (err) {
+                console.warn("Could not fetch line items metadata:", err);
+            }
 
-            if (CREDIT_MAP[amountCents]) {
-                credits = CREDIT_MAP[amountCents];
-            } else {
-                // Fallback for custom amounts (optional)
-                credits = Math.floor(amountCents / 100);
+            // Fallback to CREDIT_MAP if metadata not available
+            if (credits <= 0) {
+                if (CREDIT_MAP[amountCents]) {
+                    credits = CREDIT_MAP[amountCents];
+                    console.log(`Credits from fallback map: ${credits} (for ${amountCents} cents)`);
+                } else {
+                    // Last resort: 1 credit per dollar
+                    credits = Math.floor(amountCents / 100);
+                    console.log(`Credits from amount fallback: ${credits}`);
+                }
             }
 
             if (credits <= 0) {
@@ -79,19 +103,22 @@ Deno.serve(async (req: Request) => {
             }
 
             // 3. Call Database RPC (Logic lives in Postgres)
+            // Idempotency is handled by external_id in the database
             const supabase = createClient(
                 Deno.env.get("SUPABASE_URL")!,
                 Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
             );
 
-            const { error } = await supabase.rpc("add_credits", {
+            const { data: wasAdded, error } = await supabase.rpc("add_credits", {
                 p_user_id: userId,
                 p_amount: credits,
-                p_description: `Stripe purchase: $${credits.toFixed(2)}`,
+                p_description: `Stripe purchase: ${credits} credits`,
                 p_metadata: {
                     stripe_session_id: session.id,
                     stripe_payment_intent: session.payment_intent,
+                    amount_cents: amountCents,
                 },
+                p_external_id: session.id,  // Idempotency key
             });
 
             if (error) {
@@ -99,7 +126,11 @@ Deno.serve(async (req: Request) => {
                 return new Response("Database error", { status: 500 });
             }
 
-            console.log(`Added ${credits} credits to user ${userId}`);
+            if (wasAdded) {
+                console.log(`Added ${credits} credits to user ${userId} (session: ${session.id})`);
+            } else {
+                console.log(`Duplicate webhook ignored for session: ${session.id}`);
+            }
         }
 
         return new Response("OK", { status: 200 });

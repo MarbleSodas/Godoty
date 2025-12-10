@@ -367,6 +367,14 @@ class GodotConnectionMonitor:
 
         return status
 
+    def cleanup(self):
+        """Cleanup all resources. For use in sync cleanup contexts."""
+        self._running = False
+        self._state_change_listeners.clear()
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+
 
 # Global monitor instance
 _monitor: Optional[GodotConnectionMonitor] = None
@@ -378,3 +386,11 @@ def get_connection_monitor() -> GodotConnectionMonitor:
     if _monitor is None:
         _monitor = GodotConnectionMonitor()
     return _monitor
+
+
+def reset_connection_monitor():
+    """Reset the global connection monitor instance. Used for cleanup."""
+    global _monitor
+    if _monitor is not None:
+        _monitor.cleanup()
+        _monitor = None

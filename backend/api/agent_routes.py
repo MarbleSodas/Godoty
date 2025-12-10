@@ -14,7 +14,7 @@ import logging
 import os
 import re
 from typing import Optional, AsyncIterable, Dict, Any
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -22,8 +22,37 @@ from agents.godoty_agent import get_godoty_agent
 from agents.config import AgentConfig
 from agents.db import get_metrics_db
 from agents.event_utils import sanitize_event_data
+from services.supabase_auth import get_supabase_auth
 
 logger = logging.getLogger(__name__)
+
+
+def require_auth():
+    """
+    Dependency that requires authentication for chat endpoints.
+    Returns the authenticated user's info or raises 401.
+    """
+    auth = get_supabase_auth()
+    if not auth.is_authenticated:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Please log in to use the chat."
+        )
+    
+    # Check balance
+    balance = auth.get_balance()
+    if balance is not None and balance <= 0:
+        raise HTTPException(
+            status_code=402,
+            detail="Insufficient credits. Please add credits to continue."
+        )
+    
+    return {
+        "user_id": auth.user_id,
+        "email": auth.user_email,
+        "balance": balance,
+        "access_token": auth.get_access_token()
+    }
 
 
 def _extract_title_from_chat_history(chat_history: list) -> str:
@@ -1269,21 +1298,29 @@ async def get_session_status(session_id: str):
 
 
 @router.post("/sessions/{session_id}/chat", response_model=dict)
-async def chat_session(session_id: str, request: ChatRequest, path: Optional[str] = Query(None)):
+async def chat_session(
+    session_id: str,
+    request: ChatRequest,
+    path: Optional[str] = Query(None),
+    auth_user: dict = Depends(require_auth)
+):
     """
     Send a message to a session.
+    
+    Requires authentication and sufficient credits.
     
     Args:
         session_id: Session ID
         request: ChatRequest with message
         path: Optional project path
+        auth_user: Authenticated user info (injected via dependency)
         
     Returns:
         Agent response
     """
     try:
-        # Process message
-        agent = get_godoty_agent(session_id=session_id)
+        # Process message with authenticated user context
+        agent = get_godoty_agent(session_id=session_id, user_context=auth_user)
         result = await agent.run(request.message)
         
         # Format result
@@ -1393,16 +1430,20 @@ async def chat_session_stream(
     session_id: str,
     chat_request: ChatRequest,
     request: Request,
-    path: Optional[str] = Query(None)
+    path: Optional[str] = Query(None),
+    auth_user: dict = Depends(require_auth)
 ):
     """
     Send a message to a session and stream the response.
+
+    Requires authentication and sufficient credits.
 
     Args:
         session_id: Session ID
         chat_request: ChatRequest with message
         request: FastAPI Request object for disconnection detection
         path: Optional project path
+        auth_user: Authenticated user info (injected via dependency)
 
     Returns:
         StreamingResponse with Server-Sent Events
@@ -1412,7 +1453,7 @@ async def chat_session_stream(
         async def event_generator():
             """Generate Server-Sent Events from agent stream."""
             try:
-                agent = get_godoty_agent(session_id=session_id)
+                agent = get_godoty_agent(session_id=session_id, user_context=auth_user)
                 
                 # Determine mode - default to planning unless explicitly set to learning or execution
                 mode = chat_request.mode if chat_request.mode in ["learning", "planning", "execution"] else "planning"

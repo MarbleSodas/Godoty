@@ -1,17 +1,11 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, OnDestroy } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Observable, map, tap, catchError, of, BehaviorSubject } from 'rxjs';
+import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 
 export interface AuthUser {
     id: string;
     email: string;
-}
-
-export interface CreditPack {
-    id: string;
-    name: string;
-    amount: number;
-    price_id: string;
 }
 
 export interface Transaction {
@@ -25,8 +19,8 @@ export interface Transaction {
 @Injectable({
     providedIn: 'root'
 })
-export class AuthService {
-    private apiUrl = 'http://127.0.0.1:8000/api/auth';
+export class AuthService implements OnDestroy {
+    private apiUrl = 'api/auth';
 
     // State signals
     isAuthenticated = signal(false);
@@ -38,9 +32,17 @@ export class AuthService {
     private authStatusSubject = new BehaviorSubject<boolean>(false);
     authStatus$ = this.authStatusSubject.asObservable();
 
+    // Supabase Client
+    private supabase: SupabaseClient | null = null;
+    private balanceChannel: RealtimeChannel | null = null;
+
     constructor(private http: HttpClient) {
         // Check auth status on service init
         this.checkAuthStatus();
+    }
+
+    ngOnDestroy(): void {
+        this.unsubscribeFromBalance();
     }
 
     /**
@@ -54,6 +56,128 @@ export class AuthService {
             this.currentUser.set(response.user);
             this.creditBalance.set(response.balance);
             this.authStatusSubject.next(response.authenticated);
+
+            // Connect to balance stream if authenticated
+            if (response.authenticated) {
+                this.initSupabaseAndSubscribe();
+            }
+        });
+    }
+
+    /**
+     * Initialize Supabase client and subscribe to balance updates
+     */
+    private initSupabaseAndSubscribe(): void {
+        if (this.supabase) {
+            this.subscribeToBalance();
+            return;
+        }
+
+        // Fetch credentials
+        this.http.get<any>(`${this.apiUrl}/credentials`).pipe(
+            catchError(() => of(null))
+        ).subscribe(creds => {
+            if (creds && creds.supabase_url && creds.supabase_anon_key) {
+                this.supabase = createClient(creds.supabase_url, creds.supabase_anon_key);
+                this.subscribeToBalance();
+            }
+        });
+    }
+
+
+    /**
+     * Subscribe to realtime balance updates using Supabase
+     */
+    private async subscribeToBalance() {
+        if (!this.supabase || !this.currentUser()?.id || this.balanceChannel) {
+            return;
+        }
+
+        const userId = this.currentUser()!.id;
+
+        try {
+            // Subscribe to changes in the profiles table for this user
+            this.balanceChannel = this.supabase
+                .channel(`public:profiles:id=eq.${userId}`)
+                .on(
+                    'postgres_changes',
+                    {
+                        event: 'UPDATE',
+                        schema: 'public',
+                        table: 'profiles',
+                        filter: `id=eq.${userId}`
+                    },
+                    (payload) => {
+                        console.log('Credit balance update received:', payload);
+                        if (payload.new && payload.new['credit_balance'] !== undefined) {
+                            this.creditBalance.set(parseFloat(payload.new['credit_balance']));
+                        }
+                    }
+                )
+                .subscribe((status) => {
+                    console.log('Supabase realtime subscription status:', status);
+                });
+
+        } catch (error) {
+            console.error('Failed to subscribe to balance updates:', error);
+        }
+    }
+
+    /**
+     * Unsubscribe from balance updates
+     */
+    private async unsubscribeFromBalance() {
+        if (this.balanceChannel) {
+            await this.supabase?.removeChannel(this.balanceChannel);
+            this.balanceChannel = null;
+        }
+    }
+
+
+    /**
+     * Poll for authentication status (used for Desktop OAuth flow)
+     */
+    pollAuthStatus(maxAttempts = 600, intervalMs = 500): Observable<boolean> {
+        // Poll for 5 minutes (600 * 500ms)
+        return new Observable<boolean>(observer => {
+            let attempts = 0;
+            const poll = () => {
+                this.http.get<any>(`${this.apiUrl}/status`).pipe(
+                    catchError(() => of({ authenticated: false, user: null, balance: null }))
+                ).subscribe({
+                    next: (response) => {
+                        if (response.authenticated) {
+                            // Update local state
+                            this.isAuthenticated.set(true);
+                            this.currentUser.set(response.user);
+                            this.creditBalance.set(response.balance);
+                            this.authStatusSubject.next(true);
+                            this.initSupabaseAndSubscribe();
+
+                            observer.next(true);
+                            observer.complete();
+                        } else {
+                            attempts++;
+                            if (attempts >= maxAttempts) {
+                                observer.next(false);
+                                observer.complete();
+                            } else {
+                                setTimeout(poll, intervalMs);
+                            }
+                        }
+                    },
+                    error: () => {
+                        attempts++;
+                        if (attempts >= maxAttempts) {
+                            observer.next(false);
+                            observer.complete();
+                        } else {
+                            setTimeout(poll, intervalMs);
+                        }
+                    }
+                });
+            };
+            poll();
         });
     }
 
@@ -69,6 +193,8 @@ export class AuthService {
                     this.currentUser.set(response.user);
                     this.creditBalance.set(response.balance);
                     this.authStatusSubject.next(true);
+                    // Start balance stream for real-time updates
+                    this.initSupabaseAndSubscribe();
                 }
                 this.isLoading.set(false);
             }),
@@ -101,6 +227,9 @@ export class AuthService {
      * Logout and clear session
      */
     logout(): Observable<void> {
+        // Disconnect balance stream before logout
+        this.unsubscribeFromBalance();
+
         return this.http.post<any>(`${this.apiUrl}/logout`, {}).pipe(
             tap(() => {
                 this.isAuthenticated.set(false);
@@ -134,35 +263,12 @@ export class AuthService {
     }
 
     /**
-     * Get available credit packs
-     */
-    getCreditPacks(): Observable<CreditPack[]> {
-        return this.http.get<any>(`${this.apiUrl}/credit-packs`).pipe(
-            map(response => response.packs || []),
-            catchError(() => of([]))
-        );
-    }
-
-    /**
      * Get transaction history
      */
     getTransactions(limit: number = 20): Observable<Transaction[]> {
         return this.http.get<any>(`${this.apiUrl}/transactions`, { params: { limit: limit.toString() } }).pipe(
             map(response => response.transactions || []),
             catchError(() => of([]))
-        );
-    }
-
-    /**
-     * Create checkout and open in browser
-     */
-    createCheckout(priceId: string): Observable<{ success: boolean; url?: string; error?: string }> {
-        return this.http.post<any>(`${this.apiUrl}/topup`, { price_id: priceId }).pipe(
-            map(response => ({ success: response.success, url: response.url, error: undefined })),
-            catchError((error: HttpErrorResponse) => {
-                const message = error.error?.detail || error.message || 'Failed to create checkout';
-                return of({ success: false, url: undefined, error: message });
-            })
         );
     }
 
@@ -194,15 +300,46 @@ export class AuthService {
     /**
      * Sign in with OAuth provider (Google, GitHub, Discord)
      */
-    signInWithOAuth(provider: string): Observable<{ success: boolean; url?: string; error?: string }> {
+    signInWithOAuth(provider: string, redirectTo?: string): Observable<{ success: boolean; url?: string; error?: string }> {
         this.isLoading.set(true);
-        return this.http.post<any>(`${this.apiUrl}/oauth`, { provider }).pipe(
+        const payload: any = { provider };
+        if (redirectTo) {
+            payload.redirect_to = redirectTo;
+        }
+
+        return this.http.post<any>(`${this.apiUrl}/oauth`, payload).pipe(
             tap(() => this.isLoading.set(false)),
             map(response => ({ success: response.success, url: response.url, error: undefined })),
             catchError((error: HttpErrorResponse) => {
                 this.isLoading.set(false);
                 const message = error.error?.detail || error.message || 'OAuth failed';
                 return of({ success: false, url: undefined, error: message });
+            })
+        );
+    }
+
+    /**
+     * Exchange PKCE code for session
+     */
+    exchangeCode(code: string): Observable<{ success: boolean; error?: string }> {
+        this.isLoading.set(true);
+        return this.http.post<any>(`${this.apiUrl}/oauth-callback`, { code }).pipe(
+            tap(response => {
+                if (response.success) {
+                    this.isAuthenticated.set(true);
+                    this.currentUser.set(response.user);
+                    this.creditBalance.set(response.balance);
+                    this.authStatusSubject.next(true);
+                    // Start balance stream for real-time updates
+                    this.initSupabaseAndSubscribe();
+                }
+                this.isLoading.set(false);
+            }),
+            map(response => ({ success: response.success, error: undefined })),
+            catchError((error: HttpErrorResponse) => {
+                this.isLoading.set(false);
+                const message = error.error?.detail || error.message || 'Code exchange failed';
+                return of({ success: false, error: message });
             })
         );
     }
@@ -235,6 +372,8 @@ export class AuthService {
                     this.currentUser.set(response.user);
                     this.creditBalance.set(response.balance);
                     this.authStatusSubject.next(true);
+                    // Start balance stream for real-time updates
+                    this.initSupabaseAndSubscribe();
                 }
                 this.isLoading.set(false);
             }),
@@ -262,6 +401,8 @@ export class AuthService {
                     this.currentUser.set(response.user);
                     this.creditBalance.set(response.balance);
                     this.authStatusSubject.next(true);
+                    // Start balance stream for real-time updates
+                    this.initSupabaseAndSubscribe();
                 }
                 this.isLoading.set(false);
             }),

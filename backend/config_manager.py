@@ -67,14 +67,39 @@ class ConfigManager:
         self._config["default_model"] = value
         self._save_config()
 
+    # Hardcoded Supabase configuration (public values safe for client apps)
+    SUPABASE_URL = "https://skwlndaqqkxushqkhlgg.supabase.co"
+    SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNrd2xuZGFxcWt4dXNocWtobGdnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUwNTA0OTYsImV4cCI6MjA4MDYyNjQ5Nn0.1d_H4e897JV2szNBMY7lzhicu8Pa0xIcyqm5WgVUedM"
+
+    @property
+    def supabase_url(self) -> str:
+        """Get Supabase URL (hardcoded, always available)."""
+        return self.SUPABASE_URL
+
+    @property
+    def supabase_anon_key(self) -> str:
+        """Get Supabase anon key (hardcoded, always available)."""
+        return self.SUPABASE_ANON_KEY
+
     @property
     def is_configured(self) -> bool:
         """Check if application is fully configured."""
         return bool(self.openrouter_api_key.strip())
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get configuration value by key."""
-        return self._config.get(key, default)
+        """Get configuration value by key, falling back to defaults."""
+        # For Supabase config, always return hardcoded values
+        if key == "supabase_url":
+            return self.SUPABASE_URL
+        if key == "supabase_anon_key":
+            return self.SUPABASE_ANON_KEY
+        # For other keys, check config then defaults
+        if key in self._config:
+            return self._config[key]
+        defaults = self._get_defaults()
+        if key in defaults:
+            return defaults[key]
+        return default
 
     def set(self, key: str, value: Any):
         """Set configuration value by key."""

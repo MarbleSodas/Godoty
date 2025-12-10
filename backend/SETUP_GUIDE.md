@@ -320,6 +320,89 @@ curl -X POST http://localhost:8000/api/agent/plan/stream \
 curl -X GET http://localhost:8000/api/agent/health
 ```
 
+## Stripe E2E Testing (Local Development)
+
+### Prerequisites
+
+1. **Stripe CLI** - Install from https://stripe.com/docs/stripe-cli
+2. **Supabase CLI** - Install from https://supabase.com/docs/guides/cli
+3. **Test credentials** - Stripe test API keys and webhook secret
+
+### Setup Steps
+
+#### 1. Start Supabase Locally
+
+```bash
+# From the project root (where supabase/ folder exists)
+cd /path/to/Godoty
+supabase start
+```
+
+This will output local credentials including the service role key.
+
+#### 2. Configure Environment
+
+Copy the example file and fill in your values:
+
+```bash
+cp backend/.env.e2e.local.example backend/.env.e2e.local
+```
+
+Edit `backend/.env.e2e.local`:
+```env
+SUPABASE_URL=http://localhost:54321
+SUPABASE_SERVICE_ROLE_KEY=<from supabase start output>
+STRIPE_WEBHOOK_URL=http://localhost:54321/functions/v1/stripe-webhook
+STRIPE_WEBHOOK_SECRET=<from stripe listen output>
+STRIPE_API_VERSION=2025-11-17.clover
+```
+
+#### 3. Serve Edge Functions Locally
+
+```bash
+# In a new terminal
+supabase functions serve --env-file ./supabase/.env.local
+```
+
+#### 4. Start Stripe Webhook Forwarding
+
+```bash
+# In a new terminal
+stripe listen --forward-to http://localhost:54321/functions/v1/stripe-webhook
+```
+
+Copy the webhook signing secret (starts with `whsec_`) to your `.env.e2e.local`.
+
+#### 5. Run E2E Tests
+
+```bash
+cd backend
+source venv/bin/activate  # or venv/Scripts/activate on Windows
+
+# Load the E2E environment
+export $(cat .env.e2e.local | xargs)
+
+# Run Stripe E2E tests
+pytest tests/test_stripe_e2e.py -v -m e2e --capture=no
+```
+
+### Running Webhook Unit Tests
+
+```bash
+# From supabase/functions/stripe-webhook/
+deno test --allow-env --allow-net index.test.ts
+```
+
+### Credit Mapping (Bonus Structure)
+
+The webhook maps payment amounts to credits with bonuses:
+
+| Payment | Base Credits | Bonus | Total Credits |
+|---------|--------------|-------|---------------|
+| $5.00   | 5            | 0%    | 5 credits     |
+| $10.00  | 10           | 20%   | 12 credits    |
+| $20.00  | 20           | 25%   | 25 credits    |
+
 ### Desktop Integration Endpoints
 
 #### PyWebView Integration

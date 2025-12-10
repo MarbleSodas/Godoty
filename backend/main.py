@@ -2,6 +2,9 @@ import threading
 import signal
 import os
 import sys
+import asyncio
+import atexit
+import gc
 
 # CRITICAL: Set UTF-8 encoding BEFORE any other imports
 # This prevents UnicodeEncodeError on Windows when logging emoji characters
@@ -19,12 +22,17 @@ ensure_user_data_dir()
 
 import uvicorn
 import webview
+import webbrowser
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import time
 import platform
 import warnings
+import logging
+
+# Setup logger for cleanup operations
+cleanup_logger = logging.getLogger("cleanup")
 
 # Aggressively suppress all LangGraph warnings
 warnings.simplefilter("ignore", UserWarning)
@@ -42,6 +50,131 @@ def get_resource_path(relative_path):
 
 # Global shutdown flag
 shutdown_requested = False
+
+
+async def cleanup_all_resources():
+    """
+    Comprehensive cleanup of all application resources.
+    Called on application shutdown to prevent memory leaks.
+    """
+    cleanup_logger.info("Starting comprehensive resource cleanup...")
+    
+    # 1. Stop Godot connection monitor
+    try:
+        from services.godot_connection_monitor import get_connection_monitor, reset_connection_monitor
+        monitor = get_connection_monitor()
+        if monitor._running:
+            await monitor.stop()
+            cleanup_logger.info("Godot connection monitor stopped")
+        reset_connection_monitor()
+    except Exception as e:
+        cleanup_logger.warning(f"Error stopping connection monitor: {e}")
+    
+    # 2. Disconnect Godot bridge and clear singleton
+    try:
+        from agents.tools.godot_bridge import get_godot_bridge, reset_godot_bridge
+        bridge = get_godot_bridge()
+        await bridge.disconnect()
+        reset_godot_bridge()
+        cleanup_logger.info("Godot bridge disconnected and cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error disconnecting Godot bridge: {e}")
+    
+    # 3. Close database connections
+    try:
+        from database import get_db_manager
+        import database.db_manager as dbm
+        db_manager = get_db_manager()
+        await db_manager.close()
+        dbm._db_manager = None
+        cleanup_logger.info("Database connections closed")
+    except Exception as e:
+        cleanup_logger.warning(f"Error closing database: {e}")
+    
+    # 4. Clear context engine
+    try:
+        from agents.tools.context_tools import set_context_engine
+        set_context_engine(None)
+        cleanup_logger.info("Context engine cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing context engine: {e}")
+    
+    # 5. Clear agent instances
+    try:
+        import agents.godoty_agent as ga
+        if ga._godoty_agent_instance:
+            ga._godoty_agent_instance = None
+        cleanup_logger.info("Agent instances cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing agent instances: {e}")
+    
+    # 6. Clear config manager
+    try:
+        import config_manager as cm
+        cm._config_manager = None
+        cleanup_logger.info("Config manager cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing config manager: {e}")
+    
+    # 7. Clear auth instance
+    try:
+        import services.supabase_auth as sa
+        sa._auth_instance = None
+        cleanup_logger.info("Auth instance cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing auth instance: {e}")
+    
+    # 8. Clear streaming tracker
+    try:
+        import agents.event_utils as eu
+        eu._streaming_tracker = None
+        cleanup_logger.info("Streaming tracker cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing streaming tracker: {e}")
+    
+    # 9. Clear executor tools
+    try:
+        import agents.tools.godot_executor_tools as get
+        get._godot_executor_tools_instance = None
+        cleanup_logger.info("Executor tools cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing executor tools: {e}")
+    
+    # 10. Clear model config
+    try:
+        import agents.config.model_config as mc
+        mc._model_config_instance = None
+        cleanup_logger.info("Model config cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing model config: {e}")
+    
+    # 11. Clear agents db
+    try:
+        import agents.db as adb
+        adb._db_instance = None
+        cleanup_logger.info("Agents DB cleared")
+    except Exception as e:
+        cleanup_logger.warning(f"Error clearing agents DB: {e}")
+    
+    # 12. Force garbage collection
+    gc.collect()
+    cleanup_logger.info("Garbage collection completed")
+    
+    cleanup_logger.info("Resource cleanup completed")
+
+
+def run_cleanup_sync():
+    """Run async cleanup in a synchronous context."""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(asyncio.wait_for(cleanup_all_resources(), timeout=10.0))
+        loop.close()
+    except asyncio.TimeoutError:
+        cleanup_logger.warning("Cleanup timed out after 10 seconds")
+    except Exception as e:
+        cleanup_logger.warning(f"Error during cleanup: {e}")
+
 
 def signal_handler(signum, frame):
     """Handle system signals for graceful shutdown."""
@@ -71,17 +204,17 @@ def create_app():
     
     # Setup basic logging configuration if not already set
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[logging.StreamHandler(sys.stdout)],
         force=True  # Force reconfiguration to ensure our settings apply
     )
     
-    # Ensure specific loggers are set to DEBUG for SSE debugging
-    logging.getLogger("agents").setLevel(logging.DEBUG)
-    logging.getLogger("agents.event_utils").setLevel(logging.DEBUG)
-    logging.getLogger("api.agent_routes").setLevel(logging.DEBUG)
-    logging.getLogger("backend.agents").setLevel(logging.DEBUG)
+    # Set loggers to INFO for production
+    logging.getLogger("agents").setLevel(logging.INFO)
+    logging.getLogger("agents.event_utils").setLevel(logging.INFO)
+    logging.getLogger("api.agent_routes").setLevel(logging.INFO)
+    logging.getLogger("backend.agents").setLevel(logging.INFO)
 
     # Suppress websocket client ping/pong debug logs
     logging.getLogger("websockets.client").setLevel(logging.WARNING)
@@ -96,12 +229,12 @@ def create_app():
     from api.config_routes import router as config_router
     from api.auth_routes import router as auth_router
 
-    app = FastAPI(title="Godoty Desktop App", version="1.0.0")
+    app = FastAPI(title="Godoty Desktop App", version="0.1.0-beta")
 
-    # Add CORS middleware
+    # Add CORS middleware - restricted to localhost for security
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -246,7 +379,7 @@ class DesktopApi:
         """Get system information"""
         return {
             'platform': platform.system(),
-            'version': '1.0.0',
+            'version': '0.1.0-beta',
             'node_name': platform.node(),
             'python_version': platform.python_version(),
             'machine': platform.machine()
@@ -281,6 +414,18 @@ class DesktopApi:
             'godot_version': project_info.godot_version if project_info else None,
             'plugin_version': project_info.plugin_version if project_info else None
         }
+
+    def open_url(self, url):
+        """Open a URL in the default system browser."""
+        if not url:
+            return {'success': False, 'error': 'No URL provided'}
+        
+        try:
+            webbrowser.open(url)
+            return {'success': True}
+        except Exception as e:
+            print(f"Error opening URL {url}: {e}")
+            return {'success': False, 'error': str(e)}
 
 
 class UvicornServer:
@@ -321,6 +466,9 @@ def main():
     Main application entry point.
     Starts the FastAPI server in a background thread and pywebview in the main thread.
     """
+    # Register cleanup on exit
+    atexit.register(run_cleanup_sync)
+    
     # Start uvicorn server in background thread
     server = UvicornServer(host="127.0.0.1", port=8000)
     server.start()
@@ -350,11 +498,21 @@ def main():
 
     # Start webview - this blocks until window is closed
     print("Application running. Close the window to exit.")
-    webview.start(debug=True)
+    webview.start(debug=False)
 
     # Cleanup after window closes
     print("Shutting down...")
+    
+    # Stop the uvicorn server first
     server.stop()
+    
+    # Run comprehensive cleanup
+    print("Cleaning up resources...")
+    run_cleanup_sync()
+    
+    # Force final garbage collection
+    gc.collect()
+    
     print("Application closed.")
 
 

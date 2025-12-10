@@ -13,7 +13,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  * OpenRouter API key is retrieved from Supabase Vault for security.
  */
 
-const MARKUP_RATE = 1.20; // 20% markup
+const MARKUP_RATE = 1.50; // 50% markup
 
 Deno.serve(async (req: Request) => {
     // CORS handling
@@ -52,7 +52,11 @@ Deno.serve(async (req: Request) => {
 
         const { data: { user }, error: authError } = await supabaseUser.auth.getUser();
         if (authError || !user) {
-            return new Response(JSON.stringify({ error: "Invalid token" }), {
+            console.error("Auth error:", authError?.message || "No user found");
+            return new Response(JSON.stringify({ 
+                error: "Invalid token",
+                details: authError?.message || "Token validation failed"
+            }), {
                 status: 401,
                 headers: { "Content-Type": "application/json" }
             });
@@ -88,10 +92,22 @@ Deno.serve(async (req: Request) => {
 
         // 3. Get OpenRouter Key
         // Can use Supabase Vault via RPC, or env var for simplicity
-        const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
-        if (!openRouterKey) {
-            console.error("OPENROUTER_API_KEY not configured");
-            return new Response(JSON.stringify({ error: "API not configured" }), {
+        // 3. Get OpenRouter Key from Vault (Secure)
+        // We use the admin client (service role) to call the secured RPC
+        const { data: openRouterKey, error: secretError } = await supabaseAdmin.rpc("get_openrouter_key");
+
+        if (secretError || !openRouterKey) {
+            console.error("Failed to retrieve API key from Vault:", {
+                error: secretError?.message || "Unknown error",
+                code: secretError?.code,
+                details: secretError?.details,
+                hint: secretError?.hint,
+                hasKey: !!openRouterKey
+            });
+            return new Response(JSON.stringify({ 
+                error: "Configuration error",
+                details: secretError?.message || "API key not found in Vault. Please add 'openrouter_api_key' secret to Supabase Vault."
+            }), {
                 status: 500,
                 headers: { "Content-Type": "application/json" }
             });

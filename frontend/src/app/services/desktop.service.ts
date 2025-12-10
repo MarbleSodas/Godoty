@@ -55,7 +55,7 @@ export class DesktopService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private reconnectDelay = 1000; // Start with 1 second
-  private readonly API_BASE = 'http://localhost:8000/api';
+  private readonly API_BASE = 'api';
 
   constructor(private http: HttpClient) {
     window.addEventListener('pywebviewready', () => {
@@ -68,6 +68,31 @@ export class DesktopService {
    */
   getGodotStatus(): Observable<GodotStatus> {
     return this.http.get<GodotStatus>(`${this.API_BASE}/godot/status`);
+  }
+
+  /**
+   * Open a URL in the default system browser via the backend
+   */
+  async openUrl(url: string): Promise<void> {
+    console.log('[DesktopService] openUrl called:', url);
+    console.log('[DesktopService] isReady:', this.isReady);
+    console.log('[DesktopService] window.pywebview:', !!window.pywebview);
+
+    if (this.isReady && window.pywebview?.api?.['open_url']) {
+      try {
+        console.log('[DesktopService] Calling python open_url...');
+        const result = await window.pywebview.api['open_url'](url);
+        console.log('[DesktopService] Python open_url result:', result);
+      } catch (error) {
+        console.error('[DesktopService] Failed to open URL via backend:', error);
+        // Fallback or error handling
+        window.open(url, '_blank');
+      }
+    } else {
+      console.warn('[DesktopService] pywebview not ready, using fallback window.open');
+      // Fallback for web browser environment
+      window.open(url, '_blank');
+    }
   }
 
   /**

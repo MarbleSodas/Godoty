@@ -29,6 +29,7 @@
     "@angular/forms": "^20.3.0",
     "@angular/platform-browser": "^20.3.0",
     "@angular/router": "^20.3.0",
+    "@supabase/supabase-js": "^2.87.1",
     "@tailwindcss/postcss": "^4.1.17",
     "@types/marked": "^5.0.2",
     "@types/prismjs": "^1.26.5",

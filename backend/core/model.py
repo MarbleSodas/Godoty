@@ -46,8 +46,12 @@ class GodotyOpenRouterModel(OpenAIModel):
             # Proxy mode: route through Supabase Edge Function
             base_url = proxy_url
             # In proxy mode, we use a dummy API key since auth is via JWT
+            # The actual auth is done via the Authorization header with the Supabase JWT
             effective_api_key = "proxy-auth"
-            headers = {}  # Auth header added per-request
+            headers = {
+                # Include Authorization header if token is provided at init
+                "Authorization": f"Bearer {proxy_token}" if proxy_token else "",
+            }
             logger.info(f"[MODEL] Proxy mode enabled, routing to: {proxy_url}")
         else:
             # Direct mode: connect directly to OpenRouter
@@ -77,6 +81,11 @@ class GodotyOpenRouterModel(OpenAIModel):
     def update_proxy_token(self, token: str):
         """Update the proxy authentication token."""
         self.proxy_token = token
+        # Update the client_args so the next request uses the new token
+        if self.use_proxy:
+            if "default_headers" not in self.client_args:
+                self.client_args["default_headers"] = {}
+            self.client_args["default_headers"]["Authorization"] = f"Bearer {token}"
         logger.debug("[MODEL] Proxy token updated")
 
     async def stream(
@@ -92,11 +101,12 @@ class GodotyOpenRouterModel(OpenAIModel):
         
         self._last_usage = None
         
-        # If in proxy mode, inject the auth header
+        # If in proxy mode, ensure the auth header is up-to-date in client_args
+        # The OpenAI client is created fresh on each request using client_args
         if self.use_proxy and self.proxy_token:
-            # The OpenAI client should use this header for requests
-            if hasattr(self, '_client') and self._client:
-                self._client.default_headers["Authorization"] = f"Bearer {self.proxy_token}"
+            if "default_headers" not in self.client_args:
+                self.client_args["default_headers"] = {}
+            self.client_args["default_headers"]["Authorization"] = f"Bearer {self.proxy_token}"
         
         async for event in super().stream(messages, tool_specs, system_prompt, tool_choice=tool_choice, **kwargs):
             # Check if this event contains usage data from OpenRouter

@@ -167,6 +167,9 @@ class SupabaseAuth:
             if redirect_to:
                 options["options"] = {"redirect_to": redirect_to}
             
+            print(f"DEBUG: Supabase sign_in_with_oauth options: {options}")
+            logger.info(f"Supabase sign_in_with_oauth options: {options}")
+            
             response = self.client.auth.sign_in_with_oauth(options)
             
             if response and hasattr(response, "url"):
@@ -224,6 +227,31 @@ class SupabaseAuth:
             logger.error(f"OTP verification error: {e}")
             return {"success": False, "error": str(e)}
     
+    def exchange_code_for_session(self, code: str) -> Dict[str, Any]:
+        """
+        Exchange PKCE code for session.
+        """
+        if not self.client:
+            return {"success": False, "error": "Supabase not configured"}
+        
+        try:
+            response = self.client.auth.exchange_code_for_session({
+                "auth_code": code
+            })
+            
+            if response.session:
+                self._store_token("supabase_access_token", response.session.access_token)
+                self._store_token("supabase_refresh_token", response.session.refresh_token)
+                self._user = response.user
+                self._session = response.session
+                logger.info(f"Session established via code exchange for: {response.user.email}")
+                return {"success": True, "user": {"email": response.user.email, "id": response.user.id}}
+            
+            return {"success": False, "error": "Code exchange failed to return session"}
+        except Exception as e:
+            logger.error(f"Code exchange error: {e}")
+            return {"success": False, "error": str(e)}
+
     def handle_oauth_callback(self, access_token: str, refresh_token: str) -> Dict[str, Any]:
         """
         Handle OAuth callback by setting the session from tokens.
@@ -261,11 +289,57 @@ class SupabaseAuth:
         self._session = None
         logger.info("User logged out")
     
-    def get_access_token(self) -> Optional[str]:
-        """Get current access token for API requests."""
-        # Try to get from session first (might be refreshed)
+    def get_access_token(self, force_refresh: bool = False) -> Optional[str]:
+        """
+        Get current access token for API requests.
+        
+        Args:
+            force_refresh: If True, attempt to refresh the token even if it appears valid.
+        
+        Returns:
+            Current access token or None if not authenticated.
+        """
+        if not self._client:
+            # Try stored token as fallback
+            return self._get_token("supabase_access_token")
+            
+        try:
+            # Try to get current session - this should auto-refresh if needed
+            session = self._client.auth.get_session()
+            
+            if session:
+                # Update stored tokens if they changed (e.g., after refresh)
+                if session.access_token != self._get_token("supabase_access_token"):
+                    self._store_token("supabase_access_token", session.access_token)
+                    if session.refresh_token:
+                        self._store_token("supabase_refresh_token", session.refresh_token)
+                    logger.debug("Updated stored tokens after session refresh")
+                    
+                return session.access_token
+            
+            # Session is None - try to refresh using stored refresh token
+            refresh_token = self._get_token("supabase_refresh_token")
+            if refresh_token:
+                logger.info("Session expired, attempting to refresh...")
+                try:
+                    response = self._client.auth.refresh_session(refresh_token)
+                    if response.session:
+                        self._store_token("supabase_access_token", response.session.access_token)
+                        self._store_token("supabase_refresh_token", response.session.refresh_token)
+                        self._session = response.session
+                        self._user = response.user
+                        logger.info("Session refreshed successfully")
+                        return response.session.access_token
+                except Exception as refresh_error:
+                    logger.warning(f"Session refresh failed: {refresh_error}")
+                    
+        except Exception as e:
+            logger.error(f"Error getting access token: {e}")
+        
+        # Fallback to stored token (may be expired but better than nothing for some cases)
         if self._session:
             return self._session.access_token
+            
         return self._get_token("supabase_access_token")
     
     def get_balance(self) -> Optional[float]:
@@ -273,8 +347,13 @@ class SupabaseAuth:
         if not self.client or not self._user:
             return None
         try:
-            response = self.client.table("profiles").select("credit_balance").eq("id", self._user.id).single().execute()
-            return float(response.data.get("credit_balance", 0))
+            # Use maybeSingle() instead of single() to handle missing profiles gracefully
+            response = self.client.table("profiles").select("credit_balance").eq("id", self._user.id).maybe_single().execute()
+            if response.data:
+                return float(response.data.get("credit_balance", 0))
+            # Profile doesn't exist - return 0 but log for debugging
+            logger.warning(f"No profile found for user {self._user.id}, returning 0 balance")
+            return 0.0
         except Exception as e:
             logger.error(f"Balance fetch error: {e}")
             return None
@@ -313,6 +392,14 @@ class SupabaseAuth:
         self._client = None
         logger.info("Supabase configuration updated")
 
+    def get_credentials(self) -> Dict[str, str]:
+        """Get public Supabase credentials."""
+        url = self.config.get("supabase_url", "")
+        key = self.config.get("supabase_anon_key", "")
+        return {
+            "supabase_url": url,
+            "supabase_anon_key": key
+        }
 
 # Singleton instance
 _auth_instance = None

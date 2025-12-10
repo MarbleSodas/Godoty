@@ -81,8 +81,9 @@ class GodotyAgent:
     In EXECUTION mode, the agent executes an approved plan with full tool access.
     """
 
-    def __init__(self, session_id: Optional[str] = None):
+    def __init__(self, session_id: Optional[str] = None, user_context: Optional[Dict[str, Any]] = None):
         self.session_id = session_id
+        self.user_context = user_context
         
         # Get configuration
         config = AgentConfig.get_openrouter_config()
@@ -91,12 +92,36 @@ class GodotyAgent:
         api_key = config["api_key"]
         model_id = config["model_id"]
         
+        # Determine if we should use the proxy (when user is authenticated)
+        use_proxy = False
+        proxy_url = None
+        proxy_token = None
+        
+        if user_context and user_context.get("access_token"):
+            # User is authenticated - route through chat-proxy for billing
+            use_proxy = True
+            # Get Supabase URL from config and construct proxy URL
+            from config_manager import get_config
+            app_config = get_config()
+            supabase_url = app_config.get("supabase_url", "")
+            if supabase_url:
+                # Supabase Edge Function URL format: https://<project-ref>.supabase.co/functions/v1/<function-name>
+                proxy_url = f"{supabase_url}/functions/v1/chat-proxy"
+                proxy_token = user_context["access_token"]
+                logger.info(f"[AGENT] Proxy mode enabled for user {user_context.get('user_id')}")
+            else:
+                logger.warning("[AGENT] Supabase URL not configured, falling back to direct mode")
+                use_proxy = False
+        
         # Initialize Model
         self.model = GodotyOpenRouterModel(
             api_key=api_key,
             model_id=model_id,
             site_url=config.get("app_url", "http://localhost:8000"),
-            app_name=config.get("app_name", "Godoty")
+            app_name=config.get("app_name", "Godoty"),
+            use_proxy=use_proxy,
+            proxy_url=proxy_url,
+            proxy_token=proxy_token
         )
 
         # Initialize Session Manager
@@ -232,6 +257,38 @@ class GodotyAgent:
         self._cached_balance = None
         self._last_balance_check = 0
     
+    def _refresh_proxy_token(self):
+        """Refresh proxy token from SupabaseAuth if in proxy mode."""
+        if not self.model.use_proxy:
+            return
+
+        try:
+            # Lazy load SupabaseAuth
+            if self._supabase_auth is None:
+                from services.supabase_auth import get_supabase_auth
+                self._supabase_auth = get_supabase_auth()
+            
+            # Check if user is still authenticated
+            if not self._supabase_auth.is_authenticated:
+                logger.warning("[PROXY] User not authenticated, cannot refresh token")
+                return
+            
+            # Get latest token (this will auto-refresh if needed)
+            token = self._supabase_auth.get_access_token()
+            if token:
+                self.model.update_proxy_token(token)
+                # Log token info for debugging (first/last 10 chars only for security)
+                if len(token) > 20:
+                    token_preview = f"{token[:10]}...{token[-10:]}"
+                else:
+                    token_preview = "***"
+                logger.info(f"[PROXY] Refreshed proxy token: {token_preview}")
+            else:
+                logger.warning("[PROXY] Failed to refresh proxy token: No token available")
+                
+        except Exception as e:
+            logger.error(f"[PROXY] Error refreshing proxy token: {e}", exc_info=True)
+
     def _ensure_agent_initialized(self):
         """Ensure agent is initialized before use."""
         if not self._agent_initialized:
@@ -250,6 +307,9 @@ class GodotyAgent:
         Returns:
             Dict with response text and metrics
         """
+        # Refresh proxy token if needed
+        self._refresh_proxy_token()
+
         # Set mode and recreate agent with appropriate tools/prompt
         mode_map = {
             "learning": AgentMode.LEARNING,
@@ -300,6 +360,9 @@ class GodotyAgent:
         Yields:
             Transformed event dicts
         """
+        # Refresh proxy token if needed
+        self._refresh_proxy_token()
+
         # Set mode and recreate agent with appropriate tools/prompt
         mode_map = {
             "learning": AgentMode.LEARNING,
@@ -750,12 +813,32 @@ class GodotyAgent:
 _godoty_agent_instance: Optional[GodotyAgent] = None
 _agent_lock = threading.Lock()
 
-def get_godoty_agent(session_id: Optional[str] = None) -> GodotyAgent:
+def get_godoty_agent(
+    session_id: Optional[str] = None,
+    user_context: Optional[Dict[str, Any]] = None
+) -> GodotyAgent:
+    """
+    Get or create a GodotyAgent instance.
+    
+    Args:
+        session_id: Session ID for conversation persistence
+        user_context: Authenticated user context for proxy mode.
+                      If provided with access_token, routes LLM calls
+                      through Supabase chat-proxy for billing.
+    
+    Returns:
+        GodotyAgent instance
+    """
     global _godoty_agent_instance
 
     with _agent_lock:
-        if _godoty_agent_instance is None or (
-            _godoty_agent_instance.session_id != session_id and session_id is not None
-        ):
-            _godoty_agent_instance = GodotyAgent(session_id)
+        # Recreate agent if session changed or user context changed
+        should_recreate = (
+            _godoty_agent_instance is None or
+            (_godoty_agent_instance.session_id != session_id and session_id is not None) or
+            (_godoty_agent_instance.user_context != user_context and user_context is not None)
+        )
+        
+        if should_recreate:
+            _godoty_agent_instance = GodotyAgent(session_id, user_context)
         return _godoty_agent_instance
