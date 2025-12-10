@@ -18,10 +18,11 @@ from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agents.godoty_agent import get_godoty_agent
+# Use new Agno-based agent (with backward-compatible alias)
+from agents.agno_agent import get_godoty_agent, GodotyTeam
 from agents.config import AgentConfig
 from agents.db import get_metrics_db
-from agents.event_utils import sanitize_event_data
+from agents.agno_event_utils import sanitize_event_data
 from services.supabase_auth import get_supabase_auth
 
 logger = logging.getLogger(__name__)
@@ -358,10 +359,12 @@ async def reset_conversation():
     """
     try:
         agent = get_godoty_agent(session_id="default")
-        # agent.reset_conversation() # GodotyAgent doesn't have this yet, but we can re-init
-        # For now, just re-init
-        from agents.godoty_agent import _godoty_agent_instance
-        _godoty_agent_instance = None
+        agent.reset_conversation()
+        
+        # Reset the singleton instance for a fresh start
+        from agents.agno_agent import _godoty_team_instance
+        import agents.agno_agent as agno_module
+        agno_module._godoty_team_instance = None
 
         return {
             "status": "success",
@@ -406,8 +409,9 @@ async def update_agent_config(request: UpdateConfigRequest):
 
         # 2. Reset the agent to pick up new configuration
         # This ensures the model is re-initialized with new ID and API key
-        from agents.godoty_agent import _godoty_agent_instance
-        _godoty_agent_instance = None
+        from agents.agno_agent import _godoty_team_instance
+        import agents.agno_agent as agno_module
+        agno_module._godoty_team_instance = None
         agent = get_godoty_agent()
 
         # Get updated config from the fresh agent
@@ -505,11 +509,9 @@ async def create_session(request: SessionRequest):
                 "existing": True
             }
 
-        # Create session directory and initialize metadata
-        from strands.session.file_session_manager import FileSessionManager
-        # AgentConfig is already imported at module level (line 22)
-
-        manager = FileSessionManager(session_id=request.session_id, storage_dir=storage_dir)
+        # Create session directory and initialize metadata using file-based storage
+        session_dir = os.path.join(storage_dir, f"session_{request.session_id}")
+        os.makedirs(session_dir, exist_ok=True)
 
         # Initialize session with metadata
         metadata = {
@@ -520,19 +522,17 @@ async def create_session(request: SessionRequest):
             "status": "initializing"
         }
 
-        # Try to save metadata if FileSessionManager supports it
+        # Save metadata to file
         try:
-            # Check if save_metadata method exists
-            if hasattr(manager, 'save_metadata'):
-                await manager.save_metadata(metadata)
-            else:
-                # Fallback: store metadata in a temporary location
-                logger.info(f"Metadata saved for session {request.session_id}")
+            metadata_file = os.path.join(session_dir, "metadata.json")
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(f"Metadata saved for session {request.session_id}")
         except Exception as e:
             logger.warning(f"Could not save metadata for session {request.session_id}: {e}")
 
-        # Initialize GodotyAgent for the session
-        from agents.godoty_agent import get_godoty_agent
+        # Initialize GodotyAgent for the session (uses Agno SQLite storage)
+        from agents.agno_agent import get_godoty_agent
         agent = get_godoty_agent(session_id=request.session_id)
 
         # Initialize session with project path if available
@@ -628,7 +628,7 @@ def _extract_title_from_text(text: str) -> str:
 
 
 def _list_sessions_from_storage(storage_dir: str) -> Dict[str, Dict[str, Any]]:
-    """Scan FileSessionManager storage directory for all sessions."""
+    """Scan session storage directory for all sessions."""
     sessions = {}
 
     if not os.path.exists(storage_dir):
@@ -695,11 +695,10 @@ async def list_sessions(path: Optional[str] = Query(None)):
     try:
         logger.info(f"Listing sessions with path: {path}")
 
-        # Get sessions from FileSessionManager (primary source)
-        from strands.session.file_session_manager import FileSessionManager
+        # Get sessions from file storage
         storage_dir = AgentConfig.get_sessions_storage_dir()
         fs_sessions = _list_sessions_from_storage(storage_dir)
-        logger.info(f"Found {len(fs_sessions)} sessions from FileSessionManager")
+        logger.info(f"Found {len(fs_sessions)} sessions from file storage")
 
         if not path:
             # For development/testing, use current working directory as default
@@ -708,9 +707,9 @@ async def list_sessions(path: Optional[str] = Query(None)):
 
         sessions_dict = {}
 
-        logger.info(f"Processing {len(fs_sessions)} sessions from FileSessionManager")
+        logger.info(f"Processing {len(fs_sessions)} sessions from file storage")
 
-        # Process FileSessionManager sessions
+        # Process file storage sessions
         for session_id, session_data in fs_sessions.items():
             logger.debug(f"Processing session: {session_id}")
 
@@ -724,7 +723,7 @@ async def list_sessions(path: Optional[str] = Query(None)):
                     if not title:
                         title = f"Session {session_id}"
 
-                # Get session date from FileSessionManager
+                # Get session date from file storage
                 session_date = session_data.get("session_type") == "AGENT" and session_data.get("created_at")
 
                 sessions_dict[session_id] = {
@@ -784,7 +783,7 @@ def parse_message_content_blocks(message_obj: Dict) -> Dict:
     """
     Parse message content blocks to extract text and tool calls.
 
-    Handles the Anthropic/Strands message format where content is an array
+    Handles the Anthropic/Agno message format where content is an array
     of blocks that can be text, toolUse, or toolResult.
 
     Args:
@@ -914,46 +913,52 @@ def parse_message_content_blocks(message_obj: Dict) -> Dict:
 async def get_session(session_id: str, path: Optional[str] = Query(None)):
     """Get session details with conversation history."""
     try:
-        from strands.session.file_session_manager import FileSessionManager
-        # AgentConfig is already imported at module level (line 22)
-
         storage_dir = AgentConfig.get_sessions_storage_dir()
-        manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
+        session_dir = os.path.join(storage_dir, f"session_{session_id}")
 
-        # Load messages
-        agent_id = "godoty-agent"
+        # Load chat history from Agno SQLite storage or legacy files
         chat_history = []
 
         try:
-            # Use manager.list_messages() to get all messages
-            messages = manager.list_messages(session_id, agent_id)
-
-            for msg in messages:
-                message_obj = msg.message
-
-                # Parse content blocks to extract text and tool calls
-                parsed = parse_message_content_blocks(message_obj)
-
-                message_dict = {
-                    "role": message_obj.get("role"),
-                    "content": parsed['text'],
-                    "timestamp": msg.created_at,
-                    "id": f"{session_id}-{msg.message_id}"
-                }
-
-                # Add tool calls if present
-                if parsed['toolCalls']:
-                    message_dict['toolCalls'] = parsed['toolCalls']
-
-                # Filter: Skip empty messages (no content and no tool calls)
-                if not parsed['text'].strip() and not parsed['toolCalls']:
-                    logger.debug(f"Skipping empty message: {message_dict['id']}")
-                    continue
-
-                chat_history.append(message_dict)
+            # Try to load from Agno agent's memory
+            from agents.agno_agent import get_godoty_agent
+            agent = get_godoty_agent(session_id=session_id)
+            if hasattr(agent, 'memory') and agent.memory:
+                # Get messages from memory
+                memories = agent.memory.get_messages(limit=100)
+                for i, mem in enumerate(memories):
+                    message_dict = {
+                        "role": getattr(mem, 'role', 'assistant'),
+                        "content": getattr(mem, 'content', ''),
+                        "timestamp": getattr(mem, 'created_at', datetime.utcnow().isoformat()),
+                        "id": f"{session_id}-{i}"
+                    }
+                    if message_dict['content']:
+                        chat_history.append(message_dict)
         except Exception as e:
-            logger.warning(f"Error loading messages: {e}")
-            chat_history = []
+            logger.warning(f"Error loading messages from Agno memory: {e}")
+            
+            # Fallback: try to load from legacy message files
+            try:
+                messages_dir = os.path.join(session_dir, "agents", "agent_godoty-agent", "messages")
+                if os.path.exists(messages_dir):
+                    for msg_file in sorted(os.listdir(messages_dir)):
+                        if msg_file.endswith('.json'):
+                            with open(os.path.join(messages_dir, msg_file)) as f:
+                                msg_data = json.load(f)
+                                message_obj = msg_data.get('message', {})
+                                parsed = parse_message_content_blocks(message_obj)
+                                if parsed['text'].strip() or parsed['toolCalls']:
+                                    chat_history.append({
+                                        "role": message_obj.get("role"),
+                                        "content": parsed['text'],
+                                        "timestamp": msg_data.get('created_at'),
+                                        "id": f"{session_id}-{msg_file}",
+                                        "toolCalls": parsed['toolCalls'] if parsed['toolCalls'] else None
+                                    })
+            except Exception as e2:
+                logger.warning(f"Error loading legacy messages: {e2}")
+                chat_history = []
 
         # Get metrics from MetricsDB
         metrics = {"total_tokens": 0, "total_estimated_cost": 0.0}
@@ -1089,7 +1094,7 @@ async def get_project_metrics_endpoint(path: str = Query(...)):
 @router.delete("/sessions/{session_id}", response_model=dict)
 async def delete_session(session_id: str, path: Optional[str] = Query(None)):
     """
-    Delete a session from FileSessionManager and MetricsDB.
+    Delete a session from file storage and MetricsDB.
 
     Args:
         session_id: Session ID
@@ -1107,21 +1112,20 @@ async def delete_session(session_id: str, path: Optional[str] = Query(None)):
         except Exception as e:
             logger.warning(f"MetricsDB delete failed: {e}")
 
-        from strands.session.file_session_manager import FileSessionManager
-        # AgentConfig is already imported at module level (line 22)
-
         # Direct deletion from file storage
+        storage_dir = AgentConfig.get_sessions_storage_dir()
+        session_dir = os.path.join(storage_dir, f"session_{session_id}")
         manager_deleted = False
+        
         try:
-            storage_dir = AgentConfig.get_sessions_storage_dir()
-            manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
-            manager.delete_session(session_id)
-            manager_deleted = True
+            if os.path.exists(session_dir):
+                import shutil
+                shutil.rmtree(session_dir)
+                manager_deleted = True
+                logger.info(f"Deleted session directory: {session_dir}")
         except Exception as e:
-            logger.error(f"Error deleting session from FileSessionManager: {e}")
+            logger.error(f"Error deleting session directory: {e}")
             manager_deleted = False
-        if manager_deleted:
-            logger.info(f"Deleted session {session_id} from FileSessionManager")
 
         if not manager_deleted:
             raise HTTPException(status_code=404, detail="Session not found or could not be deleted")
@@ -1161,23 +1165,30 @@ async def update_session_title(session_id: str, title_data: dict):
         except Exception as e:
             logger.error(f"Error updating title in MetricsDB: {e}")
 
-        # Update title in FileSessionManager
+        # Update title in session file storage
         try:
             storage_dir = AgentConfig.get_sessions_storage_dir()
-            manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
-
-            # Get current session data
-            session_data = manager.get_session_info()
-            if session_data:
-                # Update title in session metadata
-                if hasattr(manager, 'load_metadata'):
-                     metadata = await manager.load_metadata()
-                     if metadata:
-                         metadata['title'] = new_title
-                         await manager.save_metadata(metadata)
+            session_dir = os.path.join(storage_dir, f"session_{session_id}")
+            session_file = os.path.join(session_dir, "session.json")
+            
+            if os.path.exists(session_file):
+                with open(session_file, 'r') as f:
+                    session_data = json.load(f)
+                
+                # Update title in session data
+                session_data['title'] = new_title
+                if 'metadata' not in session_data:
+                    session_data['metadata'] = {}
+                session_data['metadata']['title'] = new_title
+                session_data['updated_at'] = datetime.now().isoformat()
+                
+                with open(session_file, 'w') as f:
+                    json.dump(session_data, f, indent=2)
+                    
+                logger.info(f"Updated title in session file: {session_file}")
             
         except Exception as e:
-            logger.error(f"Error updating title in FileSessionManager: {e}")
+            logger.error(f"Error updating title in session file storage: {e}")
 
         logger.info(f"Updated session {session_id} title to: {new_title}")
 
@@ -1229,25 +1240,24 @@ async def get_session_status(session_id: str):
         Session status information including readiness
     """
     try:
-        from strands.session.file_session_manager import FileSessionManager
-        # AgentConfig is already imported at module level (line 22)
-
         # Check if session directory exists
         storage_dir = AgentConfig.get_sessions_storage_dir()
-        manager = FileSessionManager(session_id=session_id, storage_dir=storage_dir)
+        session_dir = os.path.join(storage_dir, f"session_{session_id}")
 
-        # Try to load metadata
+        # Try to load metadata from file
         metadata = None
         try:
-            if hasattr(manager, 'load_metadata'):
-                metadata = await manager.load_metadata()
+            metadata_file = os.path.join(session_dir, "metadata.json")
+            if os.path.exists(metadata_file):
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
         except Exception as e:
             logger.debug(f"Could not load metadata for session {session_id}: {e}")
 
         # If no metadata, try to determine status from agent
         if not metadata:
             try:
-                from agents.godoty_agent import get_godoty_agent
+                from agents.agno_agent import get_godoty_agent
                 agent = get_godoty_agent(session_id=session_id)
                 # If agent exists and has session_manager, consider it ready
                 if hasattr(agent, 'session_manager') and agent.session_manager:

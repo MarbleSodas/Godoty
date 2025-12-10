@@ -8,9 +8,14 @@ from typing import Optional, Dict, Any
 try:
     from supabase import create_client, Client
     HAS_SUPABASE = True
-except ImportError:
+except ImportError as e:
     HAS_SUPABASE = False
     Client = None
+    logger.error(f"Failed to import supabase: {e}")
+except Exception as e:
+    HAS_SUPABASE = False
+    Client = None
+    logger.error(f"Unexpected error importing supabase: {e}")
 
 try:
     import keyring
@@ -57,7 +62,7 @@ class SupabaseAuth:
     
     def _store_token(self, key: str, value: str):
         """Securely store token using OS keyring or fallback to config."""
-        if HAS_KEYRING:
+        if HAS_KEYRING and self.config.use_keychain:
             try:
                 keyring.set_password(SERVICE_NAME, key, value)
                 return
@@ -68,7 +73,7 @@ class SupabaseAuth:
     
     def _get_token(self, key: str) -> Optional[str]:
         """Retrieve token from secure storage."""
-        if HAS_KEYRING:
+        if HAS_KEYRING and self.config.use_keychain:
             try:
                 token = keyring.get_password(SERVICE_NAME, key)
                 if token:
@@ -80,7 +85,7 @@ class SupabaseAuth:
     def _clear_tokens(self):
         """Clear stored tokens."""
         for key in ["supabase_access_token", "supabase_refresh_token"]:
-            if HAS_KEYRING:
+            if HAS_KEYRING and self.config.use_keychain:
                 try:
                     keyring.delete_password(SERVICE_NAME, key)
                 except:

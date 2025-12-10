@@ -58,6 +58,17 @@ class ConfigManager:
         self._save_config()
 
     @property
+    def use_keychain(self) -> bool:
+        """Get whether to use system keychain for token storage."""
+        return self._config.get("use_keychain", True)
+
+    @use_keychain.setter
+    def use_keychain(self, value: bool):
+        """Set whether to use system keychain."""
+        self._config["use_keychain"] = value
+        self._save_config()
+
+    @property
     def default_model(self) -> str:
         """Get default model."""
         return self._config.get("default_model", "anthropic/claude-opus-4.5")

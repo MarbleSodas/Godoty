@@ -1,24 +1,27 @@
-# Godoty Backend Dependencies - v0.1.0-beta
+# Godoty Backend Dependencies - v0.2.0-agno
 # Pinned versions for production stability
 
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 pywebview==5.3
+pyinstaller==6.11.1
 
-# Strands Agents
-strands-agents>=0.2.0
+# Agno Agents Framework
+agno>=2.3.0
+
+# Vector Store for Knowledge Base
+lancedb>=0.6.0
 
 # HTTP Client for OpenRouter
 httpx==0.28.1
 requests==2.32.3
 openai>=1.0.0
-openrouter
 
 # WebSocket Support
 websockets==15.0.1
 
 # MCP (Model Context Protocol) Support
-mcp==1.6.0
+mcp>=1.8.0
 
 # Data Validation
 pydantic==2.12.5

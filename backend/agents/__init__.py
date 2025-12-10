@@ -5,11 +5,17 @@ import warnings
 # Suppress LangGraph warning
 warnings.filterwarnings("ignore", message="Graph without execution limits may run indefinitely if cycles exist")
 
-from .godoty_agent import GodotyAgent, get_godoty_agent
+# Import from new Agno-based implementation
+from .agno_agent import GodotyTeam, get_godoty_agent
+
+# Backward compatibility alias
+GodotyAgent = GodotyTeam
+
 from .config import AgentConfig
 
 __all__ = [
-    "GodotyAgent",
+    "GodotyTeam",
+    "GodotyAgent",  # Backward compatibility
     "get_godoty_agent",
     "AgentConfig"
 ]

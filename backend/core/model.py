@@ -1,159 +1,124 @@
-from typing import Any, AsyncGenerator, Optional
-from strands.models.openai import OpenAIModel
-from strands.types.streaming import StreamEvent
-from strands.types.content import Messages
+"""
+Godoty OpenRouter Model Factory.
+
+This module provides the model factory for creating OpenRouter models
+compatible with Agno agents, supporting both direct and Supabase proxy modes.
+"""
+
+from typing import Optional, Dict, Any
 import logging
+
+from agno.models.openrouter import OpenRouter
 
 logger = logging.getLogger(__name__)
 
 
-class GodotyOpenRouterModel(OpenAIModel):
-    """
-    OpenRouter model with usage tracking that captures cost directly from API responses.
-    
-    Supports two modes:
-    - Direct mode: Requests go directly to OpenRouter (default, for development)
-    - Proxy mode: Requests route through Supabase Edge Function for monetization
-    """
+class GodotyOpenRouterConfig:
+    """Configuration for the Godoty OpenRouter model."""
     
     def __init__(
-        self, 
-        api_key: str, 
-        model_id: str, 
-        site_url: str, 
-        app_name: str,
+        self,
+        api_key: str,
+        model_id: str,
+        app_name: str = "Godoty",
         use_proxy: bool = False,
         proxy_url: Optional[str] = None,
-        proxy_token: Optional[str] = None
+        proxy_token: Optional[str] = None,
     ):
         """
-        Initialize the OpenRouter model.
+        Initialize OpenRouter configuration.
         
         Args:
             api_key: OpenRouter API key (used in direct mode)
             model_id: Model identifier (e.g., 'anthropic/claude-3.5-sonnet')
-            site_url: Application URL for OpenRouter attribution
             app_name: Application name for OpenRouter attribution
             use_proxy: If True, route through Supabase proxy for billing
             proxy_url: Supabase Edge Function URL for proxy mode
             proxy_token: Supabase JWT token for proxy authentication
         """
-        self.use_proxy = use_proxy
-        self.proxy_token = proxy_token
-        
-        # Determine base URL and headers based on mode
-        if use_proxy and proxy_url:
-            # Proxy mode: route through Supabase Edge Function
-            base_url = proxy_url
-            # In proxy mode, we use a dummy API key since auth is via JWT
-            # The actual auth is done via the Authorization header with the Supabase JWT
-            effective_api_key = "proxy-auth"
-            headers = {
-                # Include Authorization header if token is provided at init
-                "Authorization": f"Bearer {proxy_token}" if proxy_token else "",
-            }
-            logger.info(f"[MODEL] Proxy mode enabled, routing to: {proxy_url}")
-        else:
-            # Direct mode: connect directly to OpenRouter
-            base_url = "https://openrouter.ai/api/v1"
-            effective_api_key = api_key
-            headers = {
-                "HTTP-Referer": site_url,
-                "X-Title": app_name,
-            }
-            logger.info("[MODEL] Direct mode, connecting to OpenRouter")
-        
-        super().__init__(
-            client_args={
-                "api_key": effective_api_key,
-                "base_url": base_url,
-                "default_headers": headers
-            },
-            model_id=model_id,
-            params={
-                "stream_options": {"include_usage": True}
-            }
-        )
+        self.api_key = api_key
         self.model_id = model_id
-        # Track accumulated usage for this model instance
-        self._last_usage = None
-    
-    def update_proxy_token(self, token: str):
-        """Update the proxy authentication token."""
-        self.proxy_token = token
-        # Update the client_args so the next request uses the new token
-        if self.use_proxy:
-            if "default_headers" not in self.client_args:
-                self.client_args["default_headers"] = {}
-            self.client_args["default_headers"]["Authorization"] = f"Bearer {token}"
-        logger.debug("[MODEL] Proxy token updated")
+        self.app_name = app_name
+        self.use_proxy = use_proxy
+        self.proxy_url = proxy_url
+        self.proxy_token = proxy_token
 
-    async def stream(
-        self,
-        messages: Messages,
-        tool_specs: Optional[list] = None,
-        system_prompt: Optional[str] = None,
-        *,
-        tool_choice: Optional[Any] = None,
-        **kwargs: Any,
-    ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream with OpenRouter usage tracking injected into events."""
+
+def create_godoty_model(config: GodotyOpenRouterConfig) -> OpenRouter:
+    """
+    Create an Agno OpenRouter model with Godoty configuration.
+    
+    Supports two modes:
+    - Direct mode: Requests go directly to OpenRouter (default, for development)
+    - Proxy mode: Requests route through Supabase Edge Function for monetization
+    
+    Metrics (input_tokens, output_tokens, cost) are automatically captured
+    by Agno from OpenRouter API responses and available in RunResponse.metrics.
+    
+    Args:
+        config: GodotyOpenRouterConfig with model settings
         
-        self._last_usage = None
+    Returns:
+        Configured OpenRouter model instance
+    """
+    # Build extra headers based on mode
+    extra_headers: Dict[str, str] = {}
+    
+    if config.use_proxy and config.proxy_url:
+        # Proxy mode: route through Supabase Edge Function
+        base_url = config.proxy_url
+        # In proxy mode, auth is via JWT in Authorization header
+        api_key = "proxy-auth"  # Placeholder, actual auth via header
+        if config.proxy_token:
+            extra_headers["Authorization"] = f"Bearer {config.proxy_token}"
+        logger.info(f"[MODEL] Proxy mode enabled, routing to: {config.proxy_url}")
+    else:
+        # Direct mode: connect directly to OpenRouter
+        base_url = "https://openrouter.ai/api/v1"
+        api_key = config.api_key
+        logger.info("[MODEL] Direct mode, connecting to OpenRouter")
+    
+    # Create Agno OpenRouter model
+    model = OpenRouter(
+        id=config.model_id,
+        api_key=api_key,
+        base_url=base_url,
+        app_name=config.app_name,
+        extra_headers=extra_headers if extra_headers else None,
+    )
+    
+    # Store config reference for token refresh
+    model._godoty_config = config  # type: ignore
+    
+    return model
+
+
+def update_model_proxy_token(model: OpenRouter, token: str) -> OpenRouter:
+    """
+    Update the proxy authentication token on an existing model.
+    
+    Since Agno models are typically stateless per-run, this creates
+    a new model instance with the updated token.
+    
+    Args:
+        model: Existing OpenRouter model
+        token: New Supabase JWT token
         
-        # If in proxy mode, ensure the auth header is up-to-date in client_args
-        # The OpenAI client is created fresh on each request using client_args
-        if self.use_proxy and self.proxy_token:
-            if "default_headers" not in self.client_args:
-                self.client_args["default_headers"] = {}
-            self.client_args["default_headers"]["Authorization"] = f"Bearer {self.proxy_token}"
-        
-        async for event in super().stream(messages, tool_specs, system_prompt, tool_choice=tool_choice, **kwargs):
-            # Check if this event contains usage data from OpenRouter
-            # The OpenAI SDK puts usage in the 'usage' field of the chunk
-            if isinstance(event, dict):
-                # Check for usage in different possible locations
-                usage = None
-                
-                # Check for direct usage field (from OpenRouter with include_usage)
-                if "usage" in event:
-                    usage = event["usage"]
-                
-                # Check in messageStop event
-                elif "messageStop" in event:
-                    usage = event.get("messageStop", {}).get("usage")
-                
-                # Check for metadata.usage (some SDK versions)
-                elif "metadata" in event and isinstance(event["metadata"], dict):
-                    usage = event["metadata"].get("usage")
-                
-                if usage and isinstance(usage, dict):
-                    # Store the usage data
-                    prompt_tokens = usage.get("prompt_tokens", 0)
-                    completion_tokens = usage.get("completion_tokens", 0)
-                    total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
-                    # OpenRouter provides cost directly, also check for total_cost
-                    cost = usage.get("cost", usage.get("total_cost", 0.0))
-                    
-                    self._last_usage = {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": total_tokens,
-                        "cost": cost,
-                        "model_id": self.model_id
-                    }
-                    
-                    logger.info(f"[OPENROUTER] Usage captured: {prompt_tokens} in, {completion_tokens} out, cost=${cost:.6f}")
-                    
-                    # Inject usage into the event for downstream processing
-                    event["openrouter_usage"] = self._last_usage
-            
-            yield event
-        
-        # After stream completes, yield a final metrics event if we have usage data
-        if self._last_usage:
-            logger.info(f"[OPENROUTER] Final usage: {self._last_usage}")
-            yield {
-                "openrouter_metrics": self._last_usage
-            }
+    Returns:
+        New OpenRouter model with updated token
+    """
+    config = getattr(model, '_godoty_config', None)
+    if config is None:
+        logger.warning("[MODEL] No Godoty config found on model, cannot update token")
+        return model
+    
+    # Update config with new token
+    config.proxy_token = token
+    
+    # Create new model with updated config
+    return create_godoty_model(config)
+
+
+# Backwards compatibility alias
+GodotyOpenRouterModel = OpenRouter
 
