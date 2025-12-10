@@ -90,6 +90,23 @@ func execute_command(command: Dictionary):
 			return _create_and_attach_script(command)
 		"create_node_with_script":
 			return _create_node_with_script(command)
+		# === New EditorInterface commands (expanded editor access) ===
+		"close_scene":
+			return _close_scene(command)
+		"edit_script":
+			return _edit_script(command)
+		"save_scene_as":
+			return _save_scene_as(command)
+		"save_all_scenes":
+			return _save_all_scenes(command)
+		"reload_scene":
+			return _reload_scene(command)
+		"switch_main_screen":
+			return _switch_main_screen(command)
+		"get_open_scenes":
+			return _get_open_scenes(command)
+		"scan_filesystem":
+			return _scan_filesystem(command)
 		_:
 			return {
 				"status": "error",
@@ -1620,3 +1637,99 @@ func _create_node_with_script(command: Dictionary) -> Dictionary:
 		return attach_res
 
 	return {"status": "success", "message": "Created node with script", "data": {"node_path": node_path, "script_path": attach_res.data.script_path}}
+
+# === New EditorInterface Command Handlers (expanded editor access) ===
+
+func _close_scene(command: Dictionary) -> Dictionary:
+	var editor_interface = editor_plugin.get_editor_interface()
+	var result = editor_interface.close_scene()
+	if result == OK:
+		return {"status": "success", "message": "Scene closed"}
+	return {"status": "error", "message": "Failed to close scene: %s" % error_string(result)}
+
+func _edit_script(command: Dictionary) -> Dictionary:
+	var script_path := str(command.get("path", ""))
+	var line := int(command.get("line", -1))
+	var column := int(command.get("column", 0))
+	var grab_focus := bool(command.get("grab_focus", true))
+	
+	if script_path.is_empty():
+		return {"status": "error", "message": "Script path is required"}
+	
+	# Ensure path is res:// format
+	script_path = _to_res_path(script_path)
+	
+	var script: Script = load(script_path)
+	if not script:
+		return {"status": "error", "message": "Failed to load script: %s" % script_path}
+	
+	var editor_interface = editor_plugin.get_editor_interface()
+	editor_interface.edit_script(script, line, column, grab_focus)
+	
+	return {"status": "success", "message": "Opened script at line %d" % line, "data": {"path": script_path, "line": line, "column": column}}
+
+func _save_scene_as(command: Dictionary) -> Dictionary:
+	var save_path := str(command.get("path", ""))
+	var with_preview := bool(command.get("with_preview", true))
+	
+	if save_path.is_empty():
+		return {"status": "error", "message": "Save path is required"}
+	
+	# Ensure path is res:// format 
+	save_path = _to_res_path(save_path)
+	
+	var editor_interface = editor_plugin.get_editor_interface()
+	editor_interface.save_scene_as(save_path, with_preview)
+	
+	return {"status": "success", "message": "Saved scene as: %s" % save_path, "data": {"path": save_path}}
+
+func _save_all_scenes(command: Dictionary) -> Dictionary:
+	var editor_interface = editor_plugin.get_editor_interface()
+	editor_interface.save_all_scenes()
+	return {"status": "success", "message": "All scenes saved"}
+
+func _reload_scene(command: Dictionary) -> Dictionary:
+	var scene_path := str(command.get("path", ""))
+	
+	if scene_path.is_empty():
+		return {"status": "error", "message": "Scene path is required"}
+	
+	# Ensure path is res:// format
+	scene_path = _to_res_path(scene_path)
+	
+	var editor_interface = editor_plugin.get_editor_interface()
+	editor_interface.reload_scene_from_path(scene_path)
+	
+	return {"status": "success", "message": "Reloaded scene: %s" % scene_path, "data": {"path": scene_path}}
+
+func _switch_main_screen(command: Dictionary) -> Dictionary:
+	var screen_name := str(command.get("screen", ""))
+	
+	if screen_name.is_empty():
+		return {"status": "error", "message": "Screen name is required (2D, 3D, Script, AssetLib)"}
+	
+	# Validate screen name
+	var valid_screens := ["2D", "3D", "Script", "AssetLib"]
+	if screen_name not in valid_screens:
+		return {"status": "error", "message": "Invalid screen name: %s. Valid options: %s" % [screen_name, ", ".join(valid_screens)]}
+	
+	var editor_interface = editor_plugin.get_editor_interface()
+	editor_interface.set_main_screen_editor(screen_name)
+	
+	return {"status": "success", "message": "Switched to %s screen" % screen_name, "data": {"screen": screen_name}}
+
+func _get_open_scenes(command: Dictionary) -> Dictionary:
+	var editor_interface = editor_plugin.get_editor_interface()
+	var scenes: PackedStringArray = editor_interface.get_open_scenes()
+	var scene_list: Array = []
+	for s in scenes:
+		scene_list.append(s)
+	
+	return {"status": "success", "message": "Found %d open scenes" % scene_list.size(), "data": {"scenes": scene_list, "count": scene_list.size()}}
+
+func _scan_filesystem(command: Dictionary) -> Dictionary:
+	var editor_interface = editor_plugin.get_editor_interface()
+	var fs: EditorFileSystem = editor_interface.get_resource_filesystem()
+	fs.scan()
+	
+	return {"status": "success", "message": "Filesystem scan started"}

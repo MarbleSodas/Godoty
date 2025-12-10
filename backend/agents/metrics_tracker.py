@@ -1,7 +1,7 @@
 """
-Metrics tracking module for token usage and cost calculation.
+Metrics tracking module for token usage and cost extraction.
 
-Provides utilities to extract metrics from API responses and calculate costs.
+Provides utilities to extract metrics from API responses.
 """
 
 import logging
@@ -12,9 +12,6 @@ from datetime import datetime
 import httpx
 
 logger = logging.getLogger(__name__)
-
-
-from core.pricing import PricingService
 
 
 class TokenMetricsTracker:
@@ -62,18 +59,15 @@ class TokenMetricsTracker:
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", 0)
         
-        # Extract actual cost if available from OpenRouter usage accounting
+        # Extract cost from OpenRouter usage accounting
         actual_cost = usage.get("cost")
         
         if actual_cost is not None:
             estimated_cost = float(actual_cost)
         else:
-            # Calculate estimated cost
-            estimated_cost = PricingService.calculate_cost(
-                model_id,
-                prompt_tokens,
-                completion_tokens
-            )
+            # Free models or models without cost data
+            logger.warning(f"No cost data from OpenRouter for model {model_id}, using $0.00")
+            estimated_cost = 0.0
         
         # Extract generation ID if available
         generation_id = response.get("id")
@@ -123,23 +117,19 @@ class TokenMetricsTracker:
                     completion_tokens = accumulated_usage.get('outputTokens', 0)
                     total_tokens = accumulated_usage.get('totalTokens', 0)
 
-                    # Cost precedence: actual_cost (from OpenRouter) > godoty_cost (calculated) > PricingService fallback
-                    actual_cost = accumulated_usage.get('actual_cost')  # From OpenRouter
-                    godoty_cost = accumulated_usage.get('godoty_cost')  # From GodotyOpenRouterModel
+                    # Extract cost from OpenRouter (previously actual_cost or openrouter_cost)
+                    openrouter_cost = accumulated_usage.get('openrouter_cost')  # From GodotyOpenRouterModel
+                    actual_cost = accumulated_usage.get('actual_cost')  # Legacy field name
 
-                    if actual_cost is not None:
+                    if openrouter_cost is not None:
+                        estimated_cost = float(openrouter_cost)
+                        logger.debug("Using openrouter_cost from API response")
+                    elif actual_cost is not None:
                         estimated_cost = float(actual_cost)
-                        logger.debug("Using actual_cost from OpenRouter")
-                    elif godoty_cost is not None:
-                        estimated_cost = float(godoty_cost)
-                        logger.debug("Using godoty_cost from calculation")
+                        logger.debug("Using actual_cost from API response")
                     else:
-                        estimated_cost = PricingService.calculate_cost(
-                            model_id,
-                            prompt_tokens,
-                            completion_tokens
-                        )
-                        logger.debug("Fallback to PricingService calculation")
+                        logger.warning(f"No OpenRouter cost data for model {model_id}, using $0.00")
+                        estimated_cost = 0.0
                     
                     return {
                         "prompt_tokens": prompt_tokens,
@@ -156,23 +146,23 @@ class TokenMetricsTracker:
                 completion_tokens = usage.get('completion_tokens', 0)
                 total_tokens = usage.get('total_tokens', 0)
 
-                # Cost precedence: actual_cost (from OpenRouter) > godoty_cost (calculated) > PricingService fallback
-                actual_cost = usage.get('actual_cost')  # From OpenRouter
-                godoty_cost = usage.get('godoty_cost')  # From GodotyOpenRouterModel
+                # Extract cost from OpenRouter
+                openrouter_cost = usage.get('openrouter_cost')  # From GodotyOpenRouterModel
+                actual_cost = usage.get('actual_cost')  # Legacy field name
+                cost = usage.get('cost')  # Direct from OpenRouter API
 
-                if actual_cost is not None:
+                if openrouter_cost is not None:
+                    estimated_cost = float(openrouter_cost)
+                    logger.debug("Using openrouter_cost from API response")
+                elif actual_cost is not None:
                     estimated_cost = float(actual_cost)
-                    logger.debug("Using actual_cost from OpenRouter")
-                elif godoty_cost is not None:
-                    estimated_cost = float(godoty_cost)
-                    logger.debug("Using godoty_cost from calculation")
+                    logger.debug("Using actual_cost from API response")
+                elif cost is not None:
+                    estimated_cost = float(cost)
+                    logger.debug("Using cost from API response")
                 else:
-                    estimated_cost = PricingService.calculate_cost(
-                        model_id,
-                        prompt_tokens,
-                        completion_tokens
-                    )
-                    logger.debug("Fallback to PricingService calculation")
+                    logger.warning(f"No OpenRouter cost data for model {model_id}, using $0.00")
+                    estimated_cost = 0.0
                 
                 return {
                     "prompt_tokens": prompt_tokens,
@@ -214,18 +204,17 @@ class TokenMetricsTracker:
                 completion_tokens = usage.get("outputTokens", 0)
                 total_tokens = usage.get("totalTokens", 0)
                 
-                # Check for godoty_cost
-                godoty_cost = usage.get("godoty_cost")
-                if godoty_cost is not None:
-                    estimated_cost = float(godoty_cost)
-                elif actual_cost is not None:
-                    estimated_cost = float(actual_cost)
+                # Extract cost from OpenRouter
+                openrouter_cost = usage.get("openrouter_cost")
+                cost = usage.get("cost")
+                
+                if openrouter_cost is not None:
+                    estimated_cost = float(openrouter_cost)
+                elif cost is not None:
+                    estimated_cost = float(cost)
                 else:
-                    estimated_cost = PricingService.calculate_cost(
-                        model_id,
-                        prompt_tokens,
-                        completion_tokens
-                    )
+                    logger.warning(f"No OpenRouter cost data for model {model_id}, using $0.00")
+                    estimated_cost = 0.0
                 
                 return {
                     "prompt_tokens": prompt_tokens,

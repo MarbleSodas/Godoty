@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { from, Observable, Subject } from 'rxjs';
+import { Observable, Subject } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 
 declare global {
@@ -26,6 +26,23 @@ export interface GodotStatus {
     viewport_height?: number;
     renderer?: string;
   };
+  index_status?: {
+    status: 'not_started' | 'scanning' | 'building_graph' | 'building_vectors' | 'complete' | 'failed';
+    phase: string;
+    current_step: number;
+    total_steps: number;
+    current_file: string;
+    error?: string;
+    started_at?: string;
+    completed_at?: string;
+    progress_percent: number;
+  };
+  chat_ready?: {
+    ready: boolean;
+    godot_connected: boolean;
+    api_key_configured: boolean;
+    message: string;
+  };
 }
 
 @Injectable({
@@ -38,36 +55,12 @@ export class DesktopService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private reconnectDelay = 1000; // Start with 1 second
-  private readonly API_BASE = 'http://localhost:8000/api';
+  private readonly API_BASE = 'api';
 
   constructor(private http: HttpClient) {
     window.addEventListener('pywebviewready', () => {
       this.isReady = true;
-      console.log('PyWebView ready!');
     });
-  }
-
-  /**
-   * Call a Python method exposed via pywebview API
-   * @param method The name of the Python method to call
-   * @param args Arguments to pass to the Python method
-   * @returns Observable that emits the result from Python
-   */
-  callPythonMethod(method: string, ...args: any[]): Observable<any> {
-    if (!this.isReady) {
-      return new Observable(observer => {
-        observer.error('PyWebView not ready');
-      });
-    }
-
-    return from(window.pywebview.api[method](...args));
-  }
-
-  /**
-   * Get system information from Python
-   */
-  getSystemInfo(): Observable<any> {
-    return this.callPythonMethod('get_system_info');
   }
 
   /**
@@ -78,10 +71,28 @@ export class DesktopService {
   }
 
   /**
-   * Save a file using Python backend
+   * Open a URL in the default system browser via the backend
    */
-  saveFile(data: any): Observable<any> {
-    return this.callPythonMethod('save_file', data);
+  async openUrl(url: string): Promise<void> {
+    console.log('[DesktopService] openUrl called:', url);
+    console.log('[DesktopService] isReady:', this.isReady);
+    console.log('[DesktopService] window.pywebview:', !!window.pywebview);
+
+    if (this.isReady && window.pywebview?.api?.['open_url']) {
+      try {
+        console.log('[DesktopService] Calling python open_url...');
+        const result = await window.pywebview.api['open_url'](url);
+        console.log('[DesktopService] Python open_url result:', result);
+      } catch (error) {
+        console.error('[DesktopService] Failed to open URL via backend:', error);
+        // Fallback or error handling
+        window.open(url, '_blank');
+      }
+    } else {
+      console.warn('[DesktopService] pywebview not ready, using fallback window.open');
+      // Fallback for web browser environment
+      window.open(url, '_blank');
+    }
   }
 
   /**
@@ -107,25 +118,19 @@ export class DesktopService {
    */
   private connectToSSE(): void {
     const sseUrl = `${this.API_BASE}/godot/status/stream`;
-    console.log(`[SSE] Connecting to: ${sseUrl}`);
 
     try {
       this.eventSource = new EventSource(sseUrl);
 
       this.eventSource.onmessage = (event) => {
         try {
-          console.log('[SSE] Received message:', event.data);
           const status = JSON.parse(event.data) as GodotStatus;
-          console.log('[SSE] Parsed status:', status);
           this.godotStatusSubject.next(status);
-          this.reconnectAttempts = 0; // Reset on successful message
-        } catch (error) {
-          console.error('[SSE] Error parsing message:', error, 'Raw data:', event.data);
-        }
+          this.reconnectAttempts = 0;
+        } catch { /* ignore parse errors */ }
       };
 
-      this.eventSource.onerror = (error) => {
-        console.error('[SSE] Connection error:', error);
+      this.eventSource.onerror = () => {
         this.eventSource?.close();
         this.eventSource = undefined;
 
@@ -133,25 +138,16 @@ export class DesktopService {
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
           this.reconnectAttempts++;
           const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-          console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-
-          setTimeout(() => {
-            this.connectToSSE();
-          }, delay);
+          setTimeout(() => this.connectToSSE(), delay);
         } else {
-          console.error('[SSE] Max reconnection attempts reached');
-          // Emit disconnected state
           this.godotStatusSubject.next({ state: 'disconnected' });
         }
       };
 
       this.eventSource.onopen = () => {
-        console.log('[SSE] Connection established successfully');
         this.reconnectAttempts = 0;
       };
-    } catch (error) {
-      console.error('[SSE] Error creating connection:', error);
-    }
+    } catch { /* ignore connection errors */ }
   }
 
   /**
@@ -161,7 +157,6 @@ export class DesktopService {
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = undefined;
-      console.log('SSE connection closed');
     }
   }
 

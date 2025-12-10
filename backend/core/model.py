@@ -1,101 +1,159 @@
-from typing import Any, AsyncGenerator, Optional, List, Dict, Callable
+from typing import Any, AsyncGenerator, Optional
 from strands.models.openai import OpenAIModel
 from strands.types.streaming import StreamEvent
 from strands.types.content import Messages
-from .pricing import PricingService
 import logging
 
 logger = logging.getLogger(__name__)
 
-class GodotyOpenRouterModel(OpenAIModel):
-    def __init__(
-        self,
-        api_key: str,
-        model_id: str,
-        site_url: str,
-        app_name: str,
-        metrics_callback: Optional[Callable] = None,
-        **kwargs
-    ):
-        # Store metrics callback for cost tracking
-        self.metrics_callback = metrics_callback
 
-        # Construct the client arguments for the underlying OpenAI client
-        client_args = {
-            "api_key": api_key,
-            "base_url": "https://openrouter.ai/api/v1",
-            "default_headers": {
+class GodotyOpenRouterModel(OpenAIModel):
+    """
+    OpenRouter model with usage tracking that captures cost directly from API responses.
+    
+    Supports two modes:
+    - Direct mode: Requests go directly to OpenRouter (default, for development)
+    - Proxy mode: Requests route through Supabase Edge Function for monetization
+    """
+    
+    def __init__(
+        self, 
+        api_key: str, 
+        model_id: str, 
+        site_url: str, 
+        app_name: str,
+        use_proxy: bool = False,
+        proxy_url: Optional[str] = None,
+        proxy_token: Optional[str] = None
+    ):
+        """
+        Initialize the OpenRouter model.
+        
+        Args:
+            api_key: OpenRouter API key (used in direct mode)
+            model_id: Model identifier (e.g., 'anthropic/claude-3.5-sonnet')
+            site_url: Application URL for OpenRouter attribution
+            app_name: Application name for OpenRouter attribution
+            use_proxy: If True, route through Supabase proxy for billing
+            proxy_url: Supabase Edge Function URL for proxy mode
+            proxy_token: Supabase JWT token for proxy authentication
+        """
+        self.use_proxy = use_proxy
+        self.proxy_token = proxy_token
+        
+        # Determine base URL and headers based on mode
+        if use_proxy and proxy_url:
+            # Proxy mode: route through Supabase Edge Function
+            base_url = proxy_url
+            # In proxy mode, we use a dummy API key since auth is via JWT
+            # The actual auth is done via the Authorization header with the Supabase JWT
+            effective_api_key = "proxy-auth"
+            headers = {
+                # Include Authorization header if token is provided at init
+                "Authorization": f"Bearer {proxy_token}" if proxy_token else "",
+            }
+            logger.info(f"[MODEL] Proxy mode enabled, routing to: {proxy_url}")
+        else:
+            # Direct mode: connect directly to OpenRouter
+            base_url = "https://openrouter.ai/api/v1"
+            effective_api_key = api_key
+            headers = {
                 "HTTP-Referer": site_url,
                 "X-Title": app_name,
             }
-        }
-
-        # Merge any other client_args passed in kwargs
-        if "client_args" in kwargs:
-            client_args.update(kwargs.pop("client_args"))
-
-        # Initialize the parent class with the configured client
+            logger.info("[MODEL] Direct mode, connecting to OpenRouter")
+        
         super().__init__(
-            client_args=client_args,
+            client_args={
+                "api_key": effective_api_key,
+                "base_url": base_url,
+                "default_headers": headers
+            },
             model_id=model_id,
-            # Critical: This param tells OpenAI/OpenRouter to send usage data
-            params={"stream_options": {"include_usage": True}},
-            **kwargs
+            params={
+                "stream_options": {"include_usage": True}
+            }
         )
+        self.model_id = model_id
+        # Track accumulated usage for this model instance
+        self._last_usage = None
+    
+    def update_proxy_token(self, token: str):
+        """Update the proxy authentication token."""
+        self.proxy_token = token
+        # Update the client_args so the next request uses the new token
+        if self.use_proxy:
+            if "default_headers" not in self.client_args:
+                self.client_args["default_headers"] = {}
+            self.client_args["default_headers"]["Authorization"] = f"Bearer {token}"
+        logger.debug("[MODEL] Proxy token updated")
 
     async def stream(
         self,
         messages: Messages,
+        tool_specs: Optional[list] = None,
+        system_prompt: Optional[str] = None,
+        *,
+        tool_choice: Optional[Any] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[StreamEvent, None]:
-        usage_received = False  # Track if usage data arrives
-
-        # We wrap the parent stream to inspect events
-        async for event in super().stream(messages, **kwargs):
+        """Stream with OpenRouter usage tracking injected into events."""
+        
+        self._last_usage = None
+        
+        # If in proxy mode, ensure the auth header is up-to-date in client_args
+        # The OpenAI client is created fresh on each request using client_args
+        if self.use_proxy and self.proxy_token:
+            if "default_headers" not in self.client_args:
+                self.client_args["default_headers"] = {}
+            self.client_args["default_headers"]["Authorization"] = f"Bearer {self.proxy_token}"
+        
+        async for event in super().stream(messages, tool_specs, system_prompt, tool_choice=tool_choice, **kwargs):
+            # Check if this event contains usage data from OpenRouter
+            # The OpenAI SDK puts usage in the 'usage' field of the chunk
+            if isinstance(event, dict):
+                # Check for usage in different possible locations
+                usage = None
+                
+                # Check for direct usage field (from OpenRouter with include_usage)
+                if "usage" in event:
+                    usage = event["usage"]
+                
+                # Check in messageStop event
+                elif "messageStop" in event:
+                    usage = event.get("messageStop", {}).get("usage")
+                
+                # Check for metadata.usage (some SDK versions)
+                elif "metadata" in event and isinstance(event["metadata"], dict):
+                    usage = event["metadata"].get("usage")
+                
+                if usage and isinstance(usage, dict):
+                    # Store the usage data
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+                    # OpenRouter provides cost directly, also check for total_cost
+                    cost = usage.get("cost", usage.get("total_cost", 0.0))
+                    
+                    self._last_usage = {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "cost": cost,
+                        "model_id": self.model_id
+                    }
+                    
+                    logger.info(f"[OPENROUTER] Usage captured: {prompt_tokens} in, {completion_tokens} out, cost=${cost:.6f}")
+                    
+                    # Inject usage into the event for downstream processing
+                    event["openrouter_usage"] = self._last_usage
+            
             yield event
+        
+        # After stream completes, yield a final metrics event if we have usage data
+        if self._last_usage:
+            logger.info(f"[OPENROUTER] Final usage: {self._last_usage}")
+            yield {
+                "openrouter_metrics": self._last_usage
+            }
 
-            # Check for metrics event
-            # Note: Strands SDK structure puts usage in "metrics" key of the event
-            if "metrics" in event:
-                usage = event["metrics"].get("usage", {})
-                if usage:
-                    usage_received = True
-                    input_tok = usage.get("prompt_tokens", 0)
-                    output_tok = usage.get("completion_tokens", 0)
-
-                    # Priority 1: Use actual_cost from OpenRouter if available
-                    actual_cost = usage.get("cost")
-                    if actual_cost is not None:
-                        cost = float(actual_cost)
-                        logger.debug(f"Using actual cost from OpenRouter: ${cost:.6f}")
-                    else:
-                        # Priority 2: Calculate via PricingService as fallback
-                        cost = PricingService.calculate_cost(
-                            self.model_id, input_tok, output_tok
-                        )
-                        logger.debug(f"Calculated cost via PricingService: ${cost:.6f}")
-
-                    # Inject Cost into the event
-                    # We mutate the dictionary to bubble up the cost
-                    event["metrics"]["godoty_cost"] = cost
-                    logger.debug(f"Total: {input_tok} input + {output_tok} output = {input_tok + output_tok} tokens")
-
-                    # Invoke metrics callback if provided
-                    if self.metrics_callback:
-                        try:
-                            self.metrics_callback(
-                                cost=cost,
-                                tokens=input_tok + output_tok,
-                                model_name=self.model_id,
-                                prompt_tokens=input_tok,
-                                completion_tokens=output_tok
-                            )
-                        except Exception as e:
-                            logger.error(f"Metrics callback failed: {e}", exc_info=True)
-
-        # Validation: Warn if no usage data was received
-        if not usage_received:
-            logger.warning(
-                f"No usage data received for model {self.model_id}. "
-                "Verify stream_options.include_usage is configured correctly."
-            )

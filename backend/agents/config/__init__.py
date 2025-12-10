@@ -8,7 +8,10 @@ Import from here to get all config options:
 from .model_config import ModelConfig
 from .tool_config import ToolConfig
 from .prompts import Prompts
+from .planning_prompts import PlanningPrompts
+from .learning_prompts import LearningPrompts
 from .validators import ConfigValidator
+from .prompt_builder import build_prompt, AgentMode as PromptAgentMode, format_tool_documentation
 
 
 class AgentConfig(ModelConfig, ToolConfig, Prompts):
@@ -30,7 +33,6 @@ class AgentConfig(ModelConfig, ToolConfig, Prompts):
             - 'warnings': list of warning messages
             - 'errors': list of error messages
             - 'godot_available': bool indicating if Godot tools can be used
-            - 'mcp_available': bool indicating if MCP tools can be used
         """
         return ConfigValidator.validate_all(ModelConfig, ToolConfig)
 
@@ -49,4 +51,3 @@ if validation_result['warnings']:
 
 # Log availability status
 print(f"Godot tools available: {validation_result['godot_available']}")
-print(f"MCP tools available: {validation_result['mcp_available']}")

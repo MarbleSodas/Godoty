@@ -42,6 +42,15 @@ from .godot_executor_tools import (
     select_nodes,
     play_scene,
     stop_playing,
+    # New EditorInterface tools
+    close_scene,
+    edit_script,
+    save_scene_as,
+    save_all_scenes,
+    reload_scene,
+    switch_main_screen,
+    get_open_scenes,
+    scan_filesystem,
 )
 from .file_tools import (
     FileTools,
@@ -64,7 +73,24 @@ from .gdscript_editor import (
     GDScriptClassInfo,
     GDScriptValidationResult
 )
-from .mcp_tools import MCPToolManager, get_mcp_tools
+from .godot_docs_tools import (
+    search_godot_docs,
+    get_class_reference,
+    get_documentation_status,
+    GodotDocumentationTools,
+    get_godot_docs_tools
+)
+from .context_tools import (
+    retrieve_context,
+    get_signal_flow,
+    get_class_hierarchy,
+    find_usages,
+    get_file_context,
+    get_project_structure,
+    get_context_stats,
+    set_context_engine,
+    get_context_engine
+)
 
 __all__ = [
     # File system tools
@@ -116,6 +142,15 @@ __all__ = [
     "select_nodes",
     "play_scene",
     "stop_playing",
+    # New EditorInterface tools
+    "close_scene",
+    "edit_script",
+    "save_scene_as",
+    "save_all_scenes",
+    "reload_scene",
+    "switch_main_screen",
+    "get_open_scenes",
+    "scan_filesystem",
     # File management tools
     "FileTools",
     "write_file",
@@ -135,7 +170,20 @@ __all__ = [
     "GDScriptMethodInfo",
     "GDScriptClassInfo",
     "GDScriptValidationResult",
-    # MCP tools
-    "MCPToolManager",
-    "get_mcp_tools",
+    # Godot documentation tools (simplified)
+    "search_godot_docs",
+    "get_class_reference",
+    "get_documentation_status",
+    "GodotDocumentationTools",
+    "get_godot_docs_tools",
+    # Context engine tools
+    "retrieve_context",
+    "get_signal_flow",
+    "get_class_hierarchy",
+    "find_usages",
+    "get_file_context",
+    "get_project_structure",
+    "get_context_stats",
+    "set_context_engine",
+    "get_context_engine",
 ]

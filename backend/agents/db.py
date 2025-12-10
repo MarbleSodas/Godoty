@@ -1,405 +1,227 @@
 import sqlite3
 import os
-import sys
-import json
-import hashlib
 import time
-from pathlib import Path
-from typing import List, Dict, Optional, Any
+import logging
+from typing import Dict, List, Optional, Any
 
-class ProjectDB:
-    def __init__(self, project_path: str):
-        self.project_path = os.path.abspath(project_path)
-        self.project_hash = self._get_project_hash(self.project_path)
-        self.db_path = self._get_db_path()
+logger = logging.getLogger(__name__)
+
+class MetricsDB:
+    """
+    A raw, minimal SQLite database for tracking OpenRouter API calls and Session metrics.
+    Designed for ease of debugging and strict data accounting.
+    """
+
+    def __init__(self, db_path: str = "godoty_stats.db"):
+        """
+        Initialize the database connection.
+        
+        Args:
+            db_path: Path to the sqlite file. Defaults to 'godoty_stats.db' in current directory.
+        """
+        self.db_path = os.path.abspath(db_path)
         self._init_db()
 
-    def _get_project_hash(self, project_path: str) -> str:
-        return hashlib.sha256(project_path.encode('utf-8')).hexdigest()
-
-    def _get_db_path(self) -> str:
-        app_name = "Godoty"
-        if sys.platform == "win32":
-            base_path = os.environ.get("APPDATA")
-            if not base_path:
-                base_path = os.path.expanduser("~\AppData\Roaming")
-        elif sys.platform == "darwin":
-            base_path = os.path.expanduser("~/Library/Application Support")
-        else:  # linux and others
-            base_path = os.path.expanduser("~/.local/share")
-
-        app_dir = os.path.join(base_path, app_name)
-        os.makedirs(app_dir, exist_ok=True)
-        return os.path.join(app_dir, "app_data.db")
-
-    def _get_connection(self):
+    def _get_conn(self):
         return sqlite3.connect(self.db_path, check_same_thread=False)
 
     def _init_db(self):
-        conn = self._get_connection()
+        """Initialize the simple schema."""
+        conn = self._get_conn()
         cursor = conn.cursor()
-        
-        # Sessions Table (chat_history removed - stored in FileSessionManager)
+
+        # 1. Sessions Table: metadata about the chat session
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
-                project_hash TEXT,
+                title TEXT,
                 created_at REAL,
-                last_updated REAL
+                updated_at REAL
             )
         """)
 
-        # Metrics Table
+        # 2. API Calls Table: granular log of every LLM interaction
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS metrics (
+            CREATE TABLE IF NOT EXISTS api_calls (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_hash TEXT,
                 session_id TEXT,
-                cost REAL,
-                tokens INTEGER,
-                timestamp REAL,
-                model_name TEXT
-            )
-        """)
-
-        # Message-level Metrics Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS message_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_hash TEXT,
-                session_id TEXT,
-                message_id TEXT,
-                role TEXT,
-                cost REAL,
-                tokens INTEGER,
+                model TEXT,
                 prompt_tokens INTEGER,
                 completion_tokens INTEGER,
+                total_tokens INTEGER,
+                cost REAL,
+                generation_id TEXT,
                 timestamp REAL,
-                model_name TEXT
+                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
             )
         """)
+
+        conn.commit()
+        conn.close()
+
+    # --- Write Operations ---
+
+    def register_session(self, session_id: str, title: str = "New Session"):
+        """Ensure a session exists in the DB."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        now = time.time()
+        
+        cursor.execute("""
+            INSERT OR IGNORE INTO sessions (session_id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+        """, (session_id, title, now, now))
         
         conn.commit()
         conn.close()
 
-    # --- Session Methods ---
-
-    def save_session(self, session_id: str):
+    def log_api_call(self, 
+                     session_id: str, 
+                     model: str, 
+                     prompt_tokens: int, 
+                     completion_tokens: int, 
+                     cost: float, 
+                     generation_id: Optional[str] = None):
         """
-        Initialize session metadata in database.
-
-        NOTE: Chat history is stored in FileSessionManager, NOT in ProjectDB.
-        ProjectDB only tracks session existence for metrics correlation.
-
-        Args:
-            session_id: Session ID
+        Log a single API call's usage.
         """
-        conn = self._get_connection()
+        # Ensure session exists first
+        self.register_session(session_id)
+
+        conn = self._get_conn()
         cursor = conn.cursor()
         now = time.time()
+        total_tokens = prompt_tokens + completion_tokens
 
         cursor.execute("""
-            INSERT INTO sessions (session_id, project_hash, created_at, last_updated)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                last_updated = excluded.last_updated
-        """, (session_id, self.project_hash, now, now))
+            INSERT INTO api_calls 
+            (session_id, model, prompt_tokens, completion_tokens, total_tokens, cost, generation_id, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (session_id, model, prompt_tokens, completion_tokens, total_tokens, cost, generation_id, now))
+
+        # Update session timestamp
+        cursor.execute("""
+            UPDATE sessions SET updated_at = ? WHERE session_id = ?
+        """, (now, session_id))
 
         conn.commit()
         conn.close()
+        logger.info(f"Logged API call for session {session_id}: ${cost:.6f}, {total_tokens} tokens")
 
-    def get_all_sessions(self) -> List[Dict[str, Any]]:
-        conn = self._get_connection()
+    # --- Read Operations ---
+
+    def get_session_metrics(self, session_id: str) -> Dict[str, Any]:
+        """
+        Calculate aggregated metrics for a specific session.
+        """
+        conn = self._get_conn()
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT session_id, created_at, last_updated
-            FROM sessions
-            WHERE project_hash = ?
-            ORDER BY last_updated DESC
-        """, (self.project_hash,))
-
-        rows = cursor.fetchall()
-        sessions = []
-        for row in rows:
-            sessions.append({
-                "id": row[0],
-                "created_at": row[1],
-                "last_updated": row[2]
-            })
-
-        conn.close()
-        return sessions
-
-    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT session_id, created_at, last_updated
-            FROM sessions
+            SELECT 
+                SUM(total_tokens),
+                SUM(cost),
+                COUNT(*)
+            FROM api_calls
             WHERE session_id = ?
         """, (session_id,))
-
+        
         row = cursor.fetchone()
         conn.close()
 
-        if row:
-            return {
-                "id": row[0],
-                "created_at": row[1],
-                "last_updated": row[2]
-            }
-        return None
+        total_tokens = row[0] if row and row[0] else 0
+        total_cost = row[1] if row and row[1] else 0.0
+        call_count = row[2] if row and row[2] else 0
+
+        return {
+            "session_id": session_id,
+            "total_tokens": total_tokens,
+            "total_estimated_cost": total_cost,
+            "call_count": call_count
+        }
+
+    def get_session_calls(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Retrieve all individual API calls for a session.
+        """
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM api_calls 
+            WHERE session_id = ? 
+            ORDER BY timestamp ASC
+        """, (session_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [dict(row) for row in rows]
+
+    def get_all_sessions(self) -> List[Dict[str, Any]]:
+        """
+        List all sessions with their live aggregated metrics.
+        """
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get sessions
+        cursor.execute("SELECT * FROM sessions ORDER BY updated_at DESC")
+        sessions_rows = cursor.fetchall()
+        
+        results = []
+        for row in sessions_rows:
+            s_id = row['session_id']
+            
+            # Get metrics for each
+            cursor.execute("""
+                SELECT SUM(total_tokens), SUM(cost) 
+                FROM api_calls 
+                WHERE session_id = ?
+            """, (s_id,))
+            metrics_row = cursor.fetchone()
+            
+            total_tokens = metrics_row[0] if metrics_row[0] else 0
+            total_cost = metrics_row[1] if metrics_row[1] else 0.0
+
+            results.append({
+                "id": s_id,
+                "title": row['title'],
+                "created_at": row['created_at'],
+                "last_updated": row['updated_at'],
+                "metrics": {
+                    "total_tokens": total_tokens,
+                    "total_estimated_cost": total_cost
+                }
+            })
+
+        conn.close()
+        return results
+
+    def update_session_title(self, session_id: str, title: str):
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE sessions SET title = ? WHERE session_id = ?", (title, session_id))
+        conn.commit()
+        conn.close()
 
     def delete_session(self, session_id: str):
-        """Delete session metadata ONLY, preserving metrics."""
-        conn = self._get_connection()
+        """Delete session and its history."""
+        conn = self._get_conn()
         cursor = conn.cursor()
-        # Only delete from sessions table, NOT from metrics table
-        # This preserves historical project cost/usage data
+        cursor.execute("DELETE FROM api_calls WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
         conn.close()
 
-    # --- Metrics Methods ---
+# Global instance accessor
+_db_instance = None
 
-    def record_metric(self, session_id: str, cost: float, tokens: int, model_name: str):
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        now = time.time()
-
-        cursor.execute("""
-            INSERT INTO metrics (project_hash, session_id, cost, tokens, timestamp, model_name)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (self.project_hash, session_id, cost, tokens, now, model_name))
-
-        conn.commit()
-        conn.close()
-
-    def record_message_metric(
-        self,
-        session_id: str,
-        message_id: str,
-        role: str,
-        cost: float,
-        tokens: int,
-        model_name: str,
-        prompt_tokens: int = 0,
-        completion_tokens: int = 0
-    ):
-        """
-        Record metrics for an individual message.
-
-        Args:
-            session_id: The session ID
-            message_id: Unique message identifier
-            role: Message role ("user", "assistant", "system")
-            cost: Cost of the message
-            tokens: Total tokens used
-            model_name: Model that generated the response
-            prompt_tokens: Input tokens (optional)
-            completion_tokens: Output tokens (optional)
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        now = time.time()
-
-        cursor.execute("""
-            INSERT INTO message_metrics (
-                project_hash, session_id, message_id, role,
-                cost, tokens, prompt_tokens, completion_tokens,
-                timestamp, model_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            self.project_hash, session_id, message_id, role,
-            cost, tokens, prompt_tokens, completion_tokens,
-            now, model_name
-        ))
-
-        conn.commit()
-        conn.close()
-
-    def record_workflow_metrics(self, session_id: str, workflow_metrics: Dict[str, Any]):
-        """
-        Record aggregated workflow metrics for a session.
-
-        Args:
-            session_id: The session ID
-            workflow_metrics: Dictionary containing aggregated workflow metrics with keys:
-                - total_tokens: Total tokens for the workflow
-                - total_cost: Total cost for the workflow
-                - planning_tokens: Tokens used during planning phase
-                - execution_tokens: Tokens used during execution phase
-                - planning_cost: Cost during planning phase
-                - execution_cost: Cost during execution phase
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        now = time.time()
-
-        # Record the total workflow metrics as a single entry
-        # Use a special model name to indicate this is a workflow aggregation
-        model_name = "workflow_aggregated"
-
-        cursor.execute("""
-            INSERT INTO metrics (project_hash, session_id, cost, tokens, timestamp, model_name)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (self.project_hash, session_id, workflow_metrics.get('total_cost', 0.0),
-              workflow_metrics.get('total_tokens', 0), now, model_name))
-
-        conn.commit()
-        conn.close()
-
-    def get_project_total_cost(self) -> float:
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT SUM(cost) FROM metrics WHERE project_hash = ?
-        """, (self.project_hash,))
-        
-        result = cursor.fetchone()[0]
-        conn.close()
-        return result if result else 0.0
-
-    def get_project_metrics(self) -> Dict[str, Any]:
-        # Aggregated metrics for the project
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        # Get metrics from metrics table
-        cursor.execute("""
-            SELECT
-                SUM(cost),
-                SUM(tokens),
-                COUNT(DISTINCT session_id)
-            FROM metrics
-            WHERE project_hash = ?
-        """, (self.project_hash,))
-
-        metrics_row = cursor.fetchone()
-
-        # Get session count from sessions table for more accurate count
-        cursor.execute("""
-            SELECT COUNT(session_id)
-            FROM sessions
-            WHERE project_hash = ?
-        """, (self.project_hash,))
-
-        sessions_row = cursor.fetchone()
-        conn.close()
-
-        # Use the more reliable session count from sessions table
-        session_count = sessions_row[0] if sessions_row and sessions_row[0] else 0
-
-        return {
-            "total_cost": metrics_row[0] if metrics_row and metrics_row[0] else 0.0,
-            "total_tokens": metrics_row[1] if metrics_row and metrics_row[1] else 0,
-            "total_sessions": session_count
-        }
-
-    def get_session_metrics(self, session_id: str) -> Dict[str, Any]:
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        # Get detailed breakdown of metrics by model_name to distinguish individual vs workflow
-        cursor.execute("""
-            SELECT model_name, SUM(cost), SUM(tokens)
-            FROM metrics
-            WHERE session_id = ?
-            GROUP BY model_name
-        """, (session_id,))
-
-        rows = cursor.fetchall()
-        conn.close()
-
-        total_cost = 0.0
-        total_tokens = 0
-        individual_cost = 0.0
-        individual_tokens = 0
-        workflow_cost = 0.0
-        workflow_tokens = 0
-
-        for row in rows:
-            model_name, cost, tokens = row
-            cost = cost if cost else 0.0
-            tokens = tokens if tokens else 0
-
-            total_cost += cost
-            total_tokens += tokens
-
-            if model_name == "workflow_aggregated":
-                workflow_cost += cost
-                workflow_tokens += tokens
-            else:
-                individual_cost += cost
-                individual_tokens += tokens
-
-        return {
-            "session_cost": total_cost,
-            "session_tokens": total_tokens,
-            "individual_cost": individual_cost,
-            "individual_tokens": individual_tokens,
-            "workflow_cost": workflow_cost,
-            "workflow_tokens": workflow_tokens
-        }
-
-    def get_metrics_for_sessions(self, session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-        """
-        Get metrics for multiple sessions.
-
-        Args:
-            session_ids: List of session IDs
-
-        Returns:
-            Dictionary of session_id -> metrics (including workflow breakdown)
-        """
-        if not session_ids:
-            return {}
-
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        placeholders = ','.join(['?'] * len(session_ids))
-        query = f"""
-            SELECT session_id, model_name, SUM(cost), SUM(tokens)
-            FROM metrics
-            WHERE session_id IN ({placeholders})
-            GROUP BY session_id, model_name
-        """
-
-        cursor.execute(query, session_ids)
-        rows = cursor.fetchall()
-        conn.close()
-
-        # Aggregate results by session_id
-        result = {}
-        for row in rows:
-            session_id, model_name, cost, tokens = row
-            cost = cost if cost else 0.0
-            tokens = tokens if tokens else 0
-
-            if session_id not in result:
-                result[session_id] = {
-                    "session_cost": 0.0,
-                    "session_tokens": 0,
-                    "individual_cost": 0.0,
-                    "individual_tokens": 0,
-                    "workflow_cost": 0.0,
-                    "workflow_tokens": 0
-                }
-
-            session_metrics = result[session_id]
-            session_metrics["session_cost"] += cost
-            session_metrics["session_tokens"] += tokens
-
-            if model_name == "workflow_aggregated":
-                session_metrics["workflow_cost"] += cost
-                session_metrics["workflow_tokens"] += tokens
-            else:
-                session_metrics["individual_cost"] += cost
-                session_metrics["individual_tokens"] += tokens
-
-        return result
+def get_metrics_db() -> MetricsDB:
+    global _db_instance
+    if _db_instance is None:
+        # Create in current working directory for visibility
+        _db_instance = MetricsDB("godoty_stats.db")
+    return _db_instance

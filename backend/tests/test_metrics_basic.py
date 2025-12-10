@@ -8,33 +8,7 @@ import pytest
 import asyncio
 from database.models import Base, MessageMetrics, SessionMetrics, ProjectMetrics
 from database.db_manager import DatabaseManager
-from agents.metrics_tracker import ModelPricing, TokenMetricsTracker
-
-
-class TestModelPricing:
-    """Test model pricing calculations."""
-    
-    def test_get_pricing(self):
-        """Test getting pricing for known model."""
-        prompt_price, completion_price = ModelPricing.get_pricing("openai/gpt-4-turbo")
-        assert prompt_price == 10.0
-        assert completion_price == 30.0
-    
-    def test_get_pricing_unknown_model(self):
-        """Test getting pricing for unknown model returns default."""
-        prompt_price, completion_price = ModelPricing.get_pricing("unknown/model")
-        assert prompt_price == 1.0
-        assert completion_price == 2.0
-    
-    def test_calculate_cost(self):
-        """Test cost calculation."""
-        cost = ModelPricing.calculate_cost(
-            "openai/gpt-4-turbo",
-            prompt_tokens=1000,
-            completion_tokens=500
-        )
-        # 1000 tokens * $10/1M + 500 tokens * $30/1M = $0.01 + $0.015 = $0.025
-        assert cost == pytest.approx(0.025)
+from agents.metrics_tracker import TokenMetricsTracker
 
 
 class TestTokenMetricsTracker:
@@ -63,7 +37,8 @@ class TestTokenMetricsTracker:
         assert metrics["total_tokens"] == 150
         assert metrics["generation_id"] == "gen_123"
         assert metrics["stop_reason"] == "stop"
-        assert metrics["estimated_cost"] > 0
+        # Without explicit cost from OpenRouter, should default to 0.0
+        assert metrics["estimated_cost"] == 0.0
 
     def test_extract_metrics_from_response_with_cost(self):
         """Test extracting metrics from OpenRouter response with provided cost."""
