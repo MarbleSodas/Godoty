@@ -16,63 +16,22 @@ export interface ToolCall {
   error?: string;
 }
 
-export interface ExecutionStep {
-  id: string;
-  title: string;
-  description?: string;
-  tool_calls?: Array<{ name: string; parameters: any }>;
-  depends_on?: string[];
-  status: 'pending' | 'running' | 'completed' | 'failed';
-}
-
-export interface ExecutionPlan {
-  title: string;
-  description?: string;
-  steps: ExecutionStep[];
-  status: 'pending' | 'running' | 'completed' | 'failed';
-}
-
-export interface WorkflowMetrics {
-  workflowId: string;
-  planningTokens: number;
-  executionTokens: number;
-  totalTokens: number;
-  planningCost: number;
-  executionCost: number;
-  totalCost: number;
-  agentTypes: string[];
-  planningMetrics: any;
-  executionMetrics: any;
-  startTime: string;
-  completionTime: string;
-}
-
-export interface MessageEvent {
-  type: 'text' | 'tool_use' | 'tool_result';
-  timestamp: number;
-  sequence: number;
-  content?: string;
-  toolCall?: ToolCall;
-}
-
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
-  tokens?: number;
-  promptTokens?: number;
-  completionTokens?: number;
-  cost?: number;
-  modelName?: string;
-  generationTimeMs?: number;
+  reasoning?: string;
+  error?: string;
   isStreaming?: boolean;
-
-  // Extended fields for agentic flow
   toolCalls?: ToolCall[];
-  plan?: ExecutionPlan;
-  events?: MessageEvent[];
-  workflowMetrics?: WorkflowMetrics;
+  metrics?: {
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    estimated_cost: number;
+    model_id: string;
+  };
 }
 
 export interface Session {
@@ -81,8 +40,8 @@ export interface Session {
   date: Date;
   active: boolean;
   metrics?: {
-    session_cost: number;
-    session_tokens: number;
+    total_estimated_cost: number;
+    total_tokens: number;
   };
 }
 
@@ -105,9 +64,9 @@ export class ChatService {
     if (!this.currentProjectPath) return;
     this.http.get<any>(`${this.apiUrl}/metrics/project?path=${encodeURIComponent(this.currentProjectPath)}`)
       .subscribe(response => {
-          if (response.status === 'success') {
-              this.projectMetrics$.next(response.metrics);
-          }
+        if (response.status === 'success') {
+          this.projectMetrics$.next(response.metrics);
+        }
       });
   }
 
@@ -126,29 +85,29 @@ export class ChatService {
   listSessions(): Observable<Session[]> {
     let url = `${this.apiUrl}/sessions`;
     if (this.currentProjectPath) {
-        url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
+      url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
     }
     return this.http.get<any>(url).pipe(
       map(response => {
         if (response.status === 'success' && response.sessions) {
-           // Handle ProjectDB list format (array)
-           if (Array.isArray(response.sessions)) {
-             return response.sessions.map((s: any) => {
-                // Handle timestamps: last_updated > created_at > Date.now()
-                let timestamp = Date.now();
-                if (s.last_updated) timestamp = s.last_updated * 1000;
-                else if (s.created_at) timestamp = s.created_at * 1000;
+          // Handle ProjectDB list format (array)
+          if (Array.isArray(response.sessions)) {
+            return response.sessions.map((s: any) => {
+              // Handle timestamps: last_updated > created_at > Date.now()
+              let timestamp = Date.now();
+              if (s.last_updated) timestamp = s.last_updated * 1000;
+              else if (s.created_at) timestamp = s.created_at * 1000;
 
-                return {
-                    id: s.id,
-                    title: s.title || `Session ${s.id.substring(0, 8)}`,
-                    date: new Date(timestamp),
-                    active: false,
-                    metrics: s.metrics
-                };
-             }).sort((a: any, b: any) => b.date.getTime() - a.date.getTime());
-           }
-        
+              return {
+                id: s.id,
+                title: s.title || `Session ${s.id.substring(0, 8)}`,
+                date: new Date(timestamp),
+                active: false,
+                metrics: s.metrics
+              };
+            }).sort((a: any, b: any) => b.date.getTime() - a.date.getTime());
+          }
+
           // Handle Legacy format (dict)
           return Object.entries(response.sessions).map(([id, data]: [string, any]) => ({
             id: id,
@@ -166,33 +125,29 @@ export class ChatService {
   getSession(sessionId: string): Observable<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}`;
     if (this.currentProjectPath) {
-        url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
+      url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
     }
+    return this.http.get(url);
+  }
+
+  getSessionStatus(sessionId: string): Observable<any> {
+    const url = `${this.apiUrl}/sessions/${sessionId}/status`;
     return this.http.get(url);
   }
 
   deleteSession(sessionId: string): Observable<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}`;
     if (this.currentProjectPath) {
-        url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
+      url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
     }
     return this.http.delete(url);
   }
-  
-  hideSession(sessionId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/hide`, {});
-  }
-
-  restoreSession(sessionId: string): Observable<any> {
-    if (!this.currentProjectPath) throw new Error("Project path not set");
-    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/restore?path=${encodeURIComponent(this.currentProjectPath)}`, {});
-  }
 
   // Chat Interaction
-  sendMessage(sessionId: string, message: string, mode: 'planning' | 'fast' = 'planning'): Observable<any> {
+  sendMessage(sessionId: string, message: string, mode: 'learning' | 'planning' | 'execution' = 'planning'): Observable<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}/chat`;
     if (this.currentProjectPath) {
-        url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
+      url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
     }
     return this.http.post(url, { message, mode });
   }
@@ -201,10 +156,139 @@ export class ChatService {
     return this.http.post(`${this.apiUrl}/sessions/${sessionId}/stop`, {});
   }
 
-  async *sendMessageStream(sessionId: string, message: string, mode: 'planning' | 'fast' = 'planning', signal?: AbortSignal): AsyncGenerator<any> {
+  // Plan Management
+  getPlanStatus(sessionId: string): Observable<{
+    has_pending_plan: boolean;
+    plan: string | null;
+    state: string;
+    original_request: string | null;
+    current_mode: string;
+  }> {
+    return this.http.get<any>(`${this.apiUrl}/sessions/${sessionId}/plan`);
+  }
+
+  rejectPlan(sessionId: string, feedback?: string): Observable<any> {
+    const body = feedback ? { reason: feedback } : {};
+    return this.http.post(`${this.apiUrl}/sessions/${sessionId}/plan/reject`, body);
+  }
+
+  async *regeneratePlanStream(sessionId: string, feedback: string, signal?: AbortSignal): AsyncGenerator<any> {
+    const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/plan/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback }),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEventType = 'data';  // Default event type
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine) continue;
+
+          // Track SSE event type from "event: xxx" lines
+          if (trimmedLine.startsWith('event: ')) {
+            currentEventType = trimmedLine.slice(7).trim();
+            continue;
+          }
+
+          if (trimmedLine.startsWith('data: ')) {
+            const data = trimmedLine.slice(6).trim();
+            if (data === '[DONE]') {
+              currentEventType = 'data';  // Reset for next event
+              continue;
+            }
+
+            try {
+              const parsed = JSON.parse(data);
+              // Include the SSE event type if not present in the JSON
+              if (!parsed.type) {
+                parsed.type = currentEventType;
+              }
+              yield parsed;
+            } catch {
+              yield { type: currentEventType, error: 'Failed to parse server response', details: data };
+            }
+            currentEventType = 'data';  // Reset for next event
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+
+  async *approvePlanStream(sessionId: string, executionPrompt?: string, signal?: AbortSignal): AsyncGenerator<any> {
+    const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/plan/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ execution_prompt: executionPrompt }),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
+
+          const data = trimmedLine.slice(6).trim();
+          if (data && data !== '[DONE]') {
+            try {
+              yield JSON.parse(data);
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  async *sendMessageStream(sessionId: string, message: string, mode: 'learning' | 'planning' | 'execution' = 'planning', signal?: AbortSignal): AsyncGenerator<any> {
     let url = `${this.apiUrl}/sessions/${sessionId}/chat/stream`;
     if (this.currentProjectPath) {
-        url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
+      url += `?path=${encodeURIComponent(this.currentProjectPath)}`;
     }
     const response = await fetch(url, {
       method: 'POST',
@@ -231,122 +315,87 @@ export class ChatService {
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) {
-          console.log('[SSE] Stream complete');
-          break;
-        }
+        if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-
-        // Process complete lines (split by \n)
         const lines = buffer.split('\n');
-
-        // Keep the last incomplete line in buffer
         buffer = lines.pop() || '';
 
+        let currentEventType = 'data';  // Default event type
         for (const line of lines) {
           const trimmedLine = line.trim();
+          if (!trimmedLine) continue;
 
-          // Skip empty lines
-          if (!trimmedLine) {
+          // Track SSE event type from "event: xxx" lines
+          if (trimmedLine.startsWith('event: ')) {
+            currentEventType = trimmedLine.slice(7).trim();
             continue;
           }
 
-          console.log('[SSE] Raw line:', trimmedLine);
-
-          // Process SSE data lines
           if (trimmedLine.startsWith('data: ')) {
             const data = trimmedLine.slice(6).trim();
-
-            // Skip DONE signal
             if (data === '[DONE]') {
-              console.log('[SSE] Received DONE signal');
+              currentEventType = 'data';  // Reset for next event
               continue;
             }
 
-            // Parse and yield JSON data
             try {
               const parsed = JSON.parse(data);
-              console.log('[SSE] Parsed event:', parsed);
-
-              // Yield the parsed event
+              // Include the SSE event type if not present in the JSON
+              if (!parsed.type) {
+                parsed.type = currentEventType;
+              }
               yield parsed;
-            } catch (e) {
-              console.error('[SSE] Error parsing JSON:', e, 'Data:', data);
-              // Yield error event so UI can show something went wrong
-              yield {
-                type: 'error',
-                data: {
-                  message: 'Failed to parse server response',
-                  raw: data
-                }
-              };
+            } catch {
+              yield { type: currentEventType, error: 'Failed to parse server response', details: data };
             }
-          }
-          // Log event type lines (for debugging)
-          else if (trimmedLine.startsWith('event: ')) {
-            const eventType = trimmedLine.slice(7).trim();
-            console.log('[SSE] Event type:', eventType);
-          }
-          // Log unexpected lines
-          else {
-            console.warn('[SSE] Unexpected line format:', trimmedLine);
+            currentEventType = 'data';  // Reset for next event
           }
         }
       }
 
-      // Process any remaining buffer content
+      // Process remaining buffer
       if (buffer.trim()) {
-        console.log('[SSE] Processing final buffer:', buffer);
         const trimmedBuffer = buffer.trim();
         if (trimmedBuffer.startsWith('data: ')) {
           const data = trimmedBuffer.slice(6).trim();
           if (data && data !== '[DONE]') {
             try {
               const parsed = JSON.parse(data);
-              console.log('[SSE] Parsed final event:', parsed);
+              if (!parsed.type) parsed.type = 'data';
               yield parsed;
-            } catch (e) {
-              console.error('[SSE] Error parsing final buffer:', e, 'Data:', data);
-            }
+            } catch { /* ignore parse errors in final buffer */ }
           }
         }
       }
     } catch (error) {
-      // Check if this is an abort error (user cancelled)
       if (error instanceof Error && error.name === 'AbortError') {
-        console.log('[SSE] Stream aborted by user');
-        // Don't yield error event for user-initiated cancellation
-        // Just exit cleanly
-        return;
+        return; // User cancelled - exit cleanly
       }
-
-      console.error('[SSE] Stream error:', error);
-      // Yield error event for real errors
-      yield {
-        type: 'error',
-        data: {
-          message: error instanceof Error ? error.message : 'Stream error occurred',
-          error: error
-        }
-      };
+      yield { type: 'error', error: error instanceof Error ? error.message : 'Stream error occurred', details: error };
       throw error;
     } finally {
       reader.releaseLock();
     }
   }
 
-  // Plan Generation (Direct Agent)
-  createPlan(prompt: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/plan`, { prompt });
-  }
-
   // Configuration
-  getConfig(): Observable<any> {
+  getAgentConfig(): Observable<any> {
     return this.http.get(`${this.apiUrl}/config`);
   }
 
-  updateConfig(config: { planning_model?: string; executor_model?: string; openrouter_api_key?: string }): Observable<any> {
+  updateAgentConfig(config: { model_id?: string; openrouter_api_key?: string }): Observable<any> {
     return this.http.post(`${this.apiUrl}/config`, config);
+  }
+
+  // Session Title Management
+  updateSessionTitle(sessionId: string, title: string): Observable<any> {
+    const url = `${this.apiUrl}/sessions/${sessionId}/title`;
+    return this.http.put(url, { title });
+  }
+
+  // Chat Readiness Check
+  checkChatReady(): Observable<{ ready: boolean, godot_connected: boolean, api_key_configured: boolean, message: string }> {
+    return this.http.get<{ ready: boolean, godot_connected: boolean, api_key_configured: boolean, message: string }>(`${this.apiUrl}/chat/ready`);
   }
 }

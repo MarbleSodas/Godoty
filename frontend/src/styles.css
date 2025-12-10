@@ -1,0 +1,12 @@
+/* You can add global styles to this file, and also import other style files */
+@import "tailwindcss";
+
+@plugin '@tailwindcss/typography';
+@import 'prismjs/themes/prism-tomorrow.css';
+
+/* Force remove bottom margin from last element in prose/markdown containers */
+.prose>*:last-child,
+.prose-sm>*:last-child,
+.markdown-content>*:last-child {
+    margin-bottom: 0 !important;
+}

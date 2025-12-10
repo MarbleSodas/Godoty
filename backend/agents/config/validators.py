@@ -28,7 +28,7 @@ class ConfigValidator:
         # Check OpenRouter API Key
         api_key = model_config.get_openrouter_config().get("api_key")
         if not api_key:
-            errors.append("OPENROUTER_API_KEY is not set. Please set it in .env file or configuration.")
+            errors.append("OpenRouter API key is not set. Please configure it in Settings.")
         elif not api_key.startswith("sk-or-v1-"):
             warnings.append("OPENROUTER_API_KEY format looks incorrect. Should start with 'sk-or-v1-'.")
         
@@ -45,15 +45,14 @@ class ConfigValidator:
     def validate_tool_config(tool_config) -> Dict:
         """
         Validate tool configuration.
-        
+
         Returns:
             Dict with validation results
         """
         warnings = []
         errors = []
         godot_available = True
-        mcp_available = False
-        
+
         # Validate Godot configuration
         if tool_config.ENABLE_GODOT_TOOLS:
             if tool_config.GODOT_BRIDGE_PORT < 1 or tool_config.GODOT_BRIDGE_PORT > 65535:
@@ -65,32 +64,19 @@ class ConfigValidator:
             
             if tool_config.GODOT_MAX_RETRIES < 0:
                 warnings.append(f"GODOT_MAX_RETRIES ({tool_config.GODOT_MAX_RETRIES}) should be non-negative.")
-        
-        # Validate MCP configuration
-        if tool_config.ENABLE_MCP_TOOLS:
-            if tool_config.ENABLE_SEQUENTIAL_THINKING or tool_config.ENABLE_CONTEXT7:
-                mcp_available = True
-                
-                # Check if npx command is available (basic check)
-                if  not shutil.which("npx"):
-                    warnings.append("npx command not found. MCP tools may not work properly.")
-                    mcp_available = False
-            else:
-                warnings.append("MCP tools are enabled but no specific MCP servers are enabled.")
-        
+
         # Check if screenshot directory is accessible
         if tool_config.ENABLE_GODOT_TOOLS:
             try:
-                screenshot_path = Path(tool_config.GODOT_SCREENSHOT_DIR)
+                screenshot_path = Path(tool_config.get_screenshot_dir())
                 screenshot_path.mkdir(parents=True, exist_ok=True)
             except Exception as e:
-                warnings.append(f"Cannot create screenshot directory '{tool_config.GODOT_SCREENSHOT_DIR}': {e}")
+                warnings.append(f"Cannot create screenshot directory: {e}")
         
         return {
             "warnings": warnings,
             "errors": errors,
-            "godot_available": tool_config.ENABLE_GODOT_TOOLS and godot_available,
-            "mcp_available": tool_config.ENABLE_MCP_TOOLS and mcp_available
+            "godot_available": tool_config.ENABLE_GODOT_TOOLS and godot_available
         }
     
     @classmethod
@@ -104,7 +90,6 @@ class ConfigValidator:
             - 'warnings': list of warning messages
             - 'errors': list of error messages
             - 'godot_available': bool indicating if Godot tools can be used
-            - 'mcp_available': bool indicating if MCP tools can be used
         """
         model_results = cls.validate_model_config(model_config)
         tool_results = cls.validate_tool_config(tool_config)
@@ -130,6 +115,5 @@ class ConfigValidator:
             'valid': len(all_errors) == 0,
             'warnings': all_warnings,
             'errors': all_errors,
-            'godot_available': tool_results.get("godot_available", False),
-            'mcp_available': tool_results.get("mcp_available", False)
+            'godot_available': tool_results.get("godot_available", False)
         }

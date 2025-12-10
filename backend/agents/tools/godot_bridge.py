@@ -97,6 +97,7 @@ class GodotBridge:
         # Event handling
         self._message_handlers: Dict[str, callable] = {}
         self._connection_callbacks: list[callable] = []
+        self._project_info_callbacks: list[callable] = []
 
         # Register default message handlers
         self._register_default_handlers()
@@ -405,6 +406,17 @@ class GodotBridge:
                 f"Version: {self.project_info.godot_version}, "
                 f"Ready: {self.project_info.is_ready}"
             )
+            
+            # Notify project_info callbacks
+            for callback in self._project_info_callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        asyncio.create_task(callback(self.project_info))
+                    else:
+                        callback(self.project_info)
+                except Exception as cb_error:
+                    logger.error(f"Error in project_info callback: {cb_error}")
+                    
         except Exception as e:
             logger.error(f"Failed to process project info: {e}")
 
@@ -458,6 +470,33 @@ class GodotBridge:
         if callback in self._connection_callbacks:
             self._connection_callbacks.remove(callback)
 
+    def add_project_info_callback(self, callback: callable):
+        """Add callback to be called when project info is received."""
+        self._project_info_callbacks.append(callback)
+
+    def remove_project_info_callback(self, callback: callable):
+        """Remove project info callback."""
+        if callback in self._project_info_callbacks:
+            self._project_info_callbacks.remove(callback)
+
+    def cleanup(self):
+        """Cleanup all resources without async. For use in sync cleanup contexts."""
+        # Clear all callbacks to prevent memory leaks
+        self._connection_callbacks.clear()
+        self._project_info_callbacks.clear()
+        self._message_handlers.clear()
+        
+        # Cancel any pending commands
+        for command_id, future in list(self._pending_commands.items()):
+            if not future.done():
+                future.cancel()
+        self._pending_commands.clear()
+        
+        # Clear project info
+        self.project_info = None
+        self.websocket = None
+        self.connection_state = ConnectionState.DISCONNECTED
+
 
 # Global bridge instance for use across tools
 _godot_bridge: Optional[GodotBridge] = None
@@ -469,6 +508,14 @@ def get_godot_bridge() -> GodotBridge:
     if _godot_bridge is None:
         _godot_bridge = GodotBridge()
     return _godot_bridge
+
+
+def reset_godot_bridge():
+    """Reset the global Godot bridge instance. Used for cleanup."""
+    global _godot_bridge
+    if _godot_bridge is not None:
+        _godot_bridge.cleanup()
+        _godot_bridge = None
 
 
 @tool

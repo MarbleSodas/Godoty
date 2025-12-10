@@ -7,6 +7,7 @@ information and context rather than making changes.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -145,28 +146,91 @@ class GodotDebugTools:
             return {"messages": [], "raw_lines": []}
 
     async def capture_editor_viewport(self, include_3d: bool = True, include_2d: bool = True) -> Dict[str, Any]:
+        """Capture editor viewport and return image data for vision model processing.
+        
+        Returns a dictionary with:
+        - image: Strands ImageContent format with raw bytes for vision models
+        - metadata: Additional capture information
+        """
         if not await self.ensure_connection():
             raise ConnectionError("Failed to connect to Godot plugin")
         try:
             response = await self.bridge.send_command("get_visual_snapshot")
             if not response.success:
                 raise RuntimeError(f"Failed to capture editor viewport: {response.error}")
-            return response.data
+            
+            data = response.data
+            result = {
+                "metadata": {
+                    "width": data.get("width"),
+                    "height": data.get("height"),
+                    "timestamp": data.get("timestamp"),
+                    "image_path": data.get("image_path"),
+                    "viewport_type": data.get("viewport_type", "2d")
+                }
+            }
+            
+            # If base64 data is available, include it as Strands ImageContent format
+            base64_data = data.get("base64_data")
+            if base64_data:
+                # Decode base64 to raw bytes for Strands ImageContent
+                image_bytes = base64.b64decode(base64_data)
+                result["image"] = {
+                    "format": "png",
+                    "source": {"bytes": image_bytes}
+                }
+                result["has_image"] = True
+            else:
+                result["has_image"] = False
+                
+            return result
         except Exception as e:
             logger.error(f"Error capturing editor viewport: {e}")
             raise
 
     async def capture_game_viewport(self, wait_frames: int = 3) -> Dict[str, Any]:
+        """Capture game viewport and return image data for vision model processing.
+        
+        Returns a dictionary with:
+        - image: Strands ImageContent format with raw bytes for vision models
+        - metadata: Additional capture information
+        """
         if not await self.ensure_connection():
             raise ConnectionError("Failed to connect to Godot plugin")
         try:
             response = await self.bridge.send_command("capture_game_screenshot", wait_frames=wait_frames)
             if not response.success:
                 raise RuntimeError(f"Failed to capture game viewport: {response.error}")
-            return response.data
+            
+            data = response.data
+            size = data.get("size", {})
+            result = {
+                "metadata": {
+                    "width": size.get("w"),
+                    "height": size.get("h"),
+                    "timestamp": data.get("timestamp"),
+                    "image_path": data.get("absolute_path")
+                }
+            }
+            
+            # GDScript uses "image_b64" for game screenshots, check both keys
+            base64_data = data.get("image_b64") or data.get("base64_data")
+            if base64_data:
+                # Decode base64 to raw bytes for Strands ImageContent
+                image_bytes = base64.b64decode(base64_data)
+                result["image"] = {
+                    "format": "png",
+                    "source": {"bytes": image_bytes}
+                }
+                result["has_image"] = True
+            else:
+                result["has_image"] = False
+                
+            return result
         except Exception as e:
             logger.error(f"Error capturing game viewport: {e}")
             raise
+
 
     async def search_nodes(self, search_type: str = "type", query: str = "", scene_root: Optional[str] = None) -> List[NodeInfo]:
         if not await self.ensure_connection():

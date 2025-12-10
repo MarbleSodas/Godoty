@@ -330,3 +330,53 @@ def safe_path_join(base_path: Union[str, Path], *paths: Union[str, Path]) -> Pat
         if isinstance(e, PathValidationError):
             raise
         raise PathValidationError(str(paths), f"safe path join failed: {str(e)}")
+
+
+def handle_tool_errors(operation_name: str):
+    """
+    Decorator for consistent tool operation error handling.
+
+    This decorator handles common tool errors and converts them
+    to standardized error responses, reducing code duplication.
+
+    Args:
+        operation_name: Human-readable name of the operation for error messages
+
+    Returns:
+        Decorated function that handles tool operation errors
+    """
+    def decorator(func):
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                result = await func(*args, **kwargs)
+                return result
+            except Exception as e:
+                logger.exception(f"Unexpected error in {operation_name}")
+                return create_error_response(
+                    f"Error during {operation_name}: {str(e)}",
+                    f"{operation_name.title()}Error",
+                    str(e)
+                )
+
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            try:
+                result = func(*args, **kwargs)
+                return result
+            except Exception as e:
+                logger.exception(f"Unexpected error in {operation_name}")
+                return create_error_response(
+                    f"Error during {operation_name}: {str(e)}",
+                    f"{operation_name.title()}Error",
+                    str(e)
+                )
+
+        # Return the appropriate wrapper based on whether the function is async
+        import inspect
+        if inspect.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return sync_wrapper
+
+    return decorator
