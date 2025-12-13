@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: theme('colors.godot.darker');
+}
+
+::-webkit-scrollbar-thumb {
+  background: theme('colors.godot.border');
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: theme('colors.godot.muted');
+}
+
+/* Base styles */
+body {
+  @apply bg-godot-dark text-godot-text font-sans antialiased;
+  overflow: hidden;
+}
+
+/* Code block styling */
+pre {
+  @apply bg-godot-darker rounded-lg p-4 overflow-x-auto;
+}
+
+code {
+  @apply font-mono text-sm;
+}
+
+/* Button base styles */
+.btn {
+  @apply px-4 py-2 rounded-md font-medium transition-colors duration-150;
+}
+
+.btn-primary {
+  @apply bg-godot-blue text-white hover:bg-opacity-90;
+}
+
+.btn-secondary {
+  @apply bg-godot-surface text-godot-text border border-godot-border hover:bg-godot-border;
+}
+
+.btn-danger {
+  @apply bg-red-600 text-white hover:bg-red-700;
+}
+
+.btn-success {
+  @apply bg-green-600 text-white hover:bg-green-700;
+}
+
+/* Input base styles */
+.input {
+  @apply w-full px-3 py-2 bg-godot-darker border border-godot-border rounded-md 
+         text-godot-text placeholder-godot-muted
+         focus:outline-none focus:ring-2 focus:ring-godot-blue focus:border-transparent;
+}
+
+/* Card component */
+.card {
+  @apply bg-godot-surface rounded-lg border border-godot-border;
+}

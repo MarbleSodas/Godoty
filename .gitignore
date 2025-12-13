@@ -1,74 +1,154 @@
+# ====================================
+# Godoty Project .gitignore
+# ====================================
+
+# ====================================
+# Security - CRITICAL: Never commit secrets
+# ====================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.secrets
+*credentials*
+*.secret
+.secrets/
+
+# ====================================
+# macOS
+# ====================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ====================================
 # Python
+# ====================================
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-*.egg
-*.egg-info/
-dist/
+.Python
 build/
-*.whl
-venv/
-env/
-ENV/
-.venv/
-.env
-.env.local
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Node
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# PyInstaller
+*.pyc
+*.pyo
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# ====================================
+# Node.js / JavaScript
+# ====================================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.npm
+pnpm-debug.log*
+.pnpm-debug.log*
+bun.lockb
+*.local
 
-# Angular
-.angular/
+# Build outputs
 dist/
-/dist/
-tmp/
-out-tsc/
-/bazel-out
+out/
+.output/
+.next/
+.nuxt/
 
-# IDEs
-.vscode/
+# ====================================
+# Rust / Tauri
+# ====================================
+desktop/src-tauri/target/
+target/
+**/*.rs.bk
+Cargo.lock
+!desktop/src-tauri/Cargo.lock
+
+# Tauri build binaries (large files)
+desktop/src-tauri/binaries/
+
+# Tauri generated files
+desktop/src-tauri/gen/
+
+# ====================================
+# Godot
+# ====================================
+.godot/
+*.import
+export*.cfg
+export_presets.cfg
+
+# ====================================
+# IDEs and Editors
+# ====================================
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
+*.sublime-workspace
+*.sublime-project
+.project
+.settings/
+.classpath
 
-# OS
-.DS_Store
-Thumbs.db
+# ====================================
+# Supabase
+# ====================================
+supabase/.temp/
+.supabase/
 
-# Test coverage
-.coverage
-htmlcov/
-.pytest_cache/
-
+# ====================================
 # Logs
+# ====================================
 *.log
 logs/
-*bun.lock
 
-# Project-specific
-# Test outputs
-test_output*.txt
-*_output.txt
-
-# Temporary directories
-temp_*/
-
-# Session and runtime data
-.godoty_sessions/
-.godoty_backups/
-
-# Database files
-*.db
-*.sqlite
-*.sqlite3
-
-# Backup files
-*.backup
+# ====================================
+# Miscellaneous
+# ====================================
 *.bak
-*godoty.spec
+*.tmp
+*.temp
+.cache/

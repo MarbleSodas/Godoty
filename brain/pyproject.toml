@@ -1,0 +1,23 @@
+[project]
+name = "godoty-brain"
+version = "0.0.1"
+description = "Local-first sidecar server for Godoty"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.6",
+  "agno>=1.0.0",
+  "litellm>=1.50.0",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "httpx>=0.27",
+  "pyinstaller>=6.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

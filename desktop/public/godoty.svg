@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16162a"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="64" height="64" rx="12" fill="url(#bg)"/>
+  <!-- Godot-like robot face -->
+  <circle cx="32" cy="28" r="16" fill="#478cbf"/>
+  <!-- Eyes -->
+  <circle cx="26" cy="26" r="4" fill="#1a1a2e"/>
+  <circle cx="38" cy="26" r="4" fill="#1a1a2e"/>
+  <!-- Eye highlights -->
+  <circle cx="27" cy="25" r="1.5" fill="#fff"/>
+  <circle cx="39" cy="25" r="1.5" fill="#fff"/>
+  <!-- Antenna -->
+  <line x1="32" y1="12" x2="32" y2="8" stroke="#478cbf" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="32" cy="6" r="2" fill="#478cbf"/>
+  <!-- Smile -->
+  <path d="M 25 32 Q 32 38 39 32" stroke="#1a1a2e" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <!-- AI sparkles -->
+  <circle cx="50" cy="18" r="2" fill="#ffeda1"/>
+  <circle cx="14" cy="22" r="1.5" fill="#a1ffe0"/>
+  <circle cx="48" cy="46" r="1.5" fill="#ff7085"/>
+  <!-- Text "AI" -->
+  <text x="32" y="54" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#478cbf">AI</text>
+</svg>
