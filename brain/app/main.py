@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
+from app.agents import get_db
 from app.agents.tools import resolve_response, set_ws_connection, set_connection_manager
 from app.protocol.jsonrpc import (
     ConfirmationRequest,
@@ -32,6 +33,7 @@ from app.protocol.jsonrpc import (
     JsonRpcRequest,
     JsonRpcSuccess,
 )
+from app.sessions import get_session_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("godoty.brain")
@@ -110,11 +112,21 @@ class ConnectionManager:
                     }
                 })
     
+    def _get_project_info(self) -> dict[str, str] | None:
+        """Get standardized project info dict."""
+        if not self.godot:
+            return None
+        return {
+            "name": self.godot.project_name or "",
+            "path": self.godot.project_path or "",
+            "godotVersion": self.godot.godot_version or "",
+        }
+
     async def _notify_tauri(self, method: str, params: dict) -> None:
         """Send a notification to the Tauri client."""
         if self.tauri:
             try:
-                msg = JsonRpcRequest(method=method, params=params).model_dump_json()
+                msg = JsonRpcRequest(method=method, params=params).model_dump_json(exclude_none=True)
                 await self.tauri.ws.send_text(msg)
             except Exception as e:
                 logger.error(f"Failed to notify Tauri: {e}")
@@ -253,13 +265,6 @@ async def tauri_ws_endpoint(ws: WebSocket) -> None:
         await connections.set_tauri(None)
 
 
-# Legacy endpoint for backwards compatibility
-@app.websocket("/ws")
-async def legacy_ws_endpoint(ws: WebSocket) -> None:
-    """Legacy WebSocket endpoint - routes to Godot handler."""
-    await godot_ws_endpoint(ws)
-
-
 # ============================================================================
 # Godot Request Handlers
 # ============================================================================
@@ -330,10 +335,35 @@ async def _handle_tauri_request(conn: TauriConnection, req: JsonRpcRequest) -> s
         # Register this Tauri connection
         await connections.set_tauri(conn)
         
+        # Include project info if Godot is already connected
+        # This ensures Tauri gets the project name immediately on connect
+        project_info = connections._get_project_info()
+        
+        # List existing sessions (don't create new ones - sessions are created on first message)
+        session_manager = get_session_manager()
+        sessions = session_manager.list_sessions()
+        
+        # Get the most recent session as the active one (if any exist)
+        active_session_id = sessions[0].id if sessions else None
+        
         return _success(req.id, {
             "session_id": conn.session_id,
             "protocol_version": "0.2",
             "godot_connected": connections.godot is not None,
+            "project": project_info,
+            "sessions": [
+                {
+                    "id": s.id,
+                    "title": s.title,
+                    "created_at": s.created_at.isoformat(),
+                    "updated_at": s.updated_at.isoformat(),
+                    "message_count": s.message_count,
+                    "total_tokens": s.total_tokens,
+                    "total_cost": s.total_cost,
+                }
+                for s in sessions
+            ],
+            "active_session_id": active_session_id,
         })
     
     if req.method == "user_message":
@@ -345,25 +375,95 @@ async def _handle_tauri_request(conn: TauriConnection, req: JsonRpcRequest) -> s
     if req.method == "get_status":
         return _success(req.id, {
             "godot_connected": connections.godot is not None,
-            "project": {
-                "name": connections.godot.project_name,
-                "path": connections.godot.project_path,
-            } if connections.godot else None,
+            "project": connections._get_project_info(),
             "total_tokens": conn.total_tokens,
+        })
+    
+    # Session management methods
+    if req.method == "list_sessions":
+        return _handle_list_sessions(req)
+    
+    if req.method == "create_session":
+        return _handle_create_session(req)
+    
+    if req.method == "delete_session":
+        return _handle_delete_session(req)
+    
+    if req.method == "rename_session":
+        return _handle_rename_session(req)
+    
+    if req.method == "get_session_history":
+        return await _handle_get_session_history(req)
+    
+    # Knowledge Base Management
+    if req.method == "admin_reindex_knowledge":
+        # Start reindexing in background
+        asyncio.create_task(_reindex_knowledge_task(conn, req.params or {}))
+        return None  # Task sends notifications
+        
+    if req.method == "get_knowledge_status":
+        from app.knowledge.godot_knowledge import get_godot_knowledge
+        
+        # Get knowledge for current project version (default to 4.5 if unknown)
+        version = "4.5"
+        if connections.godot and connections.godot.godot_version:
+            # Simple version extraction (e.g. "4.3.stable" -> "4.3")
+            version = ".".join(connections.godot.godot_version.split(".")[:2])
+            
+        knowledge = get_godot_knowledge(version=version)
+        
+        # Check actual database state (not just memory flag)
+        is_indexed = await knowledge.is_indexed()
+        doc_count = 0
+        
+        if is_indexed:
+            try:
+                doc_count = await knowledge.vector_db.async_get_count()
+            except Exception:
+                pass
+        
+        return _success(req.id, {
+            "version": version,
+            "is_indexed": is_indexed,
+            "is_indexing": knowledge.is_indexing,
+            "document_count": doc_count,
         })
     
     return _error(req.id, -32601, f"Method not found: {req.method}")
 
 
 async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> str:
-    """Handle user message - route to agent team with virtual key forwarding."""
+    """Handle user message - route to agent team with streaming and virtual key forwarding."""
     params = req.params or {}
     user_text = params.get("text")
     authorization = params.get("authorization")  # LiteLLM virtual key (from Edge Function)
     model = params.get("model")  # User-selected model (e.g., 'gpt-4o', 'claude-3-5-sonnet-20241022')
+    session_id = params.get("session_id")  # Session ID for conversation continuity
     
     if not isinstance(user_text, str) or not user_text.strip():
         return _error(req.id, -32602, "Invalid params", {"text": "required"})
+    
+    # Get session manager for metadata updates
+    session_manager = get_session_manager()
+    
+    # Track if we're creating a new session (for UI notifications)
+    is_new_session = False
+    
+    # Ensure we have a valid session ID
+    if not session_id:
+        # Create a new session with title from user message
+        title = session_manager.generate_title_from_message(user_text)
+        session = session_manager.create_session(title=title)
+        session_id = session.id
+        is_new_session = True
+    else:
+        # Check if session exists
+        session = session_manager.get_session(session_id)
+        if not session:
+            # Create session with title from user message
+            title = session_manager.generate_title_from_message(user_text)
+            session = session_manager.create_session(title=title, session_id=session_id)
+            is_new_session = True
     
     # The authorization token is now a LiteLLM virtual key (from Supabase Edge Function)
     # This key has:
@@ -375,15 +475,69 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
     try:
         from app.agents.team import GodotySession
         
-        session = GodotySession(
-            session_id=conn.session_id,
+        # Get database for persistent session storage
+        db = get_db()
+        
+        godoty_session = GodotySession(
+            session_id=session_id,
             jwt_token=authorization,  # Pass virtual key for LiteLLM auth
             model_id=model,  # Pass user-selected model
+            db=db,  # Enable persistent session storage
         )
-        reply_text, metrics = await session.process_message(user_text)
+        
+        # Use streaming to send chunks in real-time
+        full_content = ""
+        final_metrics = {}
+        
+        async for chunk in godoty_session.process_message_stream(user_text):
+            if chunk["type"] == "chunk":
+                # Send streaming chunk notification to desktop
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="stream_chunk",
+                        params={"content": chunk["content"]}
+                    ).model_dump_json()
+                )
+                full_content += chunk["content"]
+                
+            elif chunk["type"] == "done":
+                full_content = chunk["content"]
+                final_metrics = chunk.get("metrics", {})
+                
+            elif chunk["type"] == "error":
+                error_msg = chunk.get("error", "Unknown error")
+                if "budget" in error_msg.lower() or "insufficient" in error_msg.lower():
+                    return _error(req.id, -32001, "Insufficient credits. Please purchase more credits to continue.", {
+                        "error_type": "budget_exceeded",
+                        "suggestion": "Purchase credits to continue using Godoty"
+                    })
+                return _error(req.id, -32000, error_msg)
+        
+        # Check for budget exceeded error in metrics
+        if final_metrics.get("error") and "budget" in str(final_metrics.get("error", "")).lower():
+            return _error(req.id, -32001, "Insufficient credits. Please purchase more credits to continue.", {
+                "error_type": "budget_exceeded",
+                "suggestion": "Purchase credits to continue using Godoty"
+            })
+        
+        # Extract metrics for session storage
+        request_tokens = (final_metrics.get("input_tokens") or 0) + (final_metrics.get("output_tokens") or 0)
+        request_cost = final_metrics.get("request_cost") or 0.0
+        
+        # Update session metadata - increment message count and add metrics
+        # (title was already set on session creation)
+        session_manager.update_session(
+            session_id, 
+            increment_messages=True,
+            add_tokens=request_tokens,
+            add_cost=request_cost,
+        )
+        
+        # Get updated session for notification
+        updated_session = session_manager.get_session(session_id)
         
         # Update token count
-        conn.total_tokens = metrics.get("session_total_tokens", conn.total_tokens)
+        conn.total_tokens = final_metrics.get("session_total_tokens", conn.total_tokens)
         
         # Send token update notification
         await conn.ws.send_text(
@@ -393,22 +547,51 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
             ).model_dump_json()
         )
         
+        # Send session update notification to refresh sidebar
+        if updated_session:
+            await conn.ws.send_text(
+                JsonRpcRequest(
+                    method="session_updated",
+                    params={
+                        "session": {
+                            "id": updated_session.id,
+                            "title": updated_session.title,
+                            "created_at": updated_session.created_at.isoformat(),
+                            "updated_at": updated_session.updated_at.isoformat(),
+                            "message_count": updated_session.message_count,
+                            "total_tokens": updated_session.total_tokens,
+                            "total_cost": updated_session.total_cost,
+                        },
+                        "is_new": is_new_session,
+                    }
+                ).model_dump_json()
+            )
+        
+        # Send stream complete notification with final metrics
+        await conn.ws.send_text(
+            JsonRpcRequest(
+                method="stream_complete",
+                params={"metrics": final_metrics, "session_id": session_id}
+            ).model_dump_json()
+        )
+        
         return _success(req.id, {
-            "text": reply_text,
-            "metrics": metrics,
+            "text": full_content,
+            "metrics": final_metrics,
+            "session_id": session_id,
         })
         
-    except ImportError:
-        # Fall back to basic reply if team not configured
-        from app.agents.basic_agent import generate_reply
-        
-        reply_text, metrics = generate_reply(user_text)
-        return _success(req.id, {
-            "text": reply_text,
-            "metrics": metrics,
-        })
     except Exception as e:
+        error_msg = str(e).lower()
         logger.error(f"Error processing message: {e}")
+        
+        # Check for budget exceeded errors (403 from LiteLLM or budget-related messages)
+        if "403" in error_msg or "budget" in error_msg or "exceeded" in error_msg or "insufficient" in error_msg:
+            return _error(req.id, -32001, "Insufficient credits. Please purchase more credits to continue.", {
+                "error_type": "budget_exceeded",
+                "suggestion": "Purchase credits to continue using Godoty"
+            })
+        
         return _error(req.id, -32000, str(e))
 
 
@@ -424,6 +607,146 @@ async def _handle_confirmation_response(conn: TauriConnection, req: JsonRpcReque
         logger.error(f"Invalid confirmation response: {e}")
     
     return None
+
+
+# ============================================================================
+# Session Management Handlers
+# ============================================================================
+
+
+def _handle_list_sessions(req: JsonRpcRequest) -> str:
+    """List all available sessions."""
+    session_manager = get_session_manager()
+    sessions = session_manager.list_sessions()
+    
+    return _success(req.id, {
+        "sessions": [
+            {
+                "id": s.id,
+                "title": s.title,
+                "created_at": s.created_at.isoformat(),
+                "updated_at": s.updated_at.isoformat(),
+                "message_count": s.message_count,
+            }
+            for s in sessions
+        ]
+    })
+
+
+def _handle_create_session(req: JsonRpcRequest) -> str:
+    """Create a new chat session."""
+    params = req.params or {}
+    title = params.get("title", "New Chat")
+    
+    session_manager = get_session_manager()
+    session = session_manager.create_session(title=title)
+    
+    return _success(req.id, {
+        "session": {
+            "id": session.id,
+            "title": session.title,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "message_count": session.message_count,
+        }
+    })
+
+
+def _handle_delete_session(req: JsonRpcRequest) -> str:
+    """Delete a session by ID."""
+    params = req.params or {}
+    session_id = params.get("session_id")
+    
+    if not session_id:
+        return _error(req.id, -32602, "Invalid params", {"session_id": "required"})
+    
+    session_manager = get_session_manager()
+    deleted = session_manager.delete_session(session_id)
+    
+    if deleted:
+        return _success(req.id, {"deleted": True, "session_id": session_id})
+    else:
+        return _error(req.id, -32001, "Session not found", {"session_id": session_id})
+
+
+def _handle_rename_session(req: JsonRpcRequest) -> str:
+    """Rename a session."""
+    params = req.params or {}
+    session_id = params.get("session_id")
+    title = params.get("title")
+    
+    if not session_id:
+        return _error(req.id, -32602, "Invalid params", {"session_id": "required"})
+    if not title:
+        return _error(req.id, -32602, "Invalid params", {"title": "required"})
+    
+    session_manager = get_session_manager()
+    session = session_manager.update_session(session_id, title=title)
+    
+    if session:
+        return _success(req.id, {
+            "session": {
+                "id": session.id,
+                "title": session.title,
+                "created_at": session.created_at.isoformat(),
+                "updated_at": session.updated_at.isoformat(),
+                "message_count": session.message_count,
+            }
+        })
+    else:
+        return _error(req.id, -32001, "Session not found", {"session_id": session_id})
+
+
+async def _handle_get_session_history(req: JsonRpcRequest) -> str:
+    """Get chat history for a session.
+    
+    This queries Agno's internal session storage to retrieve messages.
+    """
+    params = req.params or {}
+    session_id = params.get("session_id")
+    
+    if not session_id:
+        return _error(req.id, -32602, "Invalid params", {"session_id": "required"})
+    
+    # Check if session exists in our metadata table
+    session_manager = get_session_manager()
+    session = session_manager.get_session(session_id)
+    
+    if not session:
+        return _error(req.id, -32001, "Session not found", {"session_id": session_id})
+    
+    # Query Agno's session storage for messages
+    # The Team/Agent stores run data in the SqliteDb, we need to retrieve it
+    try:
+        from app.agents.team import GodotySession
+        
+        db = get_db()
+        godoty_session = GodotySession(session_id=session_id, db=db)
+        
+        # Try to get chat history from the team
+        messages = []
+        try:
+            history = godoty_session.team.get_chat_history()
+            if history:
+                for msg in history:
+                    role = getattr(msg, "role", "unknown")
+                    content = getattr(msg, "content", "")
+                    messages.append({
+                        "role": role,
+                        "content": content,
+                    })
+        except Exception as hist_error:
+            logger.warning(f"Could not retrieve chat history: {hist_error}")
+        
+        return _success(req.id, {
+            "session_id": session_id,
+            "title": session.title,
+            "messages": messages,
+        })
+        
+    except Exception as e:
+        logger.error(f"Error retrieving session history: {e}")
+        return _error(req.id, -32000, f"Error retrieving history: {str(e)}")
 
 
 # ============================================================================
@@ -455,3 +778,83 @@ def status() -> dict[str, Any]:
 def get_connection_manager() -> ConnectionManager:
     """Get the global connection manager (for use in tools.py)."""
     return connections
+
+    return connections
+
+
+async def _reindex_knowledge_task(conn: TauriConnection, params: dict) -> None:
+    """Background task to reindex Godot documentation."""
+    try:
+        from app.knowledge.godot_knowledge import get_godot_knowledge
+        
+        version = params.get("version", "4.3")
+        
+        # If auto-detect requested and Godot connected, use that version
+        if not params.get("version") and connections.godot and connections.godot.godot_version:
+             version = ".".join(connections.godot.godot_version.split(".")[:2])
+        
+        logger.info(f"Starting manual reindexing for Godot {version}")
+        
+        # Notify start
+        await conn.ws.send_text(
+            JsonRpcRequest(
+                method="knowledge_status_update",
+                params={"status": "indexing", "version": version}
+            ).model_dump_json()
+        )
+        
+        # Define progress callback for fetching
+        def progress_callback(current: int, total: int) -> None:
+            # Create a task to send notification (callback is sync)
+            asyncio.create_task(conn.ws.send_text(
+                JsonRpcRequest(
+                    method="knowledge_indexing_progress",
+                    params={"current": current, "total": total, "version": version, "phase": "fetching"}
+                ).model_dump_json()
+            ))
+
+        # Define progress callback for embedding
+        def embedding_callback(current: int, total: int) -> None:
+            asyncio.create_task(conn.ws.send_text(
+                JsonRpcRequest(
+                    method="knowledge_indexing_progress",
+                    params={"current": current, "total": total, "version": version, "phase": "embedding"}
+                ).model_dump_json()
+            ))
+
+        knowledge = get_godot_knowledge(version=version)
+        success = await knowledge.load(force_reload=True, progress_callback=progress_callback, embedding_callback=embedding_callback)
+        
+        # Get count if successful
+        doc_count = 0
+        if success:
+            try:
+                doc_count = await knowledge.vector_db.async_get_count()
+            except Exception:
+                pass
+        
+        # Notify completion
+        await conn.ws.send_text(
+            JsonRpcRequest(
+                method="knowledge_status_update",
+                params={
+                    "status": "loaded" if success else "error",
+                    "version": version,
+                    "document_count": doc_count,
+                    "error": None if success else "Failed to load documentation"
+                }
+            ).model_dump_json()
+        )
+        
+    except Exception as e:
+        logger.error(f"Reindexing failed: {e}")
+        await conn.ws.send_text(
+            JsonRpcRequest(
+                method="knowledge_status_update",
+                params={
+                    "status": "error",
+                    "version": version,
+                    "error": str(e)
+                }
+            ).model_dump_json()
+        )

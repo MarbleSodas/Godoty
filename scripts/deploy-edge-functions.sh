@@ -28,6 +28,10 @@ cd "$PROJECT_ROOT"
 echo "📦 Deploying generate-litellm-key function..."
 supabase functions deploy generate-litellm-key --no-verify-jwt
 
+# Deploy the stripe-checkout function (Temporarily disabled - source missing)
+# echo "📦 Deploying stripe-checkout function..."
+# supabase functions deploy stripe-checkout --no-verify-jwt
+
 # Deploy the stripe-webhook function
 echo "📦 Deploying stripe-webhook function..."
 supabase functions deploy stripe-webhook --no-verify-jwt
@@ -37,13 +41,20 @@ echo "✅ Edge Functions deployed successfully!"
 echo ""
 echo "🔐 Don't forget to set your secrets if you haven't already:"
 echo "   supabase secrets set LITELLM_MASTER_KEY=sk-your-master-key"
-echo "   supabase secrets set LITELLM_URL=https://your-litellm-proxy.up.railway.app
-   supabase secrets set STRIPE_SECRET_KEY=sk_test_...
-   supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_..."
+echo "   supabase secrets set LITELLM_URL=https://your-litellm-proxy.up.railway.app"
+echo "   supabase secrets set STRIPE_SECRET_KEY=sk_test_..."
+echo "   supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_..."
 echo ""
-echo "🗄️  To apply the database migration:"
-echo "   cd brain && supabase db push"
+echo "🪝 Set up Stripe Webhook:"
+echo "   1. Go to Stripe Dashboard > Developers > Webhooks"
+echo "   2. Add endpoint: https://<project-ref>.supabase.co/functions/v1/stripe-webhook"
+echo "   3. Select event: checkout.session.completed"
+echo "   4. Copy the webhook signing secret and set it above"
+echo ""
+echo "🗄️  To apply the database migrations:"
+echo "   supabase db push"
 echo ""
 echo "📝 Edge Function URLs:"
 echo "   https://<project-ref>.supabase.co/functions/v1/generate-litellm-key"
+echo "   https://<project-ref>.supabase.co/functions/v1/stripe-checkout"
 echo "   https://<project-ref>.supabase.co/functions/v1/stripe-webhook"

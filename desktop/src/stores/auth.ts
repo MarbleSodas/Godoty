@@ -3,15 +3,15 @@ import { ref, computed } from 'vue'
 import { supabase } from '@/lib/supabase'
 import {
   generateVirtualKey,
-  fetchCreditBalance,
   fetchAvailableModels,
   getCachedVirtualKey,
   clearVirtualKey,
   isKeyExpired,
   getSelectedModel,
   setSelectedModel as saveSelectedModel,
+  formatCredits,
+  PRICING_URL,
   type VirtualKeyInfo,
-  type CreditBalance,
   type ModelId,
   type ModelInfo,
 } from '@/lib/litellmKeys'
@@ -23,9 +23,8 @@ export const useAuthStore = defineStore('auth', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
 
-  // Virtual key state
+  // Virtual key state (includes balance info from LiteLLM)
   const virtualKeyInfo = ref<VirtualKeyInfo | null>(null)
-  const creditBalance = ref<CreditBalance | null>(null)
   const keyLoading = ref(false)
   const keyError = ref<string | null>(null)
 
@@ -44,13 +43,66 @@ export const useAuthStore = defineStore('auth', () => {
   // Virtual key for LiteLLM API calls
   const virtualKey = computed(() => virtualKeyInfo.value?.apiKey ?? null)
 
-  // Credit balance info
-  const remainingCredits = computed(() => creditBalance.value?.remainingBudget ?? 0)
-  const maxCredits = computed(() => creditBalance.value?.maxBudget ?? 0)
-  const usedCredits = computed(() => creditBalance.value?.usedBudget ?? 0)
+  // Key display state
+  const showFullKey = ref(false)
+
+  // Masked key for display (shows last 8 characters)
+  const maskedKey = computed(() => {
+    const key = virtualKey.value
+    if (!key) return null
+    if (showFullKey.value) return key
+    if (key.length <= 8) return key
+    return '••••••••' + key.slice(-8)
+  })
+
+  // Credit balance info from virtualKeyInfo (4 decimal precision strings)
+  const remainingCredits = computed(() => virtualKeyInfo.value?.remainingBudget ?? '0.0000')
+  const maxCredits = computed(() => virtualKeyInfo.value?.maxBudget ?? '0.0000')
+  const usedCredits = computed(() => virtualKeyInfo.value?.spend ?? '0.0000')
   const hasValidKey = computed(() =>
     virtualKeyInfo.value !== null && !isKeyExpired(virtualKeyInfo.value)
   )
+
+  // Formatted credit display
+  const formattedRemainingCredits = computed(() => formatCredits(remainingCredits.value))
+  const formattedMaxCredits = computed(() => formatCredits(maxCredits.value))
+  const formattedUsedCredits = computed(() => formatCredits(usedCredits.value))
+
+  // Check if user has sufficient credits (more than $0.0001)
+  const hasSufficientCredits = computed(() => parseFloat(remainingCredits.value) > 0.0001)
+
+  /**
+   * Toggle key visibility
+   */
+  function toggleKeyVisibility(): void {
+    showFullKey.value = !showFullKey.value
+  }
+
+  /**
+   * Force regenerate virtual key (clears cache first)
+   */
+  async function regenerateVirtualKey(): Promise<void> {
+    if (!accessToken.value) {
+      keyError.value = 'Not authenticated'
+      return
+    }
+
+    // Clear cached key to force regeneration
+    clearVirtualKey()
+    virtualKeyInfo.value = null
+
+    keyLoading.value = true
+    keyError.value = null
+    try {
+      const keyInfo = await generateVirtualKey(accessToken.value, true)
+      virtualKeyInfo.value = keyInfo
+    } catch (e) {
+      keyError.value = (e as Error).message
+      console.error('Failed to regenerate virtual key:', e)
+    } finally {
+      keyLoading.value = false
+    }
+  }
 
   /**
    * Fetch or generate a virtual key for the current user
@@ -82,16 +134,18 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
-   * Refresh the credit balance from the server
+   * Refresh the credit balance by fetching fresh key info from LiteLLM
+   * The generate-litellm-key endpoint returns current balance from LiteLLM
    */
   async function refreshCreditBalance(): Promise<void> {
     if (!accessToken.value) return
 
     try {
-      const balance = await fetchCreditBalance(accessToken.value)
-      creditBalance.value = balance
+      // Force fetch fresh key info (bypassing cache) to get updated balance
+      const keyInfo = await generateVirtualKey(accessToken.value, true)
+      virtualKeyInfo.value = keyInfo
     } catch (e) {
-      console.error('Failed to fetch credit balance:', e)
+      console.error('Failed to refresh credit balance:', e)
     }
   }
 
@@ -134,37 +188,47 @@ export const useAuthStore = defineStore('auth', () => {
     const doInit = async () => {
       loading.value = true
       try {
-        const { data: { session: currentSession } } = await supabase.auth.getSession()
-        session.value = currentSession
-        user.value = currentSession?.user ?? null
+        // Set up auth state change listener following Supabase docs
+        // Handle different event types appropriately
+        supabase.auth.onAuthStateChange(async (event, newSession) => {
+          console.log('[Auth] Event:', event)
 
-        // If user is logged in, ensure they have a virtual key
-        if (currentSession?.access_token) {
-          await ensureVirtualKey()
-          await refreshCreditBalance()
-          // Fetch available models using the virtual key
-          await refreshModels()
-        }
-
-        // Listen for auth changes
-        supabase.auth.onAuthStateChange(async (_event, newSession) => {
-          session.value = newSession
-          user.value = newSession?.user ?? null
-
-          // When user logs in, get their virtual key and fetch models
-          if (newSession?.access_token) {
-            await ensureVirtualKey()
-            await refreshCreditBalance()
-            // Fetch available models using the virtual key
-            await refreshModels()
-          } else {
-            // User logged out, clear key info and models
+          if (event === 'INITIAL_SESSION') {
+            // Initial session load from storage - just update state
+            // Key will be fetched below in getSession() handling
+            session.value = newSession
+            user.value = newSession?.user ?? null
+          } else if (event === 'SIGNED_IN') {
+            // User just signed in - get their virtual key
+            session.value = newSession
+            user.value = newSession?.user ?? null
+            if (newSession?.access_token) {
+              await ensureVirtualKey()
+              await refreshModels()
+            }
+          } else if (event === 'SIGNED_OUT') {
+            // User signed out - clear everything
+            session.value = null
+            user.value = null
             virtualKeyInfo.value = null
-            creditBalance.value = null
             availableModels.value = []
             clearVirtualKey()
+          } else if (event === 'TOKEN_REFRESHED') {
+            // Token refreshed - just update session, DON'T regenerate key
+            session.value = newSession
           }
+          // Ignore USER_UPDATED, PASSWORD_RECOVERY for key management
         })
+
+        // Get initial session and fetch key if needed
+        const { data } = await supabase.auth.getSession()
+        session.value = data.session
+        user.value = data.session?.user ?? null
+
+        if (data.session?.access_token) {
+          await ensureVirtualKey()
+          await refreshModels()
+        }
       } catch (e) {
         error.value = (e as Error).message
       } finally {
@@ -259,12 +323,25 @@ export const useAuthStore = defineStore('auth', () => {
       session.value = null
       user.value = null
       virtualKeyInfo.value = null
-      creditBalance.value = null
       clearVirtualKey()
     } catch (e) {
       error.value = (e as Error).message
     } finally {
       loading.value = false
+    }
+  }
+
+  /**
+   * Open the pricing page in browser to purchase credits
+   */
+  async function openPricingPage(): Promise<void> {
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell')
+      await open(PRICING_URL)
+    } catch (e) {
+      console.error('Failed to open pricing page:', e)
+      // Fallback: copy URL to clipboard or show it
+      window.open(PRICING_URL, '_blank')
     }
   }
 
@@ -276,23 +353,28 @@ export const useAuthStore = defineStore('auth', () => {
     error,
     initialized,
 
-    // Virtual key state
+    // Virtual key state (includes balance)
     virtualKeyInfo,
-    creditBalance,
     keyLoading,
     keyError,
     selectedModel,
+    showFullKey,
 
     // Computed
     isAuthenticated,
     accessToken,
     virtualKey,
+    maskedKey,
     remainingCredits,
     maxCredits,
     usedCredits,
     hasValidKey,
     availableModels,
     modelsLoading,
+    formattedRemainingCredits,
+    formattedMaxCredits,
+    formattedUsedCredits,
+    hasSufficientCredits,
 
     // Actions
     initialize,
@@ -301,8 +383,11 @@ export const useAuthStore = defineStore('auth', () => {
     signInWithOAuth,
     signOut,
     ensureVirtualKey,
+    regenerateVirtualKey,
     refreshCreditBalance,
     refreshModels,
     setSelectedModelId,
+    toggleKeyVisibility,
+    openPricingPage,
   }
 })

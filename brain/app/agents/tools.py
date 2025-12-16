@@ -445,6 +445,124 @@ async def delete_node(node_path: str) -> dict:
 
 
 # ============================================================================
+# Knowledge Base Tools
+# ============================================================================
+
+
+async def query_godot_docs(query: str, num_results: int = 5) -> list[dict]:
+    """Search the Godot documentation knowledge base.
+    
+    Searches the locally-indexed Godot documentation for relevant information
+    about classes, methods, properties, signals, and best practices.
+    
+    Args:
+        query: Natural language query about Godot APIs, nodes, or GDScript
+               Examples: "How to use move_and_slide", "AnimationPlayer signals"
+        num_results: Maximum number of results to return (default: 5)
+    
+    Returns:
+        List of relevant documentation chunks with content and metadata
+    """
+    try:
+        from app.knowledge import get_godot_knowledge
+        
+        knowledge = get_godot_knowledge()
+        results = await knowledge.search(query, num_results=num_results)
+        return results
+    except Exception as e:
+        return [{"error": f"Knowledge search failed: {e}"}]
+
+
+async def get_symbol_info(
+    file_path: str,
+    line: int,
+    character: int,
+) -> dict:
+    """Get documentation for a symbol at a specific position via LSP.
+    
+    Connects to Godot's running GDScript language server (port 6005) to fetch
+    real-time documentation, type info, and signatures for the symbol at the
+    given position.
+    
+    Args:
+        file_path: Absolute path to the .gd file
+        line: Line number (0-indexed)
+        character: Character position in the line (0-indexed)
+    
+    Returns:
+        Dictionary with hover documentation from the LSP, or error message
+    """
+    try:
+        from app.knowledge import get_lsp_client
+        
+        client = get_lsp_client()
+        result = await client.get_hover(file_path, line, character)
+        
+        if result is None:
+            return {"error": "No symbol information available at this position"}
+        
+        # Extract content from hover result
+        contents = result.get("contents", {})
+        if isinstance(contents, dict):
+            return {
+                "documentation": contents.get("value", ""),
+                "kind": contents.get("kind", "plaintext"),
+            }
+        elif isinstance(contents, str):
+            return {"documentation": contents}
+        elif isinstance(contents, list):
+            return {"documentation": "\n\n".join(str(c) for c in contents)}
+        
+        return result
+        
+    except ConnectionError:
+        return {"error": "GDScript LSP not available. Is Godot editor running?"}
+    except Exception as e:
+        return {"error": f"LSP request failed: {e}"}
+
+
+async def get_code_completions(
+    file_path: str,
+    line: int,
+    character: int,
+) -> list[dict]:
+    """Get autocompletion suggestions from the GDScript LSP.
+    
+    Connects to Godot's language server to get context-aware completion
+    suggestions for the current cursor position.
+    
+    Args:
+        file_path: Absolute path to the .gd file
+        line: Line number (0-indexed)
+        character: Character position in the line (0-indexed)
+    
+    Returns:
+        List of completion items with label, kind, and documentation
+    """
+    try:
+        from app.knowledge import get_lsp_client
+        
+        client = get_lsp_client()
+        completions = await client.get_completions(file_path, line, character)
+        
+        # Simplify completion items for agent consumption
+        return [
+            {
+                "label": item.get("label", ""),
+                "kind": item.get("kind", 0),
+                "detail": item.get("detail", ""),
+                "documentation": item.get("documentation", ""),
+            }
+            for item in completions[:20]  # Limit to 20 items
+        ]
+        
+    except ConnectionError:
+        return [{"error": "GDScript LSP not available. Is Godot editor running?"}]
+    except Exception as e:
+        return [{"error": f"LSP request failed: {e}"}]
+
+
+# ============================================================================
 # Exported tool list for agents
 # ============================================================================
 
@@ -460,6 +578,10 @@ __all__ = [
     "set_project_setting",
     "create_node",
     "delete_node",
+    # Knowledge & LSP
+    "query_godot_docs",
+    "get_symbol_info",
+    "get_code_completions",
     # Connection management
     "set_ws_connection",
     "get_ws_connection",

@@ -21,11 +21,13 @@ signal connection_state_changed(connected: bool)
 
 
 func _enter_tree() -> void:
+	print("[Godoty] Plugin initialized")
 	_setup_socket()
 	_enable_auto_reload()
 
 
 func _exit_tree() -> void:
+	print("[Godoty] Plugin disabled")
 	_socket = null
 
 
@@ -34,7 +36,7 @@ func _setup_socket() -> void:
 	var url := _get_server_url()
 	var err := _socket.connect_to_url(url)
 	if err != OK:
-		push_warning("[Godoty] Failed to connect to %s: %s" % [url, err])
+		push_error("[Godoty] Failed to connect: %s" % err)
 
 
 func _get_server_url() -> String:
@@ -50,7 +52,11 @@ func _enable_auto_reload() -> void:
 	settings.set_setting("text_editor/behavior/files/auto_reload_scripts_on_external_change", true)
 
 
-func _process(_delta: float) -> void:
+var _retry_interval: float = 3.0
+var _time_since_closed: float = 0.0
+
+
+func _process(delta: float) -> void:
 	if _socket == null:
 		return
 
@@ -59,20 +65,28 @@ func _process(_delta: float) -> void:
 
 	match state:
 		WebSocketPeer.STATE_OPEN:
+			_time_since_closed = 0.0
 			if not _connected:
 				_connected = true
 				_send_hello()
 				connection_state_changed.emit(true)
 				print("[Godoty] Connected to brain")
 			_process_packets()
+			
 		WebSocketPeer.STATE_CLOSED:
 			if _connected:
 				_connected = false
 				connection_state_changed.emit(false)
-				print("[Godoty] Disconnected - Reconnecting...")
-				# Try to reconnect
+				print("[Godoty] Disconnected")
+			
+			# Auto-reconnect logic
+			_time_since_closed += delta
+			if _time_since_closed >= _retry_interval:
+				_time_since_closed = 0.0
 				_setup_socket()
+
 		WebSocketPeer.STATE_CONNECTING:
+			_time_since_closed = 0.0
 			pass  # Still connecting
 
 
