@@ -9,13 +9,24 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // Spawn the Python sidecar on startup
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
+            
+            // Block until the sidecar is ready before showing the window
+            // This ensures the backend is available before the frontend is visible
+            tauri::async_runtime::block_on(async {
                 if let Err(e) = sidecar::spawn_brain(&handle).await {
                     eprintln!("Failed to spawn brain sidecar: {}", e);
+                } else {
+                    println!("[Tauri] Brain sidecar started successfully");
                 }
             });
+            
+            // Show the main window now that the sidecar is ready
+            if let Some(window) = app.get_webview_window("main") {
+                window.show().expect("Failed to show main window");
+                println!("[Tauri] Main window shown");
+            }
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
