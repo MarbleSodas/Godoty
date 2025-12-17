@@ -40,6 +40,17 @@ fn main() {
             sidecar::stop_brain,
             sidecar::get_brain_status,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                println!("[Tauri] App exit requested, stopping brain sidecar...");
+                // Stop the brain sidecar process before exiting
+                if let Err(e) = sidecar::stop_brain_sync() {
+                    eprintln!("[Tauri] Failed to stop brain on exit: {}", e);
+                } else {
+                    println!("[Tauri] Brain sidecar stopped successfully");
+                }
+            }
+        });
 }

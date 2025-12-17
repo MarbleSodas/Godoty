@@ -2,7 +2,7 @@
 import { RouterView, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBrainStore } from '@/stores/brain'
-import { onMounted } from 'vue'
+import { onMounted, onBeforeUnmount } from 'vue'
 
 const authStore = useAuthStore()
 const brainStore = useBrainStore()
@@ -33,6 +33,12 @@ onMounted(async () => {
       }
     }
   })
+})
+
+// Cleanup when app is closing
+onBeforeUnmount(async () => {
+  console.log('[App] Unmounting, stopping brain...')
+  await brainStore.stopBrain()
 })
 </script>
 

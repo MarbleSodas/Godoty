@@ -78,6 +78,18 @@ pub async fn stop_brain() -> Result<String, String> {
     }
 }
 
+/// Synchronous version for cleanup on app exit
+pub fn stop_brain_sync() -> Result<String, String> {
+    let mut process = BRAIN_PROCESS.lock().unwrap();
+    if let Some(child) = process.take() {
+        child.kill().map_err(|e| format!("Failed to kill brain process: {}", e))?;
+        BRAIN_RUNNING.store(false, Ordering::SeqCst);
+        Ok("Brain stopped".to_string())
+    } else {
+        Ok("Brain was not running".to_string())
+    }
+}
+
 #[tauri::command]
 pub fn get_brain_status() -> bool {
     BRAIN_RUNNING.load(Ordering::SeqCst)
