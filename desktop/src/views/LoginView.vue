@@ -10,11 +10,16 @@ const email = ref('')
 const password = ref('')
 const isSignUp = ref(false)
 const localError = ref<string | null>(null)
+const termsAccepted = ref(false)
 
 async function handleSubmit() {
   localError.value = null
   try {
     if (isSignUp.value) {
+      if (!termsAccepted.value) {
+        localError.value = 'You must agree to the Terms of Service and Privacy Policy'
+        return
+      }
       const result = await authStore.signUpWithEmail(email.value, password.value)
       // If confirmation is required, don't navigate - the UI will show the message
       if (result.confirmationRequired) {
@@ -35,6 +40,11 @@ async function handleOAuth(provider: 'github' | 'google') {
   } catch (e) {
     localError.value = (e as Error).message
   }
+}
+
+async function openExternalLink(url: string) {
+  const { open } = await import('@tauri-apps/plugin-shell')
+  await open(url)
 }
 </script>
 
@@ -90,10 +100,25 @@ async function handleOAuth(provider: 'github' | 'google') {
           />
         </div>
 
+        <div v-if="isSignUp" class="flex items-start gap-3">
+          <input
+            id="terms-checkbox"
+            v-model="termsAccepted"
+            type="checkbox"
+            class="mt-1 w-4 h-4 rounded border-godot-border bg-godot-surface text-godot-blue focus:ring-godot-blue focus:ring-offset-0 cursor-pointer"
+          />
+          <label for="terms-checkbox" class="text-godot-muted text-sm cursor-pointer">
+            I agree to the 
+            <button type="button" @click="openExternalLink('https://godoty.app/terms')" class="text-godot-blue hover:underline">Terms of Service</button>
+            and 
+            <button type="button" @click="openExternalLink('https://godoty.app/privacy')" class="text-godot-blue hover:underline">Privacy Policy</button>
+          </label>
+        </div>
+
         <button
           type="submit"
-          :disabled="authStore.loading"
-          class="btn btn-primary w-full"
+          :disabled="authStore.loading || (isSignUp && !termsAccepted)"
+          class="btn btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span v-if="authStore.loading">Loading...</span>
           <span v-else>{{ isSignUp ? 'Sign Up' : 'Sign In' }}</span>
