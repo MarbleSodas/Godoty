@@ -15,7 +15,11 @@ async function handleSubmit() {
   localError.value = null
   try {
     if (isSignUp.value) {
-      await authStore.signUpWithEmail(email.value, password.value)
+      const result = await authStore.signUpWithEmail(email.value, password.value)
+      // If confirmation is required, don't navigate - the UI will show the message
+      if (result.confirmationRequired) {
+        return
+      }
     } else {
       await authStore.signInWithEmail(email.value, password.value)
     }
@@ -46,6 +50,17 @@ async function handleOAuth(provider: 'github' | 'google') {
       <!-- Error Message -->
       <div v-if="localError || authStore.error" class="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-md text-red-200 text-sm">
         {{ localError || authStore.error }}
+      </div>
+
+      <!-- Email Confirmation Pending Message -->
+      <div v-if="authStore.confirmationPending" class="mb-4 p-4 bg-green-900/30 border border-green-700 rounded-md text-center">
+        <div class="text-green-400 text-lg mb-2">✓ Check your email</div>
+        <p class="text-godot-text text-sm">
+          We've sent a confirmation link to <strong class="text-godot-blue">{{ authStore.confirmationEmail }}</strong>
+        </p>
+        <p class="text-godot-muted text-xs mt-2">
+          Click the link in the email to complete your sign up.
+        </p>
       </div>
 
       <!-- Auth Form -->

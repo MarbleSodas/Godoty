@@ -62,9 +62,9 @@ cd Godoty
 
 ```bash
 cd brain
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+pip install -r requirements.txt  # For development: pip install -r requirements-dev.txt
 ```
 
 ### 3. Configure Environment

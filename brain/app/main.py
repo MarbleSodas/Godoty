@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.agents import get_db
-from app.agents.tools import resolve_response, set_ws_connection, set_connection_manager
+from app.agents.tools import resolve_response, set_ws_connection, set_connection_manager, set_project_path, clear_pending_requests
 from app.protocol.jsonrpc import (
     ConfirmationRequest,
     ConfirmationResponse,
@@ -235,6 +235,8 @@ async def godot_ws_endpoint(ws: WebSocket) -> None:
     finally:
         await connections.set_godot(None)
         set_ws_connection(None)
+        set_project_path(None)  # Clear project path for scoped file tools
+        clear_pending_requests()  # Clean up any pending tool requests
 
 
 @app.websocket("/ws/tauri")
@@ -283,10 +285,14 @@ async def _handle_godot_request(conn: GodotConnection, req: JsonRpcRequest) -> s
         conn.project_path = (req.params or {}).get("project_path")
         conn.godot_version = params.godot_version
         
+        # Set project path for scoped file tools
+        if conn.project_path:
+            set_project_path(conn.project_path)
+        
         # Register this Godot connection
         await connections.set_godot(conn)
         
-        logger.info(f"Godot handshake: project={params.project_name}")
+        logger.info(f"Godot handshake: project={params.project_name}, path={conn.project_path}")
         
         return _success(req.id, {
             "client": params.client,

@@ -18,6 +18,19 @@ mkdir -p "$OUTPUT_DIR"
 # Navigate to brain directory
 cd "$BRAIN_DIR"
 
+# Activate virtual environment
+if [ -d ".venv" ]; then
+    echo "🐍 Activating virtual environment..."
+    source .venv/bin/activate
+else
+    echo "❌ No .venv found. Please create a venv first:"
+    echo "   cd brain && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+    exit 1
+fi
+
+# Verify we're using the correct Python
+echo "🐍 Using Python: $(which python3) ($(python3 --version))"
+
 # Determine target triple based on OS
 get_target_triple() {
     local OS=$(uname -s)
@@ -50,9 +63,9 @@ get_target_triple() {
 TARGET_TRIPLE=$(get_target_triple)
 echo "📦 Target: $TARGET_TRIPLE"
 
-# Check if PyInstaller is installed
+# Check if PyInstaller is installed in the venv
 if ! command -v pyinstaller &> /dev/null; then
-    echo "📥 Installing PyInstaller..."
+    echo "📥 Installing PyInstaller in venv..."
     pip install pyinstaller
 fi
 

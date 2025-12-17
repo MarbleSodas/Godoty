@@ -30,6 +30,10 @@ _ws_connection: Any = None
 # This enables routing confirmations through Tauri
 _connection_manager: Any = None
 
+# Global project path for scoped file operations
+# Set when Godot connects with a project, cleared on disconnect
+_project_path: str | None = None
+
 _pending_requests: dict[int, asyncio.Future] = {}
 _request_id_counter = 1000
 
@@ -54,6 +58,36 @@ def set_connection_manager(manager: Any) -> None:
 def get_connection_manager() -> Any:
     """Get the ConnectionManager for HITL confirmations."""
     return _connection_manager
+
+
+def set_project_path(path: str | None) -> None:
+    """Set the current Godot project path.
+    
+    Called when Godot connects with a project. This path is used
+    to scope file operations to prevent access outside the project.
+    
+    Args:
+        path: Absolute path to the Godot project root, or None to clear
+    """
+    global _project_path
+    _project_path = path
+
+
+def get_project_path() -> str | None:
+    """Get the current Godot project path."""
+    return _project_path
+
+
+def clear_pending_requests() -> None:
+    """Clear all pending requests when connection is lost.
+    
+    This should be called when the Godot WebSocket disconnects to prevent
+    orphaned futures from accumulating.
+    """
+    for request_id, future in list(_pending_requests.items()):
+        if not future.done():
+            future.set_exception(ConnectionError("Godot connection closed"))
+    _pending_requests.clear()
 
 
 async def _send_request(method: str, params: dict | None = None) -> Any:
@@ -563,6 +597,240 @@ async def get_code_completions(
 
 
 # ============================================================================
+# Scoped File Tools (Project-Restricted)
+# ============================================================================
+
+
+def _validate_path_in_project(relative_path: str) -> "Path":
+    """Validate a path is within the project and return the absolute path.
+    
+    Security: Uses Path.resolve() to handle '..' traversal and symlinks.
+    The resolved path must still be under the project root.
+    
+    Args:
+        relative_path: A path relative to the project root
+        
+    Returns:
+        Absolute Path object pointing to the validated location
+        
+    Raises:
+        ValueError: If no project is connected or path escapes project
+    """
+    from pathlib import Path
+    
+    if _project_path is None:
+        raise ValueError("No Godot project connected")
+    
+    project_root = Path(_project_path).resolve()
+    
+    # Handle both relative and absolute paths
+    if Path(relative_path).is_absolute():
+        target_path = Path(relative_path).resolve()
+    else:
+        target_path = (project_root / relative_path).resolve()
+    
+    # Security check: ensure resolved path is within project
+    try:
+        target_path.relative_to(project_root)
+    except ValueError:
+        raise ValueError(
+            f"Path '{relative_path}' escapes project directory. "
+            f"Only files within the project are accessible."
+        )
+    
+    return target_path
+
+
+async def list_project_files(
+    directory: str = "",
+    pattern: str = "*",
+    recursive: bool = False,
+) -> list[dict]:
+    """List files in a project directory.
+    
+    Args:
+        directory: Directory path relative to project root (empty = root)
+        pattern: Glob pattern to filter files (e.g., '*.gd', '*.tscn')
+        recursive: If True, search recursively in subdirectories
+        
+    Returns:
+        List of file info dicts with 'name', 'path', 'is_dir', 'size' keys
+    """
+    from pathlib import Path
+    
+    try:
+        target_dir = _validate_path_in_project(directory) if directory else Path(_project_path).resolve()
+    except ValueError as e:
+        return [{"error": str(e)}]
+    
+    if not target_dir.is_dir():
+        return [{"error": f"'{directory}' is not a directory"}]
+    
+    try:
+        if recursive:
+            files = list(target_dir.rglob(pattern))
+        else:
+            files = list(target_dir.glob(pattern))
+        
+        # Limit results to prevent overwhelming context
+        max_files = 100
+        if len(files) > max_files:
+            files = files[:max_files]
+        
+        project_root = Path(_project_path).resolve()
+        return [
+            {
+                "name": f.name,
+                "path": str(f.relative_to(project_root)),
+                "is_dir": f.is_dir(),
+                "size": f.stat().st_size if f.is_file() else None,
+            }
+            for f in sorted(files)
+        ]
+    except Exception as e:
+        return [{"error": f"Failed to list files: {e}"}]
+
+
+async def read_file(path: str) -> str:
+    """Read a file from the Godot project.
+    
+    This tool reads files directly from the filesystem, unlike read_project_file
+    which routes through the Godot plugin. Use this for files that don't need
+    to be open in the editor.
+    
+    Args:
+        path: File path relative to project root (e.g., 'scripts/player.gd')
+        
+    Returns:
+        The file contents as a string, or an error message
+    """
+    try:
+        target_path = _validate_path_in_project(path)
+    except ValueError as e:
+        return f"Error: {e}"
+    
+    if not target_path.is_file():
+        return f"Error: '{path}' is not a file or does not exist"
+    
+    try:
+        return target_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return f"Error: '{path}' is not a text file (binary content)"
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+async def write_file(
+    path: str,
+    content: str,
+    *,
+    create_dirs: bool = False,
+) -> dict:
+    """Write content to a file in the Godot project.
+    
+    IMPORTANT: This tool requires HITL confirmation before execution.
+    
+    Args:
+        path: File path relative to project root
+        content: The content to write
+        create_dirs: If True, create parent directories if they don't exist
+        
+    Returns:
+        Result dictionary with success status and message
+    """
+    try:
+        target_path = _validate_path_in_project(path)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    
+    # Request HITL confirmation via Tauri
+    approved = await _request_hitl_confirmation(
+        action_type="write_file",
+        description=f"Write to file: {path}",
+        details={
+            "path": path,
+            "content": content,
+            "create_dirs": create_dirs,
+        },
+    )
+    
+    if not approved:
+        return {
+            "success": False,
+            "message": "Operation denied by user",
+            "denied": True,
+        }
+    
+    try:
+        if create_dirs:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        target_path.write_text(content, encoding="utf-8")
+        return {"success": True, "message": f"File written: {path}"}
+    except Exception as e:
+        return {"success": False, "message": f"Failed to write file: {e}"}
+
+
+async def delete_file(path: str) -> dict:
+    """Delete a file from the Godot project.
+    
+    IMPORTANT: This tool requires HITL confirmation before execution.
+    
+    Args:
+        path: File path relative to project root
+        
+    Returns:
+        Result dictionary with success status and message
+    """
+    try:
+        target_path = _validate_path_in_project(path)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    
+    if not target_path.exists():
+        return {"success": False, "message": f"File not found: {path}"}
+    
+    if target_path.is_dir():
+        return {"success": False, "message": f"'{path}' is a directory, not a file"}
+    
+    # Request HITL confirmation via Tauri
+    approved = await _request_hitl_confirmation(
+        action_type="delete_file",
+        description=f"Delete file: {path}",
+        details={"path": path},
+    )
+    
+    if not approved:
+        return {
+            "success": False,
+            "message": "Operation denied by user",
+            "denied": True,
+        }
+    
+    try:
+        target_path.unlink()
+        return {"success": True, "message": f"File deleted: {path}"}
+    except Exception as e:
+        return {"success": False, "message": f"Failed to delete file: {e}"}
+
+
+async def file_exists(path: str) -> bool:
+    """Check if a file or directory exists in the Godot project.
+    
+    Args:
+        path: Path relative to project root
+        
+    Returns:
+        True if the file/directory exists, False otherwise
+    """
+    try:
+        target_path = _validate_path_in_project(path)
+        return target_path.exists()
+    except ValueError:
+        return False
+
+
+# ============================================================================
 # Exported tool list for agents
 # ============================================================================
 
@@ -578,6 +846,12 @@ __all__ = [
     "set_project_setting",
     "create_node",
     "delete_node",
+    # Scoped file tools
+    "list_project_files",
+    "read_file",
+    "write_file",
+    "delete_file",
+    "file_exists",
     # Knowledge & LSP
     "query_godot_docs",
     "get_symbol_info",
@@ -587,5 +861,9 @@ __all__ = [
     "get_ws_connection",
     "set_connection_manager",
     "get_connection_manager",
+    "set_project_path",
+    "get_project_path",
     "resolve_response",
+    "clear_pending_requests",
 ]
+

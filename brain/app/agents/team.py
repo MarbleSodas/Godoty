@@ -25,12 +25,18 @@ from app.agents.tools import (
     get_project_settings,
     get_scene_tree,
     request_screenshot,
-    # Actuation tools
+    # Actuation tools (Godot RPC)
     create_node,
     delete_node,
     read_project_file,
     set_project_setting,
     write_project_file,
+    # Scoped file tools (direct filesystem)
+    list_project_files,
+    read_file,
+    write_file,
+    delete_file,
+    file_exists,
     # Knowledge & LSP tools
     query_godot_docs,
     get_symbol_info,
@@ -261,11 +267,18 @@ def create_coder_agent() -> Agent:
             "Never modify files without explicit user approval through the HITL system."
         ),
         tools=[
+            # Godot RPC tools (for open editor files)
             read_project_file,
             write_project_file,
             create_node,
             delete_node,
             set_project_setting,
+            # Scoped file tools (direct filesystem access)
+            list_project_files,
+            read_file,
+            write_file,
+            delete_file,
+            file_exists,
             # Knowledge tools for API reference
             query_godot_docs,
             get_symbol_info,
@@ -292,7 +305,17 @@ def create_architect_agent() -> Agent:
             "script implementations, UI components, and scene setup. Output a clear task list "
             "that the Lead can delegate to specialized agents."
         ),
-        tools=[read_project_file, get_scene_tree, query_godot_docs],  # Read-only tools + docs
+        tools=[
+            # Read-only Godot RPC tools
+            read_project_file,
+            get_scene_tree,
+            # Read-only scoped file tools
+            list_project_files,
+            read_file,
+            file_exists,
+            # Knowledge tools
+            query_godot_docs,
+        ],
         description="Plans and decomposes complex multi-step features",
         expected_output="Structured implementation plan with: Overview, Prerequisites, Task List, Files to Create/Modify, and Potential Challenges",
         markdown=True,

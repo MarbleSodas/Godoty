@@ -42,7 +42,7 @@ const LIFETIME_METRICS_KEY = 'godoty_lifetime_metrics'
 
 export interface PendingConfirmation {
   id: string
-  action_type: 'write_file' | 'set_setting' | 'create_node' | 'delete_node'
+  action_type: 'write_file' | 'set_setting' | 'create_node' | 'delete_node' | 'delete_file'
   description: string
   details: {
     path?: string
@@ -266,6 +266,12 @@ export const useBrainStore = defineStore('brain', () => {
   }
 
   function disconnectWebSocket() {
+    // Reject all pending requests to prevent memory leaks
+    for (const [_id, { reject }] of pendingRequests.entries()) {
+      reject(new Error('WebSocket disconnected'))
+    }
+    pendingRequests.clear()
+
     if (ws) {
       ws.close()
       ws = null

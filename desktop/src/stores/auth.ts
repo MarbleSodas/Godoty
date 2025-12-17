@@ -32,6 +32,10 @@ export const useAuthStore = defineStore('auth', () => {
   const initialized = ref(false)
   const initPromise = ref<Promise<void> | null>(null)
 
+  // Email confirmation state
+  const confirmationPending = ref(false)
+  const confirmationEmail = ref<string | null>(null)
+
   // Model selection state
   const selectedModel = ref<ModelId>(getSelectedModel())
   const availableModels = ref<ModelInfo[]>([])
@@ -260,17 +264,37 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function signUpWithEmail(email: string, password: string) {
+  async function signUpWithEmail(email: string, password: string): Promise<{ confirmationRequired: boolean }> {
     loading.value = true
     error.value = null
+    confirmationPending.value = false
+    confirmationEmail.value = null
+
     try {
+      // Use the desktop callback URL so email confirmation links redirect back to the desktop app
+      const emailRedirectUrl = 'https://godoty.app/auth/desktop-callback'
+
       const { data, error: authError } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          emailRedirectTo: emailRedirectUrl,
+        },
       })
       if (authError) throw authError
+
       session.value = data.session
       user.value = data.user
+
+      // If session is null but user exists, email confirmation is pending
+      // Supabase returns user data but no session when confirmation is required
+      if (data.user && !data.session) {
+        confirmationPending.value = true
+        confirmationEmail.value = email
+        return { confirmationRequired: true }
+      }
+
+      return { confirmationRequired: false }
     } catch (e) {
       error.value = (e as Error).message
       throw e
@@ -286,10 +310,8 @@ export const useAuthStore = defineStore('auth', () => {
       // In Tauri desktop apps, we need to:
       // 1. Get the OAuth URL with skipBrowserRedirect
       // 2. Open it in the system browser via Tauri shell plugin
-      // 3. The redirect will come back to localhost:1420 which Tauri serves
-      const redirectUrl = import.meta.env.DEV
-        ? 'http://localhost:1420'
-        : window.location.origin
+      // 3. The web callback at godoty.app/auth/desktop-callback will redirect to godoty://auth/callback
+      const redirectUrl = 'https://godoty.app/auth/desktop-callback'
 
       const { data, error: authError } = await supabase.auth.signInWithOAuth({
         provider,
@@ -345,6 +367,63 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * Handle deep link authentication callback
+   * @param url The deep link URL (e.g. godoty://auth/callback?access_token=...&refresh_token=...)
+   */
+  async function handleDeepLink(url: string) {
+    loading.value = true
+    try {
+      // Parse the URL to get tokens or code
+      // Note: Don't log the full URL as it contains sensitive tokens
+      const urlObj = new URL(url)
+      const accessToken = urlObj.searchParams.get('access_token')
+      const refreshToken = urlObj.searchParams.get('refresh_token')
+      const code = urlObj.searchParams.get('code')
+      const errorDescription = urlObj.searchParams.get('error_description')
+
+      if (errorDescription) {
+        throw new Error(errorDescription)
+      }
+
+      // If we have access_token and refresh_token, use setSession directly
+      // This is the preferred path - the web callback already exchanged the code
+      if (accessToken && refreshToken) {
+        const { data, error: authError } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        })
+        if (authError) throw authError
+
+        session.value = data.session
+        user.value = data.user
+
+        if (data.session) {
+          await ensureVirtualKey()
+          await refreshModels()
+        }
+      } else if (code) {
+        // Fallback: try to exchange code for session
+        // This may fail if code_verifier is not available
+        const { data, error: authError } = await supabase.auth.exchangeCodeForSession(code)
+        if (authError) throw authError
+
+        session.value = data.session
+        user.value = data.user
+
+        if (data.session) {
+          await ensureVirtualKey()
+          await refreshModels()
+        }
+      }
+    } catch (e) {
+      error.value = (e as Error).message
+      console.error('Deep link auth error:', e)
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
     // State
     user,
@@ -352,8 +431,8 @@ export const useAuthStore = defineStore('auth', () => {
     loading,
     error,
     initialized,
-
-    // Virtual key state (includes balance)
+    confirmationPending,
+    confirmationEmail,
     virtualKeyInfo,
     keyLoading,
     keyError,
@@ -389,5 +468,6 @@ export const useAuthStore = defineStore('auth', () => {
     setSelectedModelId,
     toggleKeyVisibility,
     openPricingPage,
+    handleDeepLink,
   }
 })

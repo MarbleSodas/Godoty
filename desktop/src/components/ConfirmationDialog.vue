@@ -19,6 +19,7 @@ const actionLabel = computed(() => {
     case 'set_setting': return 'Change Setting'
     case 'create_node': return 'Create Node'
     case 'delete_node': return 'Delete Node'
+    case 'delete_file': return 'Delete File'
     default: return 'Action'
   }
 })
@@ -29,6 +30,7 @@ const actionIcon = computed(() => {
     case 'set_setting': return '⚙️'
     case 'create_node': return '➕'
     case 'delete_node': return '🗑️'
+    case 'delete_file': return '🗑️'
     default: return '❓'
   }
 })

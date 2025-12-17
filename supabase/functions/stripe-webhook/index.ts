@@ -5,8 +5,9 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': 'https://godoty.app',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, stripe-signature',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
 // Credit package mapping: price_id -> credit amount (in USD)
@@ -25,31 +26,31 @@ async function verifyStripeSignature(
     const parts = signature.split(',')
     let timestamp = ''
     let sig = ''
-    
+
     for (const part of parts) {
         const [key, value] = part.split('=')
         if (key === 't') timestamp = value
         if (key === 'v1') sig = value
     }
-    
+
     if (!timestamp || !sig) {
         console.error('Missing timestamp or signature in header')
         return false
     }
-    
+
     // Check timestamp tolerance (5 min)
     const now = Math.floor(Date.now() / 1000)
     if (Math.abs(now - parseInt(timestamp)) > 300) {
         console.error('Timestamp too old:', timestamp, 'now:', now)
         return false
     }
-    
+
     // Compute expected signature using Web Crypto API
     const signedPayload = `${timestamp}.${payload}`
     const encoder = new TextEncoder()
     const keyData = encoder.encode(secret)
     const msgData = encoder.encode(signedPayload)
-    
+
     const cryptoKey = await crypto.subtle.importKey(
         'raw',
         keyData,
@@ -57,12 +58,12 @@ async function verifyStripeSignature(
         false,
         ['sign']
     )
-    
+
     const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, msgData)
     const computedSig = Array.from(new Uint8Array(signatureBuffer))
         .map(b => b.toString(16).padStart(2, '0'))
         .join('')
-    
+
     const isValid = computedSig === sig
     if (!isValid) {
         console.error('Signature mismatch')
@@ -82,7 +83,7 @@ serve(async (req) => {
         // Get Stripe secrets
         const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')
         const stripeSecretKey = Deno.env.get('STRIPE_SECRET_KEY')
-        
+
         if (!webhookSecret) {
             console.error('Missing STRIPE_WEBHOOK_SECRET')
             return new Response(
@@ -94,7 +95,7 @@ serve(async (req) => {
         // Get raw body and signature
         const body = await req.text()
         const signature = req.headers.get('stripe-signature')
-        
+
         console.log('Signature present:', !!signature, 'Body length:', body.length)
 
         if (!signature) {
@@ -146,7 +147,7 @@ serve(async (req) => {
             `https://api.stripe.com/v1/checkout/sessions/${session.id}/line_items`,
             { headers: { 'Authorization': `Bearer ${stripeSecretKey}` } }
         )
-        
+
         if (!lineItemsResponse.ok) {
             console.error('Failed to fetch line items:', await lineItemsResponse.text())
             return new Response(
@@ -286,8 +287,8 @@ serve(async (req) => {
         console.log(`SUCCESS: +${creditAmount} credits for user ${userId}`)
 
         return new Response(
-            JSON.stringify({ 
-                success: true, 
+            JSON.stringify({
+                success: true,
                 user_id: userId,
                 credits_added: creditAmount,
                 new_budget: newMaxBudget

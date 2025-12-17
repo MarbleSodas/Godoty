@@ -170,7 +170,7 @@ function openInPanel(wrapper: HTMLElement) {
                     </template>
                     
                     <!-- Streaming indicator -->
-                    <span v-if="isStreaming" class="text-[#478cbf] flex items-center gap-1">
+                    <span v-if="isStreaming && props.message.content" class="text-[#478cbf] flex items-center gap-1">
                         <span class="w-1 h-1 bg-[#478cbf] rounded-full animate-ping"></span>
                         streaming...
                     </span>
