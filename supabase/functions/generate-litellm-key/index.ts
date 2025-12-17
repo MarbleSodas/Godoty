@@ -12,6 +12,11 @@
 // - Only one active key per user account
 // - Returns cached key if valid, only generates new key if expired/missing
 // - Deletes old LiteLLM key before generating new one to prevent accumulation
+//
+// SECURITY:
+// - Database-level rate limiting (5 key generations per hour per user)
+// - In-memory deduplication for concurrent requests
+// - JWT verification for all requests
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -27,6 +32,14 @@ interface LiteLLMUserInfo {
   max_budget?: number | null
   spend?: number
   user_email?: string
+}
+
+interface RateLimitResult {
+  allowed: boolean
+  remaining: number
+  reset_at: string
+  current_count: number
+  max_requests: number
 }
 
 // In-memory lock to prevent concurrent key generation for same user+device
@@ -81,7 +94,40 @@ serve(async (req) => {
     // Create the actual handler as a promise
     const handleRequest = async (): Promise<Response> => {
       try {
-        // 4. Check if user already has a valid key in our database
+        // 4. Check database-level rate limit (5 key generations per hour)
+        const { data: rateLimitResult, error: rateLimitError } = await supabase
+          .rpc('check_key_generation_limit', { p_user_id: user.id })
+
+        if (rateLimitError) {
+          console.error('Rate limit check failed:', rateLimitError)
+          // Continue anyway - fail open for rate limiting errors
+        } else {
+          const rateLimit = rateLimitResult as RateLimitResult
+          if (!rateLimit.allowed) {
+            const resetAt = new Date(rateLimit.reset_at)
+            return new Response(
+              JSON.stringify({
+                error: 'Rate limit exceeded',
+                message: `Too many key generation requests. Try again after ${resetAt.toISOString()}`,
+                reset_at: rateLimit.reset_at,
+                remaining: rateLimit.remaining
+              }),
+              {
+                status: 429,
+                headers: {
+                  ...corsHeaders,
+                  'Content-Type': 'application/json',
+                  'Retry-After': Math.ceil((resetAt.getTime() - Date.now()) / 1000).toString(),
+                  'X-RateLimit-Limit': rateLimit.max_requests.toString(),
+                  'X-RateLimit-Remaining': '0',
+                  'X-RateLimit-Reset': resetAt.toISOString()
+                }
+              }
+            )
+          }
+        }
+
+        // 5. Check if user already has a valid key in our database
         const { data: existingKey, error: keyFetchError } = await supabase
           .from('user_virtual_keys')
           .select('litellm_key, litellm_key_id, expires_at, allowed_models')
@@ -92,7 +138,7 @@ serve(async (req) => {
           console.warn('Error fetching existing key:', keyFetchError)
         }
 
-        // 5. Get LiteLLM configuration
+        // 6. Get LiteLLM configuration
         const litellmMasterKey = Deno.env.get('LITELLM_MASTER_KEY')
         const litellmUrlRaw = Deno.env.get('LITELLM_URL')
 
@@ -106,7 +152,7 @@ serve(async (req) => {
         // Sanitize URL: remove trailing slashes and optional /v1 suffix
         const litellmUrl = litellmUrlRaw.replace(/\/+$/, '').replace(/\/v1\/?$/, '')
 
-        // 6. Get user's current budget info from LiteLLM (budget is at USER level)
+        // 7. Get user's current budget info from LiteLLM (budget is at USER level)
         let userBudgetInfo = { maxBudget: '0.0000', spend: '0.0000', remainingBudget: '0.0000' }
 
         try {
@@ -128,7 +174,7 @@ serve(async (req) => {
           console.warn('Failed to fetch user budget info:', err)
         }
 
-        // 7. If valid key exists and hasn't expired, return it with current budget info
+        // 8. If valid key exists and hasn't expired, return it with current budget info
         if (existingKey && existingKey.litellm_key && new Date(existingKey.expires_at) > new Date()) {
           return new Response(
             JSON.stringify({
@@ -142,7 +188,7 @@ serve(async (req) => {
           )
         }
 
-        // 8. Ensure user exists in LiteLLM (create if not)
+        // 9. Ensure user exists in LiteLLM (create if not)
         try {
           const checkUserResponse = await fetch(`${litellmUrl}/user/info?user_id=${user.id}`, {
             headers: { 'Authorization': `Bearer ${litellmMasterKey}` }
@@ -167,7 +213,7 @@ serve(async (req) => {
           console.warn('Failed to ensure user exists:', err)
         }
 
-        // 9. Delete old key in LiteLLM if it exists (prevents key accumulation)
+        // 10. Delete old key in LiteLLM if it exists (prevents key accumulation)
         if (existingKey?.litellm_key_id) {
           try {
             await fetch(`${litellmUrl}/key/delete`, {
@@ -187,7 +233,7 @@ serve(async (req) => {
           }
         }
 
-        // 10. Generate key linked to user (budget controlled by user, not key)
+        // 11. Generate key linked to user (budget controlled by user, not key)
         const response = await fetch(`${litellmUrl}/key/generate`, {
           method: 'POST',
           headers: {
@@ -236,7 +282,7 @@ serve(async (req) => {
         // We set a long expiry for cache invalidation purposes only
         const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString() // 1 year
 
-        // 11. Store the key in our database for caching
+        // 12. Store the key in our database for caching
         // First delete any existing record for this user to avoid conflicts
         await supabase
           .from('user_virtual_keys')
@@ -260,7 +306,7 @@ serve(async (req) => {
           // Continue anyway - key was generated successfully
         }
 
-        // 12. Return the new key with current budget info
+        // 13. Return the new key with current budget info
         return new Response(
           JSON.stringify({
             apiKey: litellmData.key,

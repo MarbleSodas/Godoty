@@ -1,5 +1,11 @@
 // Supabase Edge Function: stripe-webhook
 // Handles Stripe webhooks to process successful payments and credit user's LiteLLM budget
+//
+// SECURITY:
+// - Stripe signature verification (HMAC-SHA256)
+// - Idempotent webhook processing (prevents duplicate credits)
+// - Rate limiting for purchase events
+// - Atomic transaction recording via SECURITY DEFINER function
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -15,6 +21,21 @@ const CREDIT_PACKAGES: Record<string, number> = {
     'price_1SeUdXExVVDh2wU3LoTcnc6A': 5,   // Starter Pack - $5 -> 5 credits
     'price_1SeUduExVVDh2wU3h4yLDftJ': 11,  // Pro Pack - $10 -> 11 credits (10% bonus)
     'price_1SeUeGExVVDh2wU3jdPd1Oil': 23,  // Premium Pack - $20 -> 23 credits (15% bonus)
+}
+
+interface IdempotencyResult {
+    already_processed: boolean
+    original_result?: unknown
+    processed_at?: string
+    webhook_id?: string
+}
+
+interface TransactionResult {
+    success: boolean
+    transaction_id?: string
+    duplicate?: boolean
+    error?: string
+    message?: string
 }
 
 // Helper to verify Stripe webhook signature manually
@@ -119,7 +140,7 @@ serve(async (req) => {
 
         // Parse the event
         const event = JSON.parse(body)
-        console.log('Event type:', event.type)
+        console.log('Event type:', event.type, 'Event ID:', event.id)
 
         // Only handle checkout.session.completed events
         if (event.type !== 'checkout.session.completed') {
@@ -127,6 +148,36 @@ serve(async (req) => {
                 JSON.stringify({ received: true, message: 'Event type not handled' }),
                 { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
             )
+        }
+
+        // Setup Supabase client with service role (for database operations)
+        const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+        const supabase = createClient(supabaseUrl, supabaseServiceKey)
+
+        // Check idempotency - has this webhook already been processed?
+        const { data: idempotencyCheck, error: idempotencyError } = await supabase
+            .rpc('process_webhook_idempotent', {
+                p_webhook_id: event.id,
+                p_webhook_type: 'stripe'
+            })
+
+        if (idempotencyError) {
+            console.error('Idempotency check failed:', idempotencyError)
+            // Continue anyway - prefer to risk duplicate than miss payment
+        } else {
+            const idempotency = idempotencyCheck as IdempotencyResult
+            if (idempotency.already_processed) {
+                console.log(`Webhook ${event.id} already processed at ${idempotency.processed_at}`)
+                return new Response(
+                    JSON.stringify({
+                        received: true,
+                        message: 'Already processed',
+                        original_result: idempotency.original_result
+                    }),
+                    { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+                )
+            }
         }
 
         const session = event.data.object
@@ -178,11 +229,6 @@ serve(async (req) => {
         }
 
         console.log('Credit amount:', creditAmount)
-
-        // Setup Supabase client
-        const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-        const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
         // Get LiteLLM configuration
         const litellmMasterKey = Deno.env.get('LITELLM_MASTER_KEY')
@@ -269,30 +315,56 @@ serve(async (req) => {
             )
         }
 
-        // Record transaction (best effort)
-        try {
-            await supabase.from('credit_transactions').insert({
-                user_id: userId,
-                amount: creditAmount,
-                type: 'purchase',
-                stripe_session_id: session.id,
-                stripe_payment_intent: session.payment_intent,
-                previous_budget: currentMaxBudget,
-                new_budget: newMaxBudget
+        // Record transaction atomically using SECURITY DEFINER function
+        const { data: transactionResult, error: transactionError } = await supabase
+            .rpc('record_credit_transaction', {
+                p_user_id: userId,
+                p_amount: creditAmount,
+                p_type: 'purchase',
+                p_stripe_session_id: session.id,
+                p_stripe_payment_intent: session.payment_intent,
+                p_previous_budget: currentMaxBudget,
+                p_new_budget: newMaxBudget,
+                p_notes: `Stripe checkout: ${priceId}`
             })
+
+        if (transactionError) {
+            console.error('Transaction recording error:', transactionError)
+            // Don't fail the webhook - budget was already updated in LiteLLM
+        } else {
+            const txResult = transactionResult as TransactionResult
+            if (txResult.duplicate) {
+                console.log('Transaction was duplicate, already recorded:', txResult.transaction_id)
+            } else if (txResult.success) {
+                console.log('Transaction recorded:', txResult.transaction_id)
+            } else {
+                console.error('Transaction recording failed:', txResult.error)
+            }
+        }
+
+        // Update the idempotency record with the result
+        const resultPayload = {
+            success: true,
+            user_id: userId,
+            credits_added: creditAmount,
+            new_budget: newMaxBudget,
+            transaction_id: (transactionResult as TransactionResult)?.transaction_id
+        }
+
+        // Update webhook record with result (best effort)
+        try {
+            await supabase
+                .from('processed_webhooks')
+                .update({ result: resultPayload })
+                .eq('webhook_id', event.id)
         } catch (err) {
-            console.warn('Failed to record transaction:', err)
+            console.warn('Failed to update webhook result:', err)
         }
 
         console.log(`SUCCESS: +${creditAmount} credits for user ${userId}`)
 
         return new Response(
-            JSON.stringify({
-                success: true,
-                user_id: userId,
-                credits_added: creditAmount,
-                new_budget: newMaxBudget
-            }),
+            JSON.stringify(resultPayload),
             { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
 
