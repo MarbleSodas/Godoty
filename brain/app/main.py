@@ -14,7 +14,10 @@ import asyncio
 import json
 import logging
 import os
+import signal
+import sys
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,7 +47,74 @@ REMOTE_PROXY_URL = os.getenv(
     "https://litellm-production-150c.up.railway.app"
 )
 
-app = FastAPI(title="Godoty Brain")
+# Shutdown state
+_shutdown_event = asyncio.Event()
+_active_tasks: set[asyncio.Task] = set()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler for startup and shutdown."""
+    logger.info("[Brain] Starting up...")
+    
+    # Setup signal handlers for graceful shutdown
+    def handle_signal(signum, frame):
+        logger.info(f"[Brain] Received signal {signum}, initiating shutdown...")
+        _shutdown_event.set()
+        # Schedule the async shutdown
+        asyncio.get_event_loop().call_soon_threadsafe(
+            lambda: asyncio.create_task(_perform_shutdown())
+        )
+    
+    # Register signal handlers (SIGTERM for graceful shutdown)
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
+    
+    yield  # Application runs here
+    
+    # Shutdown cleanup
+    logger.info("[Brain] Shutting down...")
+    await _perform_shutdown()
+    logger.info("[Brain] Shutdown complete.")
+
+
+async def _perform_shutdown():
+    """Perform comprehensive cleanup on shutdown."""
+    _shutdown_event.set()
+    
+    # Close WebSocket connections gracefully
+    if connections.godot:
+        try:
+            await connections.godot.ws.close(code=1001, reason="Server shutting down")
+            logger.info("[Brain] Closed Godot WebSocket connection")
+        except Exception as e:
+            logger.warning(f"[Brain] Error closing Godot connection: {e}")
+    
+    if connections.tauri:
+        try:
+            await connections.tauri.ws.close(code=1001, reason="Server shutting down")
+            logger.info("[Brain] Closed Tauri WebSocket connection")
+        except Exception as e:
+            logger.warning(f"[Brain] Error closing Tauri connection: {e}")
+    
+    # Cancel all tracked async tasks
+    for task in _active_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+    _active_tasks.clear()
+    
+    # Clear pending tool requests
+    clear_pending_requests()
+    
+    logger.info("[Brain] All resources cleaned up")
+
+
+app = FastAPI(title="Godoty Brain", lifespan=lifespan)
 
 
 # ============================================================================
@@ -776,6 +846,30 @@ def status() -> dict[str, Any]:
     }
 
 
+@app.post("/shutdown")
+async def shutdown() -> dict[str, str]:
+    """Gracefully shutdown the brain server.
+    
+    Called by Tauri before killing the sidecar process.
+    Closes all connections and cleans up resources.
+    """
+    logger.info("[Brain] Shutdown requested via REST API")
+    
+    # Perform cleanup
+    await _perform_shutdown()
+    
+    # Schedule server shutdown after response is sent
+    # This gives time for the response to be sent back to Tauri
+    async def delayed_exit():
+        await asyncio.sleep(0.5)
+        logger.info("[Brain] Exiting process")
+        os._exit(0)
+    
+    asyncio.create_task(delayed_exit())
+    
+    return {"status": "shutting_down"}
+
+
 # ============================================================================
 # Helper Functions (for tools.py)
 # ============================================================================
@@ -783,8 +877,6 @@ def status() -> dict[str, Any]:
 
 def get_connection_manager() -> ConnectionManager:
     """Get the global connection manager (for use in tools.py)."""
-    return connections
-
     return connections
 
 

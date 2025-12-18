@@ -39,6 +39,7 @@ fn main() {
             sidecar::start_brain,
             sidecar::stop_brain,
             sidecar::get_brain_status,
+            sidecar::is_brain_ready,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -62,12 +62,14 @@ export const useBrainStore = defineStore('brain', () => {
 
   const connected = ref(false)
   const godotConnected = ref(false)
+  const brainReady = ref(false)  // Track if brain sidecar is responding
   const messages = ref<Message[]>([])
   const isProcessing = ref(false)
   const tokenCount = ref(0)
   const pendingConfirmation = ref<PendingConfirmation | null>(null)
   const error = ref<string | null>(null)
   const brainUrl = ref('ws://127.0.0.1:8000/ws/tauri')
+  const startupStatus = ref('Initializing...')  // Status text for splash screen
   const budgetExceeded = ref(false)  // Track if user ran out of credits
   const showPurchasePrompt = ref(false)  // Show purchase credits dialog
   const toast = ref<{ message: string; type: 'success' | 'error' | 'info' } | null>(null)  // Toast notification
@@ -159,11 +161,41 @@ export const useBrainStore = defineStore('brain', () => {
     godotVersion: string
   } | null>(null)
 
+  /**
+   * Check if the brain sidecar is ready and responding
+   */
+  async function checkBrainHealth(): Promise<boolean> {
+    try {
+      const ready = await invoke<boolean>('is_brain_ready')
+      brainReady.value = ready
+      return ready
+    } catch {
+      brainReady.value = false
+      return false
+    }
+  }
+
   async function startBrain() {
     try {
+      startupStatus.value = 'Starting brain sidecar...'
       await invoke('start_brain')
-      // Wait a bit for the server to start
-      await new Promise(resolve => setTimeout(resolve, 2000))
+
+      // Poll for brain readiness instead of arbitrary timeout
+      startupStatus.value = 'Waiting for brain to initialize...'
+      let ready = false
+      for (let i = 0; i < 30; i++) {
+        ready = await checkBrainHealth()
+        if (ready) break
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+
+      if (!ready) {
+        error.value = 'Brain failed to start within timeout'
+        return
+      }
+
+      startupStatus.value = 'Connecting to brain...'
+      brainReady.value = true
       connectWebSocket()
     } catch (e) {
       error.value = `Failed to start brain: ${(e as Error).message}`
@@ -673,6 +705,8 @@ export const useBrainStore = defineStore('brain', () => {
   return {
     connected,
     godotConnected,
+    brainReady,
+    startupStatus,
     messages,
     isProcessing,
     tokenCount,
@@ -688,6 +722,7 @@ export const useBrainStore = defineStore('brain', () => {
     sessionDuration,
     startBrain,
     stopBrain,
+    checkBrainHealth,
     connectWebSocket,
     disconnectWebSocket,
     sendUserMessage,

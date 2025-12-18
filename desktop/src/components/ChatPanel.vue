@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onUnmounted } from 'vue'
+import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useBrainStore } from '@/stores/brain'
 import { useAuthStore } from '@/stores/auth'
 import MessageBubble from './MessageBubble.vue'
@@ -49,12 +49,43 @@ function autoResize() {
 
 
 
-// Auto-scroll to bottom when new messages arrive
-watch(() => brainStore.messages.length, async () => {
-  await nextTick()
+// Track if user is near the bottom of the scroll area
+const userIsNearBottom = ref(true)
+const SCROLL_THRESHOLD = 150 // pixels from bottom to consider "near bottom"
+
+function checkIfNearBottom() {
   if (messagesContainer.value) {
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
+    userIsNearBottom.value = scrollHeight - scrollTop - clientHeight < SCROLL_THRESHOLD
+  }
+}
+
+function scrollToBottom() {
+  if (messagesContainer.value && userIsNearBottom.value) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
   }
+}
+
+// Computed to get the currently streaming message content (for watching)
+const streamingContent = computed(() => {
+  const streamingMsg = brainStore.messages.find(m => m.isStreaming)
+  return streamingMsg?.content || ''
+})
+
+// Auto-scroll when new messages arrive
+watch(() => brainStore.messages.length, async () => {
+  await nextTick()
+  // Always scroll to bottom on new message
+  if (messagesContainer.value) {
+    userIsNearBottom.value = true
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+  }
+})
+
+// Auto-scroll during streaming if user is near bottom
+watch(streamingContent, async () => {
+  await nextTick()
+  scrollToBottom()
 })
 
 // Focus input on mount
@@ -91,6 +122,7 @@ onUnmounted(() => {
     <div 
       ref="messagesContainer"
       class="flex-1 overflow-y-auto p-4 scroll-smooth"
+      @scroll="checkIfNearBottom"
     >
       <div class="max-w-3xl mx-auto space-y-6 pb-20">
           <!-- Empty State -->

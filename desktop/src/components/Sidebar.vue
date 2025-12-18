@@ -18,8 +18,10 @@ const brainStore = useBrainStore()
 // Deletion confirmation state
 const sessionToDelete = ref<string | null>(null)
 
-// Use sessions from the store
-const sessions = computed(() => sessionsStore.sessions)
+// Use sessions from the store, sorted by most recent
+const sessions = computed(() => 
+    [...sessionsStore.sessions].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+)
 const activeSessionId = computed(() => sessionsStore.activeSessionId)
 
 async function createNewSession() {
@@ -58,19 +60,30 @@ function cancelDelete() {
 }
 
 // Format date for display
-function formatDate(date: Date): string {
-    const now = new Date()
-    const diff = now.getTime() - date.getTime()
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+function formatDate(date: Date | string): string {
+    // Handle both Date objects and string timestamps
+    const d = date instanceof Date ? date : new Date(date)
     
-    if (days === 0) {
+    // Check for invalid date
+    if (isNaN(d.getTime())) {
+        return 'Unknown'
+    }
+    
+    const now = new Date()
+    
+    // Compare dates by day (not by time)
+    const dateDay = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const diffDays = Math.floor((today.getTime() - dateDay.getTime()) / (1000 * 60 * 60 * 24))
+    
+    if (diffDays === 0) {
         return 'Today'
-    } else if (days === 1) {
+    } else if (diffDays === 1) {
         return 'Yesterday'
-    } else if (days < 7) {
-        return `${days} days ago`
+    } else if (diffDays < 7) {
+        return `${diffDays} days ago`
     } else {
-        return date.toLocaleDateString()
+        return d.toLocaleDateString()
     }
 }
 </script>

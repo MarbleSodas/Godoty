@@ -3,17 +3,18 @@ import { RouterView, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBrainStore } from '@/stores/brain'
 import { onMounted, onBeforeUnmount } from 'vue'
+import SplashScreen from '@/components/SplashScreen.vue'
 
 const authStore = useAuthStore()
 const brainStore = useBrainStore()
 const router = useRouter()
 
 onMounted(async () => {
-  // Initialize auth state
-  await authStore.initialize()
-  
-  // Start the brain sidecar
+  // Start the brain sidecar first (shows splash screen during this)
   await brainStore.startBrain()
+  
+  // Initialize auth state after brain is ready
+  await authStore.initialize()
   
   // Listen for deep links (e.g. auth callbacks)
   // We use the dynamic import to avoid SSR issues if any, though here it's SPA
@@ -43,7 +44,15 @@ onBeforeUnmount(async () => {
 </script>
 
 <template>
-  <div class="h-screen w-screen flex flex-col overflow-hidden">
+  <!-- Show splash screen until brain is ready -->
+  <SplashScreen 
+    v-if="!brainStore.brainReady" 
+    :status="brainStore.startupStatus" 
+  />
+  
+  <!-- Main app content after brain is ready -->
+  <div v-else class="h-screen w-screen flex flex-col overflow-hidden">
     <RouterView />
   </div>
 </template>
+
