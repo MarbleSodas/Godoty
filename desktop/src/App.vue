@@ -2,18 +2,30 @@
 import { RouterView, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBrainStore } from '@/stores/brain'
-import { onMounted, onBeforeUnmount } from 'vue'
+import { onMounted, onBeforeUnmount, computed } from 'vue'
 import SplashScreen from '@/components/SplashScreen.vue'
 
 const authStore = useAuthStore()
 const brainStore = useBrainStore()
 const router = useRouter()
 
-onMounted(async () => {
-  // Start the brain sidecar first (shows splash screen during this)
-  await brainStore.startBrain()
+// Determine if we should block the UI with the splash screen
+const shouldShowSplash = computed(() => {
+  // Always wait for auth initialization
+  if (!authStore.initialized) return true
   
-  // Initialize auth state after brain is ready
+  // If user is NOT authenticated, show login screen immediately (don't wait for brain)
+  if (!authStore.isAuthenticated) return false
+  
+  // If user IS authenticated, wait for brain to be ready
+  return !brainStore.brainReady
+})
+
+onMounted(async () => {
+  // Start the brain sidecar in background (don't block auth)
+  brainStore.startBrain()
+  
+  // Initialize auth state immediately
   await authStore.initialize()
   
   // Listen for deep links (e.g. auth callbacks)
@@ -44,13 +56,13 @@ onBeforeUnmount(async () => {
 </script>
 
 <template>
-  <!-- Show splash screen until brain is ready -->
+  <!-- Show splash screen until brain is ready (or auth determines we need login) -->
   <SplashScreen 
-    v-if="!brainStore.brainReady" 
+    v-if="shouldShowSplash" 
     :status="brainStore.startupStatus" 
   />
   
-  <!-- Main app content after brain is ready -->
+  <!-- Main app content -->
   <div v-else class="h-screen w-screen flex flex-col overflow-hidden">
     <RouterView />
   </div>
