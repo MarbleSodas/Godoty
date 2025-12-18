@@ -70,7 +70,7 @@ class GodotDocsKnowledge:
     
     def __init__(
         self,
-        version: str = "4.3",
+        version: str = "4.5",
         db_path: Path | None = None,
         use_local_embeddings: bool = True,
     ):
@@ -268,7 +268,7 @@ class GodotDocsKnowledge:
 
 
 def get_godot_knowledge(
-    version: str = "4.3",
+    version: str = "4.5",
     db_path: Path | None = None,
 ) -> GodotDocsKnowledge:
     """Get a cached GodotDocsKnowledge instance for the specified version.

@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBrainStore } from '@/stores/brain'
+
+interface IndexedVersion {
+  version: string
+  document_count: number
+  size_bytes: number
+}
 
 const router = useRouter()
 const authStore = useAuthStore()
 const brainStore = useBrainStore()
 const copySuccess = ref(false)
+
+const indexedVersions = ref<IndexedVersion[]>([])
+const deletingVersion = ref<string | null>(null)
+const reindexingVersion = ref<string | null>(null)
 
 // Check status on mount
 brainStore.checkKnowledgeStatus()
@@ -30,6 +40,47 @@ async function copyKeyToClipboard() {
     }, 2000)
   }
 }
+
+async function refreshIndexedVersions() {
+  const result = await brainStore.listIndexedVersions()
+  indexedVersions.value = result.versions
+}
+
+async function deleteVersion(version: string) {
+  deletingVersion.value = version
+  try {
+    await brainStore.deleteIndexedVersion(version)
+    await refreshIndexedVersions()
+    brainStore.showToast(`Deleted Godot ${version} documentation`, 'success')
+  } catch (e) {
+    brainStore.showToast(`Failed to delete: ${(e as Error).message}`, 'error')
+  } finally {
+    deletingVersion.value = null
+  }
+}
+
+async function reindexVersion(version: string) {
+  reindexingVersion.value = version
+  try {
+    await brainStore.reindexVersion(version)
+    brainStore.showToast(`Started reindexing Godot ${version} documentation`, 'info')
+  } catch (e) {
+    brainStore.showToast(`Failed to reindex: ${(e as Error).message}`, 'error')
+  } finally {
+    reindexingVersion.value = null
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+onMounted(() => {
+  brainStore.checkKnowledgeStatus()
+  refreshIndexedVersions()
+})
 </script>
 
 <template>
@@ -204,19 +255,34 @@ async function copyKeyToClipboard() {
         <h2 class="text-lg font-semibold mb-4 text-gray-200">Knowledge Base</h2>
         
         <div class="space-y-4">
+          <!-- Current Status -->
           <div>
-            <label class="block text-sm text-gray-400 mb-1">Godot Documentation</label>
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <span class="text-gray-200">Version {{ brainStore.knowledgeStatus.version }}</span>
+            <label class="block text-sm text-gray-400 mb-2">Current Documentation</label>
+            <div class="flex items-center justify-between bg-[#202531] rounded-lg p-3">
+              <div class="flex items-center gap-3">
                 <span 
-                  class="text-xs px-2 py-0.5 rounded-full border"
-                  :class="brainStore.knowledgeStatus.isIndexed ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'"
-                >
-                  {{ brainStore.knowledgeStatus.isIndexing ? 'Indexing...' : (brainStore.knowledgeStatus.isIndexed ? 'Indexed' : 'Not Indexed') }}
-                </span>
-                <span v-if="brainStore.knowledgeStatus.isIndexed" class="text-xs text-gray-400">
-                  ({{ brainStore.knowledgeStatus.documentCount }} documents)
+                  class="w-2.5 h-2.5 rounded-full"
+                  :class="{
+                    'bg-green-500': brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing,
+                    'bg-yellow-500 animate-pulse': brainStore.knowledgeStatus.isIndexing,
+                    'bg-gray-500': !brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing
+                  }"
+                ></span>
+                <div>
+                  <span class="text-gray-200">Godot {{ brainStore.knowledgeStatus.version }}</span>
+                  <span 
+                    class="ml-2 text-xs px-2 py-0.5 rounded-full"
+                    :class="{
+                      'bg-green-500/10 text-green-400': brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing,
+                      'bg-yellow-500/10 text-yellow-400': brainStore.knowledgeStatus.isIndexing,
+                      'bg-gray-500/10 text-gray-400': !brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing
+                    }"
+                  >
+                    {{ brainStore.knowledgeStatus.isIndexing ? 'Indexing...' : (brainStore.knowledgeStatus.isIndexed ? 'Ready' : 'Not Loaded') }}
+                  </span>
+                </div>
+                <span v-if="brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing" class="text-xs text-gray-500">
+                  {{ brainStore.knowledgeStatus.documentCount }} docs
                 </span>
               </div>
               
@@ -232,9 +298,11 @@ async function copyKeyToClipboard() {
                 <svg v-else xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
                 </svg>
-                {{ brainStore.knowledgeStatus.isIndexing ? 'Indexing...' : 'Reindex' }}
+                {{ brainStore.knowledgeStatus.isIndexing ? 'Indexing...' : 'Rebuild' }}
               </button>
             </div>
+            
+            <!-- Progress bar -->
             <div v-if="brainStore.knowledgeStatus.isIndexing && brainStore.knowledgeStatus.progress" class="mt-3">
               <div class="flex justify-between text-xs text-gray-400 mb-1">
                 <span>{{ brainStore.knowledgeStatus.progress.phase === 'embedding' ? 'Embedding...' : 'Fetching Classes...' }}</span>
@@ -247,10 +315,59 @@ async function copyKeyToClipboard() {
                 ></div>
               </div>
             </div>
-            <p class="text-xs text-gray-500 mt-2">
-              Re-download and index the official documentation. This process may take a few minutes.
-            </p>
           </div>
+          
+          <!-- Cached Versions -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="block text-sm text-gray-400">Cached Versions</label>
+              <button 
+                @click="refreshIndexedVersions()" 
+                class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                Refresh
+              </button>
+            </div>
+            
+            <div v-if="indexedVersions.length === 0" class="text-sm text-gray-500 bg-[#202531] rounded-lg p-3">
+              No cached documentation found
+            </div>
+            
+            <div v-else class="space-y-2">
+              <div 
+                v-for="v in indexedVersions" 
+                :key="v.version"
+                class="flex items-center justify-between bg-[#202531] rounded-lg p-3"
+              >
+                <div class="flex items-center gap-3">
+                  <span class="text-gray-200">Godot {{ v.version }}</span>
+                  <span class="text-xs text-gray-500">{{ v.document_count }} docs</span>
+                  <span class="text-xs text-gray-500">{{ formatBytes(v.size_bytes) }}</span>
+                </div>
+                
+                <div class="flex items-center gap-2">
+                  <button 
+                    @click="reindexVersion(v.version)"
+                    :disabled="reindexingVersion === v.version || brainStore.knowledgeStatus.isIndexing"
+                    class="px-2 py-1 text-xs bg-[#3b4458] hover:bg-[#4a5568] disabled:bg-[#2d3546] disabled:text-gray-500 text-gray-300 rounded transition-colors"
+                  >
+                    {{ reindexingVersion === v.version ? 'Rebuilding...' : 'Rebuild' }}
+                  </button>
+                  <button 
+                    @click="deleteVersion(v.version)"
+                    :disabled="deletingVersion === v.version"
+                    class="px-2 py-1 text-xs bg-red-900/30 hover:bg-red-900/50 disabled:bg-[#2d3546] text-red-400 hover:text-red-300 disabled:text-gray-500 rounded transition-colors"
+                  >
+                    {{ deletingVersion === v.version ? 'Deleting...' : 'Delete' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <p class="text-xs text-gray-500">
+            Documentation is automatically indexed when Godot connects. You can manually rebuild or delete cached versions.
+          </p>
         </div>
       </section>
 

@@ -13,6 +13,14 @@ export interface MessageMetrics {
   duration?: number
 }
 
+export interface ToolCall {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+  result?: string
+  status: 'running' | 'completed' | 'error'
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -20,6 +28,9 @@ export interface Message {
   timestamp: Date
   metrics?: MessageMetrics
   isStreaming?: boolean
+  toolCalls?: ToolCall[]
+  reasoning?: string[]
+  isReasoningActive?: boolean
 }
 
 export interface SessionMetrics {
@@ -105,6 +116,21 @@ export const useBrainStore = defineStore('brain', () => {
   const sessionDuration = computed(() => {
     if (!sessionMetrics.value.startTime) return 0
     return Math.floor((Date.now() - sessionMetrics.value.startTime) / 1000)
+  })
+
+  const knowledgeStatusText = computed(() => {
+    if (knowledgeStatus.value.isIndexing) {
+      if (knowledgeStatus.value.progress) {
+        const { current, total, phase } = knowledgeStatus.value.progress
+        const percent = Math.round((current / total) * 100)
+        return `${phase === 'embedding' ? 'Embedding' : 'Fetching'} ${percent}%`
+      }
+      return 'Indexing...'
+    }
+    if (knowledgeStatus.value.isIndexed) {
+      return 'Docs Ready'
+    }
+    return 'Docs Not Loaded'
   })
 
   // Load metrics from localStorage
@@ -357,13 +383,73 @@ export const useBrainStore = defineStore('brain', () => {
             }
           }
           break
+        case 'stream_tool_call':
+          // Handle tool call events
+          if (streamingMessageId.value) {
+            const msg = messages.value.find(m => m.id === streamingMessageId.value)
+            if (msg) {
+              const params = data.params as { status: string; tool: ToolCall }
+              if (!msg.toolCalls) msg.toolCalls = []
+
+              if (params.status === 'started') {
+                // Add new tool call
+                msg.toolCalls.push({
+                  id: params.tool.id,
+                  name: params.tool.name,
+                  arguments: params.tool.arguments || {},
+                  status: 'running',
+                })
+              } else if (params.status === 'completed') {
+                // Update existing tool call
+                const tc = msg.toolCalls.find(t => t.id === params.tool.id)
+                if (tc) {
+                  tc.status = 'completed'
+                  tc.result = params.tool.result
+                }
+              }
+            }
+          }
+          break
+        case 'stream_reasoning':
+          // Handle reasoning/thinking events
+          if (streamingMessageId.value) {
+            const msg = messages.value.find(m => m.id === streamingMessageId.value)
+            if (msg) {
+              const params = data.params as { status: string; content?: string }
+              if (!msg.reasoning) msg.reasoning = []
+
+              if (params.status === 'started') {
+                msg.isReasoningActive = true
+              } else if (params.status === 'step' && params.content) {
+                msg.reasoning.push(params.content)
+              } else if (params.status === 'completed') {
+                msg.isReasoningActive = false
+              }
+            }
+          }
+          break
         case 'stream_complete':
           // Finalize streaming message with metrics
           if (streamingMessageId.value) {
             const msg = messages.value.find(m => m.id === streamingMessageId.value)
             if (msg) {
               msg.isStreaming = false
-              const params = data.params as { metrics?: Record<string, unknown>; session_id?: string }
+              msg.isReasoningActive = false
+              const params = data.params as {
+                metrics?: Record<string, unknown>
+                session_id?: string
+                tool_calls?: ToolCall[]
+                reasoning?: string[]
+              }
+
+              // Set final tool calls and reasoning if provided
+              if (params.tool_calls && params.tool_calls.length > 0) {
+                msg.toolCalls = params.tool_calls
+              }
+              if (params.reasoning && params.reasoning.length > 0) {
+                msg.reasoning = params.reasoning
+              }
+
               if (params.metrics) {
                 msg.metrics = {
                   inputTokens: (params.metrics.input_tokens as number) || 0,
@@ -610,34 +696,36 @@ export const useBrainStore = defineStore('brain', () => {
     resetSessionMetrics()
   }
 
-  /**
-   * Load chat history for a session and switch to it
-   */
   async function loadSessionMessages(sessionId: string): Promise<void> {
-    // Get history from server
-    const history = await sessionsStore.getSessionHistory(sessionId)
+    isProcessing.value = true
+    error.value = null
 
-    // Clear current messages and load history
-    messages.value = history.map((msg, index) => ({
-      id: `history-${sessionId}-${index}`,
-      role: msg.role as 'user' | 'assistant' | 'system',
-      content: msg.content,
-      timestamp: new Date(),
-    }))
+    try {
+      const history = await sessionsStore.getSessionHistory(sessionId)
 
-    // Switch to the session
-    await sessionsStore.switchSession(sessionId)
+      messages.value = history.map((msg, index) => ({
+        id: `history-${sessionId}-${index}`,
+        role: msg.role as 'user' | 'assistant' | 'system',
+        content: msg.content,
+        timestamp: msg.created_at ? new Date(msg.created_at) : new Date(),
+      }))
 
-    // Load session metrics from the session data
-    const session = sessionsStore.sessions.find(s => s.id === sessionId)
-    if (session) {
-      sessionMetrics.value = {
-        totalTokens: session.totalTokens,
-        totalCost: session.totalCost,
-        messageCount: session.messageCount,
-        startTime: session.createdAt.getTime(),
+      await sessionsStore.switchSession(sessionId)
+
+      const session = sessionsStore.sessions.find(s => s.id === sessionId)
+      if (session) {
+        sessionMetrics.value = {
+          totalTokens: session.totalTokens,
+          totalCost: session.totalCost,
+          messageCount: session.messageCount,
+          startTime: session.createdAt.getTime(),
+        }
+        saveSessionMetrics()
       }
-      saveSessionMetrics()
+    } catch (e) {
+      error.value = `Failed to load session: ${(e as Error).message}`
+    } finally {
+      isProcessing.value = false
     }
   }
 
@@ -702,6 +790,23 @@ export const useBrainStore = defineStore('brain', () => {
     }
   }
 
+  async function listIndexedVersions(): Promise<{ versions: Array<{ version: string; document_count: number; size_bytes: number }> }> {
+    try {
+      return await sendRequest('list_indexed_versions') as { versions: Array<{ version: string; document_count: number; size_bytes: number }> }
+    } catch (e) {
+      console.warn('Failed to list indexed versions:', e)
+      return { versions: [] }
+    }
+  }
+
+  async function deleteIndexedVersion(version: string): Promise<void> {
+    await sendRequest('delete_indexed_version', { version })
+  }
+
+  async function reindexVersion(version: string): Promise<void> {
+    await sendRequest('reindex_version', { version })
+  }
+
   return {
     connected,
     godotConnected,
@@ -720,6 +825,7 @@ export const useBrainStore = defineStore('brain', () => {
     sessionMetrics,
     lifetimeMetrics,
     sessionDuration,
+    knowledgeStatusText,
     startBrain,
     stopBrain,
     checkBrainHealth,
@@ -736,5 +842,8 @@ export const useBrainStore = defineStore('brain', () => {
     onCreditsPurchased,
     reindexKnowledge,
     checkKnowledgeStatus,
+    listIndexedVersions,
+    deleteIndexedVersion,
+    reindexVersion,
   }
 })

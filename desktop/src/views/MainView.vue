@@ -56,6 +56,21 @@ watch(() => brainStore.projectInfo, (info) => {
                         {{ brainStore.connected ? 'Online' : 'Offline' }}
                     </span>
                 </div>
+
+                <!-- Knowledge Status (when Godot connected) -->
+                <div v-if="brainStore.godotConnected" class="flex items-center gap-2 ml-3 pl-3 border-l border-[#2d3546]">
+                    <span class="text-[10px] text-gray-400">Godot {{ brainStore.projectInfo?.godotVersion?.split('.').slice(0, 2).join('.') || '4.5' }}</span>
+                    <span class="w-1.5 h-1.5 rounded-full" :class="{
+                        'bg-green-500': brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing,
+                        'bg-yellow-500 animate-pulse': brainStore.knowledgeStatus.isIndexing,
+                        'bg-gray-500': !brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing
+                    }"></span>
+                    <span class="text-[10px]" :class="{
+                        'text-green-400': brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing,
+                        'text-yellow-400': brainStore.knowledgeStatus.isIndexing,
+                        'text-gray-500': !brainStore.knowledgeStatus.isIndexed && !brainStore.knowledgeStatus.isIndexing
+                    }">{{ brainStore.knowledgeStatusText }}</span>
+                </div>
             </div>
 
             <!-- Session Metrics -->

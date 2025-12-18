@@ -49,7 +49,7 @@ function parseCodeBlock(block: string): string {
     const highlighted = hljs.highlight(code, { language: lang }).value
 
     // Build the code block with collapsible wrapper
-    return `<div class="code-block-wrapper my-4 rounded-lg overflow-hidden border border-[#3b4458] bg-[#1a1e29]" data-artifact-id="${artifactId}" data-lang="${lang}" data-code="${encodeURIComponent(code)}">
+    return `<div class="code-block-wrapper my-2 rounded-lg overflow-hidden border border-[#3b4458] bg-[#1a1e29]" data-artifact-id="${artifactId}" data-lang="${lang}" data-code="${encodeURIComponent(code)}">
               <div class="code-block-header flex items-center justify-between px-3 py-2 bg-[#2d3546] border-b border-[#3b4458]">
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-400 font-mono">${lang}</span>
@@ -128,7 +128,7 @@ function parseTable(text: string): string {
     )
 
     // Build HTML table
-    let html = `<div class="overflow-x-auto my-4">
+    let html = `<div class="overflow-x-auto my-2">
             <table class="min-w-full border-collapse border border-[#3b4458] rounded-lg overflow-hidden">
                 <thead class="bg-[#2d3546]">
                     <tr>`
@@ -161,9 +161,9 @@ function parseTextContent(text: string): string {
   let html = parseTable(text)
 
   // Headers
-  html = html.replace(/^### (.*$)/gm, '<h3 class="text-lg font-semibold text-white mt-6 mb-3">$1</h3>')
-  html = html.replace(/^## (.*$)/gm, '<h2 class="text-xl font-bold text-white mt-8 mb-4 border-b border-gray-700 pb-2">$1</h2>')
-  html = html.replace(/^# (.*$)/gm, '<h1 class="text-2xl font-bold text-white mt-8 mb-4 border-b border-gray-700 pb-2">$1</h1>')
+  html = html.replace(/^### (.*$)/gm, '<h3 class="text-sm font-semibold text-white mt-2 mb-1">$1</h3>')
+  html = html.replace(/^## (.*$)/gm, '<h2 class="text-base font-bold text-white mt-3 mb-1.5 border-b border-gray-700 pb-2">$1</h2>')
+  html = html.replace(/^# (.*$)/gm, '<h1 class="text-lg font-bold text-white mt-4 mb-2 border-b border-gray-700 pb-2">$1</h1>')
 
   // Bold
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-bold text-white">$1</strong>')
@@ -184,14 +184,14 @@ function parseTextContent(text: string): string {
   html = html.replace(/^(\d+)\. (.*$)/gm, '<div class="flex gap-2 mb-1 pl-4"><span class="text-gray-400 font-mono text-xs pt-1">$1.</span><span class="text-gray-300 flex-1">$2</span></div>')
 
   // Separator
-  html = html.replace(/^---$/gm, '<hr class="my-6 border-gray-700">')
+  html = html.replace(/^---$/gm, '<hr class="my-3 border-gray-700">')
 
   // Paragraphs / Newlines
   // We use a simplified strategy: existing newlines are respected
   // but we want to avoid double spacing if we replaced block elements
   // This is tricky with regex. A safe bet for basic display:
   // Double newline -> break
-  html = html.replace(/\n\n/g, '<div class="h-4"></div>')
+  html = html.replace(/\n\n/g, '<div class="h-2"></div>')
   // Single newline -> br, BUT NOT inside our generated HTML tags from listeners?
   // We already replaced headers/lists which swallow the line.
   // So remaining newlines are likely soft breaks
@@ -200,6 +200,9 @@ function parseTextContent(text: string): string {
   // Cleanup: Remove <br> after block elements if any (hacky)
   html = html.replace(/<\/h[1-3]><br>/g, '</h$1>')
   html = html.replace(/<\/div><br>/g, '</div>')
+  
+  html = html.replace(/(<br>\s*)+$/g, '')
+  html = html.replace(/(<div class="h-2"><\/div>\s*)+$/g, '')
 
   return html
 }

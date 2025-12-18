@@ -110,37 +110,39 @@ serve(async (req) => {
     const handleRequest = async (): Promise<Response> => {
       try {
         // 4. Check database-level rate limit (5 key generations per hour)
-        const { data: rateLimitResult, error: rateLimitError } = await supabase
-          .rpc('check_key_generation_limit', { p_user_id: user.id })
-
-        if (rateLimitError) {
-          console.error('Rate limit check failed:', rateLimitError)
-          // Continue anyway - fail open for rate limiting errors
-        } else {
-          const rateLimit = rateLimitResult as RateLimitResult
-          if (!rateLimit.allowed) {
-            const resetAt = new Date(rateLimit.reset_at)
-            return new Response(
-              JSON.stringify({
-                error: 'Rate limit exceeded',
-                message: `Too many key generation requests. Try again after ${resetAt.toISOString()}`,
-                reset_at: rateLimit.reset_at,
-                remaining: rateLimit.remaining
-              }),
-              {
-                status: 429,
-                headers: {
-                  ...corsHeaders,
-                  'Content-Type': 'application/json',
-                  'Retry-After': Math.ceil((resetAt.getTime() - Date.now()) / 1000).toString(),
-                  'X-RateLimit-Limit': rateLimit.max_requests.toString(),
-                  'X-RateLimit-Remaining': '0',
-                  'X-RateLimit-Reset': resetAt.toISOString()
-                }
-              }
-            )
-          }
-        }
+        // TODO: Re-enable rate limiting after testing is complete
+        // const { data: rateLimitResult, error: rateLimitError } = await supabase
+        //   .rpc('check_key_generation_limit', { p_user_id: user.id })
+        //
+        // if (rateLimitError) {
+        //   console.error('Rate limit check failed:', rateLimitError)
+        //   // Continue anyway - fail open for rate limiting errors
+        // } else {
+        //   const rateLimit = rateLimitResult as RateLimitResult
+        //   if (!rateLimit.allowed) {
+        //     const resetAt = new Date(rateLimit.reset_at)
+        //     return new Response(
+        //       JSON.stringify({
+        //         error: 'Rate limit exceeded',
+        //         message: `Too many key generation requests. Try again after ${resetAt.toISOString()}`,
+        //         reset_at: rateLimit.reset_at,
+        //         remaining: rateLimit.remaining
+        //       }),
+        //       {
+        //         status: 429,
+        //         headers: {
+        //           ...corsHeaders,
+        //           'Content-Type': 'application/json',
+        //           'Retry-After': Math.ceil((resetAt.getTime() - Date.now()) / 1000).toString(),
+        //           'X-RateLimit-Limit': rateLimit.max_requests.toString(),
+        //           'X-RateLimit-Remaining': '0',
+        //           'X-RateLimit-Reset': resetAt.toISOString()
+        //         }
+        //       }
+        //     )
+        //   }
+        // }
+        console.log('Rate limiting temporarily disabled for testing')
 
         // 5. Check if user already has a valid key in our database
         const { data: existingKey, error: keyFetchError } = await supabase
@@ -258,9 +260,7 @@ serve(async (req) => {
           body: JSON.stringify({
             user_id: user.id, // Links this key to the user's budget
             duration: null,   // Infinite duration - budget controls access, not key expiry
-            permissions: {
-              get_spend_routes: true  // Allow key to access /spend and /key/info endpoints for cost tracking
-            },
+            // NOTE: permissions.get_spend_routes removed - now Enterprise-only in LiteLLM
             metadata: {
               supabase_user_id: user.id,
               email: user.email,

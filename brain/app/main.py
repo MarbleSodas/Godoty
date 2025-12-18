@@ -24,7 +24,8 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.agents import get_db
-from app.agents.tools import resolve_response, set_ws_connection, set_connection_manager, set_project_path, clear_pending_requests
+from app.agents.tools import resolve_response, set_ws_connection, set_connection_manager, set_project_path, set_godot_version, clear_pending_requests
+from app.agents.context import invalidate_context_cache
 from app.protocol.jsonrpc import (
     ConfirmationRequest,
     ConfirmationResponse,
@@ -305,8 +306,10 @@ async def godot_ws_endpoint(ws: WebSocket) -> None:
     finally:
         await connections.set_godot(None)
         set_ws_connection(None)
-        set_project_path(None)  # Clear project path for scoped file tools
-        clear_pending_requests()  # Clean up any pending tool requests
+        set_project_path(None)
+        set_godot_version(None)
+        clear_pending_requests()
+        invalidate_context_cache()
 
 
 @app.websocket("/ws/tauri")
@@ -359,10 +362,22 @@ async def _handle_godot_request(conn: GodotConnection, req: JsonRpcRequest) -> s
         if conn.project_path:
             set_project_path(conn.project_path)
         
+        # Parse and set Godot version (major.minor format)
+        parsed_version = None
+        if conn.godot_version:
+            version_parts = conn.godot_version.split(".")
+            if len(version_parts) >= 2:
+                parsed_version = f"{version_parts[0]}.{version_parts[1]}"
+        set_godot_version(parsed_version)
+        
         # Register this Godot connection
         await connections.set_godot(conn)
         
-        logger.info(f"Godot handshake: project={params.project_name}, path={conn.project_path}")
+        logger.info(f"Godot handshake: project={params.project_name}, version={parsed_version}, path={conn.project_path}")
+        
+        # Trigger background documentation check/indexing
+        if parsed_version:
+            asyncio.create_task(_check_and_index_documentation(parsed_version))
         
         return _success(req.id, {
             "client": params.client,
@@ -389,11 +404,13 @@ async def _handle_godot_request(conn: GodotConnection, req: JsonRpcRequest) -> s
     if req.method == "scene_changed":
         scene_path = (req.params or {}).get("scene_path")
         logger.info(f"Scene changed: {scene_path}")
+        invalidate_context_cache()  # Scene changes may affect context
         return None
     
     if req.method == "script_changed":
         script_path = (req.params or {}).get("script_path")
         logger.info(f"Script changed: {script_path}")
+        invalidate_context_cache()  # Script changes may affect context
         return None
     
     return _error(req.id, -32601, f"Method not found: {req.method}")
@@ -479,16 +496,12 @@ async def _handle_tauri_request(conn: TauriConnection, req: JsonRpcRequest) -> s
         
     if req.method == "get_knowledge_status":
         from app.knowledge.godot_knowledge import get_godot_knowledge
+        from app.agents.tools import get_godot_version
         
-        # Get knowledge for current project version (default to 4.5 if unknown)
-        version = "4.5"
-        if connections.godot and connections.godot.godot_version:
-            # Simple version extraction (e.g. "4.3.stable" -> "4.3")
-            version = ".".join(connections.godot.godot_version.split(".")[:2])
+        version = get_godot_version() or "4.5"
             
         knowledge = get_godot_knowledge(version=version)
         
-        # Check actual database state (not just memory flag)
         is_indexed = await knowledge.is_indexed()
         doc_count = 0
         
@@ -504,6 +517,16 @@ async def _handle_tauri_request(conn: TauriConnection, req: JsonRpcRequest) -> s
             "is_indexing": knowledge.is_indexing,
             "document_count": doc_count,
         })
+    
+    if req.method == "list_indexed_versions":
+        return await _handle_list_indexed_versions(req)
+    
+    if req.method == "delete_indexed_version":
+        return await _handle_delete_indexed_version(req)
+    
+    if req.method == "reindex_version":
+        asyncio.create_task(_reindex_knowledge_task(conn, req.params or {}))
+        return _success(req.id, {"status": "started"})
     
     return _error(req.id, -32601, f"Method not found: {req.method}")
 
@@ -564,6 +587,8 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         # Use streaming to send chunks in real-time
         full_content = ""
         final_metrics = {}
+        collected_tool_calls = []
+        collected_reasoning = []
         
         async for chunk in godoty_session.process_message_stream(user_text):
             if chunk["type"] == "chunk":
@@ -575,10 +600,67 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                     ).model_dump_json()
                 )
                 full_content += chunk["content"]
+            
+            elif chunk["type"] == "tool_call_started":
+                # Send tool call started notification
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="stream_tool_call",
+                        params={"status": "started", "tool": chunk["tool"]}
+                    ).model_dump_json()
+                )
+                collected_tool_calls.append(chunk["tool"])
+            
+            elif chunk["type"] == "tool_call_completed":
+                # Send tool call completed notification
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="stream_tool_call",
+                        params={"status": "completed", "tool": chunk["tool"]}
+                    ).model_dump_json()
+                )
+                # Update in our list
+                for tc in collected_tool_calls:
+                    if tc.get("id") == chunk["tool"].get("id"):
+                        tc.update(chunk["tool"])
+                        break
+            
+            elif chunk["type"] == "reasoning_started":
+                # Send reasoning started notification
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="stream_reasoning",
+                        params={"status": "started"}
+                    ).model_dump_json()
+                )
+            
+            elif chunk["type"] == "reasoning":
+                # Send reasoning step notification
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="stream_reasoning",
+                        params={"status": "step", "content": chunk["content"]}
+                    ).model_dump_json()
+                )
+                collected_reasoning.append(chunk["content"])
+            
+            elif chunk["type"] == "reasoning_completed":
+                # Send reasoning completed notification
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="stream_reasoning",
+                        params={"status": "completed"}
+                    ).model_dump_json()
+                )
                 
             elif chunk["type"] == "done":
                 full_content = chunk["content"]
                 final_metrics = chunk.get("metrics", {})
+                # Update with collected data if not in metrics
+                if "tool_calls" not in final_metrics:
+                    final_metrics["tool_calls"] = collected_tool_calls
+                if "reasoning" not in final_metrics:
+                    final_metrics["reasoning"] = collected_reasoning
                 
             elif chunk["type"] == "error":
                 error_msg = chunk.get("error", "Unknown error")
@@ -643,11 +725,16 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                 ).model_dump_json()
             )
         
-        # Send stream complete notification with final metrics
+        # Send stream complete notification with final metrics and collected data
         await conn.ws.send_text(
             JsonRpcRequest(
                 method="stream_complete",
-                params={"metrics": final_metrics, "session_id": session_id}
+                params={
+                    "metrics": final_metrics,
+                    "session_id": session_id,
+                    "tool_calls": final_metrics.get("tool_calls", []),
+                    "reasoning": final_metrics.get("reasoning", []),
+                }
             ).model_dump_json()
         )
         
@@ -776,7 +863,7 @@ def _handle_rename_session(req: JsonRpcRequest) -> str:
 async def _handle_get_session_history(req: JsonRpcRequest) -> str:
     """Get chat history for a session.
     
-    This queries Agno's internal session storage to retrieve messages.
+    This queries Agno's internal session storage to retrieve messages with timestamps.
     """
     params = req.params or {}
     session_id = params.get("session_id")
@@ -792,24 +879,42 @@ async def _handle_get_session_history(req: JsonRpcRequest) -> str:
         return _error(req.id, -32001, "Session not found", {"session_id": session_id})
     
     # Query Agno's session storage for messages
-    # The Team/Agent stores run data in the SqliteDb, we need to retrieve it
     try:
+        from datetime import datetime
         from app.agents.team import GodotySession
         
         db = get_db()
         godoty_session = GodotySession(session_id=session_id, db=db)
         
-        # Try to get chat history from the team
+        # Try to get chat history from the team - pass session_id explicitly
         messages = []
         try:
-            history = godoty_session.team.get_chat_history()
+            history = godoty_session.team.get_chat_history(session_id=session_id)
             if history:
                 for msg in history:
-                    role = getattr(msg, "role", "unknown")
-                    content = getattr(msg, "content", "")
+                    # Handle Pydantic models properly
+                    if hasattr(msg, "model_dump"):
+                        msg_dict = msg.model_dump()
+                    else:
+                        msg_dict = {
+                            "role": getattr(msg, "role", "unknown"),
+                            "content": getattr(msg, "content", ""),
+                            "created_at": getattr(msg, "created_at", None),
+                        }
+                    
+                    # Extract timestamp (could be 'created_at' or 'timestamp')
+                    timestamp = msg_dict.get("created_at") or msg_dict.get("timestamp")
+                    
+                    # Convert Unix timestamp to ISO string if needed
+                    if isinstance(timestamp, (int, float)):
+                        timestamp = datetime.fromtimestamp(timestamp).isoformat()
+                    elif timestamp is None:
+                        timestamp = datetime.now().isoformat()
+                    
                     messages.append({
-                        "role": role,
-                        "content": content,
+                        "role": msg_dict.get("role", "unknown"),
+                        "content": msg_dict.get("content", ""),
+                        "created_at": timestamp,
                     })
         except Exception as hist_error:
             logger.warning(f"Could not retrieve chat history: {hist_error}")
@@ -880,16 +985,180 @@ def get_connection_manager() -> ConnectionManager:
     return connections
 
 
+async def _check_and_index_documentation(version: str) -> None:
+    """Check if docs are indexed for this version, index in background if not."""
+    try:
+        from app.knowledge.godot_knowledge import get_godot_knowledge
+        
+        knowledge = get_godot_knowledge(version=version)
+        is_indexed = await knowledge.is_indexed()
+        
+        doc_count = 0
+        if is_indexed:
+            try:
+                doc_count = await knowledge.vector_db.async_get_count()
+            except Exception:
+                pass
+        
+        if connections.tauri:
+            await connections.tauri.ws.send_text(
+                JsonRpcRequest(
+                    method="knowledge_status_update",
+                    params={
+                        "status": "indexed" if is_indexed else "not_indexed",
+                        "version": version,
+                        "document_count": doc_count,
+                    }
+                ).model_dump_json()
+            )
+        
+        if not is_indexed and not knowledge.is_indexing:
+            logger.info(f"Starting background indexing for Godot {version}")
+            
+            if connections.tauri:
+                await connections.tauri.ws.send_text(
+                    JsonRpcRequest(
+                        method="knowledge_status_update",
+                        params={"status": "indexing", "version": version}
+                    ).model_dump_json()
+                )
+            
+            def progress_callback(current: int, total: int) -> None:
+                if connections.tauri:
+                    asyncio.create_task(connections.tauri.ws.send_text(
+                        JsonRpcRequest(
+                            method="knowledge_indexing_progress",
+                            params={"current": current, "total": total, "version": version, "phase": "fetching"}
+                        ).model_dump_json()
+                    ))
+            
+            def embedding_callback(current: int, total: int) -> None:
+                if connections.tauri:
+                    asyncio.create_task(connections.tauri.ws.send_text(
+                        JsonRpcRequest(
+                            method="knowledge_indexing_progress",
+                            params={"current": current, "total": total, "version": version, "phase": "embedding"}
+                        ).model_dump_json()
+                    ))
+            
+            success = await knowledge.load(
+                progress_callback=progress_callback,
+                embedding_callback=embedding_callback
+            )
+            
+            doc_count = 0
+            if success:
+                try:
+                    doc_count = await knowledge.vector_db.async_get_count()
+                except Exception:
+                    pass
+            
+            if connections.tauri:
+                await connections.tauri.ws.send_text(
+                    JsonRpcRequest(
+                        method="knowledge_status_update",
+                        params={
+                            "status": "loaded" if success else "error",
+                            "version": version,
+                            "document_count": doc_count,
+                            "error": None if success else "Failed to load documentation"
+                        }
+                    ).model_dump_json()
+                )
+                
+    except Exception as e:
+        logger.error(f"Background indexing check failed: {e}")
+
+
+async def _handle_list_indexed_versions(req: JsonRpcRequest) -> str:
+    from pathlib import Path
+    
+    knowledge_dir = Path.home() / ".godoty" / "knowledge"
+    versions = []
+    
+    if knowledge_dir.exists():
+        for item in knowledge_dir.iterdir():
+            if item.is_dir() and item.name.endswith(".lance"):
+                table_name = item.name.replace(".lance", "")
+                if table_name.startswith("godot_docs_") or table_name.startswith("godot_enhanced_"):
+                    parts = table_name.rsplit("_", 2)
+                    if len(parts) >= 3:
+                        version_str = f"{parts[-2]}.{parts[-1]}"
+                    else:
+                        continue
+                    
+                    doc_count = 0
+                    size_mb = 0.0
+                    try:
+                        from app.knowledge.godot_knowledge import get_godot_knowledge
+                        knowledge = get_godot_knowledge(version=version_str)
+                        if await knowledge.is_indexed():
+                            doc_count = await knowledge.vector_db.async_get_count()
+                        
+                        size_bytes = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
+                        size_mb = round(size_bytes / (1024 * 1024), 2)
+                    except Exception:
+                        pass
+                    
+                    existing = next((v for v in versions if v["version"] == version_str), None)
+                    if existing:
+                        existing["document_count"] += doc_count
+                        existing["size_mb"] += size_mb
+                    else:
+                        versions.append({
+                            "version": version_str,
+                            "document_count": doc_count,
+                            "size_mb": size_mb,
+                        })
+    
+    versions.sort(key=lambda x: x["version"], reverse=True)
+    return _success(req.id, {"versions": versions})
+
+
+async def _handle_delete_indexed_version(req: JsonRpcRequest) -> str:
+    import shutil
+    from pathlib import Path
+    
+    params = req.params or {}
+    version = params.get("version")
+    
+    if not version:
+        return _error(req.id, -32602, "Invalid params", {"version": "required"})
+    
+    knowledge_dir = Path.home() / ".godoty" / "knowledge"
+    deleted = False
+    
+    for prefix in ["godot_docs_", "godot_enhanced_"]:
+        table_name = f"{prefix}{version.replace('.', '_')}"
+        table_path = knowledge_dir / f"{table_name}.lance"
+        
+        if table_path.exists():
+            try:
+                shutil.rmtree(table_path)
+                deleted = True
+            except Exception as e:
+                return _error(req.id, -32000, f"Failed to delete: {e}")
+    
+    from app.knowledge.godot_knowledge import _knowledge_cache
+    from app.knowledge.enhanced_knowledge import _enhanced_knowledge_cache
+    
+    cache_key = f"{version}:default"
+    _knowledge_cache.pop(cache_key, None)
+    _enhanced_knowledge_cache.pop(cache_key, None)
+    
+    if deleted:
+        return _success(req.id, {"deleted": True, "version": version})
+    else:
+        return _error(req.id, -32001, f"No indexed data found for version {version}")
+
+
 async def _reindex_knowledge_task(conn: TauriConnection, params: dict) -> None:
     """Background task to reindex Godot documentation."""
     try:
         from app.knowledge.godot_knowledge import get_godot_knowledge
+        from app.agents.tools import get_godot_version
         
-        version = params.get("version", "4.3")
-        
-        # If auto-detect requested and Godot connected, use that version
-        if not params.get("version") and connections.godot and connections.godot.godot_version:
-             version = ".".join(connections.godot.godot_version.split(".")[:2])
+        version = params.get("version") or get_godot_version() or "4.5"
         
         logger.info(f"Starting manual reindexing for Godot {version}")
         

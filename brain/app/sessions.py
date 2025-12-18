@@ -211,7 +211,7 @@ class SessionManager:
             conn.close()
     
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session and its associated data.
+        """Delete a session and its associated Agno conversation data.
         
         Args:
             session_id: ID of session to delete
@@ -225,6 +225,15 @@ class SessionManager:
                 "DELETE FROM godoty_sessions WHERE id = ?",
                 (session_id,)
             )
+            
+            try:
+                conn.execute(
+                    "DELETE FROM agno_sessions WHERE session_id = ?",
+                    (session_id,)
+                )
+            except sqlite3.OperationalError:
+                pass
+            
             conn.commit()
             return cursor.rowcount > 0
         finally:

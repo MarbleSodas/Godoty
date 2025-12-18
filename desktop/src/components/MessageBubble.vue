@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import type { Message } from '@/stores/brain'
 import { useArtifactsStore } from '@/stores/artifacts'
 import { parseMarkdown } from '@/utils/markdown'
+import ThoughtsPanel from './ThoughtsPanel.vue'
+import ToolCallItem from './ToolCallItem.vue'
 
 const props = defineProps<{
   message: Message
@@ -15,6 +17,13 @@ const artifactsStore = useArtifactsStore()
 const isUser = computed(() => props.message.role === 'user')
 const isSystem = computed(() => props.message.role === 'system')
 const isStreaming = computed(() => props.message.isStreaming)
+
+// Check if message has any content to display (text, tool calls, or reasoning)
+const hasContent = computed(() => 
+  props.message.content || 
+  (props.message.toolCalls && props.message.toolCalls.length > 0) ||
+  (props.message.reasoning && props.message.reasoning.length > 0)
+)
 
 // Use the robust markdown parser
 const formattedContent = computed(() => {
@@ -130,7 +139,7 @@ function openInPanel(wrapper: HTMLElement) {
         </div>
 
         <!-- Assistant Message - only show if streaming OR has content -->
-        <div v-else-if="isStreaming || props.message.content" class="flex gap-4 pr-4 mb-6" :class="isStreaming ? 'animate-pulse-subtle' : 'animate-fade-in-up'">
+        <div v-else-if="isStreaming || hasContent" class="flex gap-4 pr-4 mb-6" :class="isStreaming ? 'animate-pulse-subtle' : 'animate-fade-in-up'">
             <div class="flex-shrink-0 mt-1">
                 <div class="w-8 h-8 rounded-lg bg-[#478cbf] flex items-center justify-center shadow-lg shadow-blue-500/20">
                     <img :src="iconUrl" class="w-5 h-5 text-white" style="filter: brightness(0) invert(1);" alt="Godoty" />
@@ -138,9 +147,31 @@ function openInPanel(wrapper: HTMLElement) {
             </div>
             
             <div class="flex-1 space-y-2 min-w-0">
-                <!-- Content with fade-up animation for streaming -->
+                <!-- Active reasoning indicator -->
+                <div v-if="props.message.isReasoningActive" class="flex items-center gap-2 text-purple-400 text-xs mb-2">
+                    <svg class="w-3.5 h-3.5 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                    <span class="italic">Thinking...</span>
+                </div>
+                
+                <!-- Collapsible Thoughts Panel (after completion) -->
+                <ThoughtsPanel 
+                  v-if="props.message.reasoning && props.message.reasoning.length > 0 && !props.message.isReasoningActive" 
+                  :thoughts="props.message.reasoning" 
+                />
+                
+                <!-- Tool Calls -->
+                <div v-if="props.message.toolCalls && props.message.toolCalls.length > 0" class="mb-3">
+                  <ToolCallItem 
+                    v-for="call in props.message.toolCalls" 
+                    :key="call.id" 
+                    :call="call" 
+                  />
+                </div>
+                
                 <!-- Thinking indicator - only show while streaming with no content -->
-                <div v-if="isStreaming && !props.message.content" class="flex items-center gap-2 text-gray-500 italic">
+                <div v-if="isStreaming && !props.message.content && !props.message.isReasoningActive && !(props.message.toolCalls && props.message.toolCalls.length > 0)" class="flex items-center gap-2 text-gray-500 italic">
                     <span class="w-1.5 h-1.5 bg-[#478cbf] rounded-full animate-ping"></span>
                     Thinking...
                 </div>

@@ -14,11 +14,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+from dataclasses import dataclass, field
 from agno.agent import Agent, RunEvent
 from agno.db.sqlite import SqliteDb
 from agno.models.litellm import LiteLLM
 from agno.team import Team
+from agno.tools.reasoning import ReasoningTools
+from pydantic import BaseModel
 
+from app.agents.schemas import ArchitecturePlan, CodeProposal, ObservationReport
 from app.agents.tools import (
     # Perception tools
     get_open_script,
@@ -41,26 +45,78 @@ from app.agents.tools import (
     query_godot_docs,
     get_symbol_info,
     get_code_completions,
+    # Project context
+    get_project_context,
 )
 
 if TYPE_CHECKING:
     from agno.run.response import RunResponse
 
-# Load prompts from YAML files
 PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts"
 
-# SQLite database path for session storage
 DB_DIR = Path.home() / ".godoty"
 DB_PATH = DB_DIR / "data.db"
 
 
-def _load_prompt(name: str) -> str:
-    """Load a system prompt from the prompts directory."""
+@dataclass
+class TeamConfig:
+    """Configuration for Godoty team behavior.
+    
+    Controls optional features like structured output schemas.
+    """
+    use_structured_output: bool = False
+    coder_schema: type[BaseModel] | None = None
+    architect_schema: type[BaseModel] | None = None
+    observer_schema: type[BaseModel] | None = None
+    
+    @classmethod
+    def with_structured_output(cls) -> "TeamConfig":
+        """Create config with structured output enabled for Coder and Architect."""
+        return cls(
+            use_structured_output=True,
+            coder_schema=CodeProposal,
+            architect_schema=ArchitecturePlan,
+            observer_schema=ObservationReport,
+        )
+
+
+_team_config: TeamConfig = TeamConfig()
+
+
+def set_team_config(config: TeamConfig) -> None:
+    """Set the global team configuration."""
+    global _team_config
+    _team_config = config
+
+
+def get_team_config() -> TeamConfig:
+    """Get the current team configuration."""
+    return _team_config
+
+
+def _load_prompt(name: str, context: str = "") -> str:
+    """Load a system prompt from the prompts directory.
+    
+    Supports BMAD-style context injection via {{PROJECT_CONTEXT}} placeholder.
+    
+    Args:
+        name: The prompt name (without .yaml extension)
+        context: Optional project context to inject
+        
+    Returns:
+        The system prompt with context injected
+    """
     prompt_path = PROMPTS_DIR / f"{name}.yaml"
     if prompt_path.exists():
         with open(prompt_path) as f:
             data = yaml.safe_load(f)
-            return data.get("system", "")
+            prompt = data.get("system", "")
+            # BMAD: Inject project context
+            if context and "{{PROJECT_CONTEXT}}" in prompt:
+                prompt = prompt.replace("{{PROJECT_CONTEXT}}", context)
+            elif "{{PROJECT_CONTEXT}}" in prompt:
+                prompt = prompt.replace("{{PROJECT_CONTEXT}}", "# No project connected yet")
+            return prompt
     return ""
 
 
@@ -233,7 +289,13 @@ async def get_key_spend_info(api_key: str | None = None) -> dict:
 
 
 def create_observer_agent() -> Agent:
-    """Create the Observer agent specialized in perception tasks."""
+    """Create the Observer agent specialized in perception tasks.
+    
+    Features:
+    - Gathers context from Godot Editor
+    - Uses state-based perception (scene tree, scripts)
+    - Provides structured observations
+    """
     return Agent(
         name="Observer",
         role="Perception Specialist",
@@ -250,11 +312,25 @@ def create_observer_agent() -> Agent:
         markdown=True,
         retries=2,
         tool_call_limit=5,
+        # Agno: Enable reasoning for better analysis
+        reasoning=True,
+        reasoning_min_steps=1,
+        reasoning_max_steps=3,
     )
 
 
 def create_coder_agent() -> Agent:
-    """Create the GDScript Coder agent specialized in Godot 4.x syntax."""
+    """Create the GDScript Coder agent specialized in Godot 4.x syntax.
+    
+    Features:
+    - Reasoning mode for better code quality
+    - Tool result compression to save tokens
+    - Self-review checklist in BMAD prompt
+    - Optional structured output via TeamConfig
+    """
+    config = get_team_config()
+    output_schema = config.coder_schema if config.use_structured_output else None
+    
     return Agent(
         name="GDScript Coder",
         role="Code Implementation Specialist",
@@ -267,33 +343,44 @@ def create_coder_agent() -> Agent:
             "Never modify files without explicit user approval through the HITL system."
         ),
         tools=[
-            # Godot RPC tools (for open editor files)
             read_project_file,
             write_project_file,
             create_node,
             delete_node,
             set_project_setting,
-            # Scoped file tools (direct filesystem access)
             list_project_files,
             read_file,
             write_file,
             delete_file,
             file_exists,
-            # Knowledge tools for API reference
             query_godot_docs,
             get_symbol_info,
             get_code_completions,
         ],
         description="Writes and modifies GDScript code with Godot 4.x best practices",
         expected_output="Well-formatted GDScript code with static typing, docstrings, and Godot 4.x conventions",
+        output_schema=output_schema,
         markdown=True,
         retries=2,
-        tool_call_limit=10,  # Coding often requires multiple file operations
+        tool_call_limit=10,
+        reasoning=True,
+        reasoning_min_steps=2,
+        reasoning_max_steps=5,
+        compress_tool_results=True,
     )
 
 
 def create_architect_agent() -> Agent:
-    """Create the Systems Architect agent for planning complex features."""
+    """Create the Systems Architect agent for planning complex features.
+    
+    Features:
+    - Strong reasoning mode for planning
+    - BMAD planning process and output format
+    - Optional structured output via TeamConfig
+    """
+    config = get_team_config()
+    output_schema = config.architect_schema if config.use_structured_output else None
+    
     return Agent(
         name="Systems Architect",
         role="Planning and Design Specialist",
@@ -306,26 +393,42 @@ def create_architect_agent() -> Agent:
             "that the Lead can delegate to specialized agents."
         ),
         tools=[
-            # Read-only Godot RPC tools
             read_project_file,
             get_scene_tree,
-            # Read-only scoped file tools
             list_project_files,
             read_file,
             file_exists,
-            # Knowledge tools
             query_godot_docs,
+            get_project_context,
         ],
         description="Plans and decomposes complex multi-step features",
         expected_output="Structured implementation plan with: Overview, Prerequisites, Task List, Files to Create/Modify, and Potential Challenges",
+        output_schema=output_schema,
         markdown=True,
         retries=2,
-        tool_call_limit=5,  # Planning is mostly reasoning, limited tool use
+        tool_call_limit=5,
+        reasoning=True,
+        reasoning_min_steps=3,
+        reasoning_max_steps=7,
     )
 
 
 def create_lead_agent(session_id: str | None = None) -> Agent:
-    """Create the Lead Developer agent that orchestrates the team."""
+    """Create the Lead Developer agent that orchestrates the team.
+    
+    Features:
+    - ReasoningTools for explicit think/analyze steps
+    - Reasoning mode for decision making
+    - BMAD decision tree and routing
+    - User memory for personalization
+    """
+    reasoning_tools = ReasoningTools(
+        enable_think=True,
+        enable_analyze=True,
+        add_instructions=True,
+        add_few_shot=True,
+    )
+    
     return Agent(
         name="Lead Developer",
         role="Team Coordinator",
@@ -335,13 +438,25 @@ def create_lead_agent(session_id: str | None = None) -> Agent:
             "Prefer state-based perception (scene tree, open script) over screenshots. "
             "Never perform project modifications without HITL approval."
         ),
-        tools=[get_scene_tree, get_open_script, read_project_file],  # Read-only context gathering
+        tools=[
+            reasoning_tools,
+            get_scene_tree,
+            get_open_script,
+            read_project_file,
+            get_project_context,
+        ],
         description="Orchestrates requests and coordinates the agent team",
         expected_output="Clear action plan with delegated tasks or direct helpful response",
         markdown=True,
         retries=2,
-        tool_call_limit=5,
+        tool_call_limit=8,
         session_id=session_id,
+        reasoning=True,
+        reasoning_min_steps=2,
+        reasoning_max_steps=5,
+        enable_agentic_memory=True,
+        enable_user_memories=True,
+        add_memories_to_context=True,
     )
 
 
@@ -390,8 +505,23 @@ def create_godoty_team(
         # Session storage configuration
         db=db,
         session_id=session_id,
-        add_history_to_context=True,  # Include previous conversation in context
-        num_history_runs=10,  # Last 10 conversation turns
+        add_history_to_context=True,
+        num_history_runs=10,
+        read_chat_history=True,
+        # Agno: Session summaries for long conversations
+        enable_session_summaries=True,
+        add_session_summary_to_context=True,
+        # Agno: Enable memory management at team level
+        enable_agentic_memory=True,
+        enable_user_memories=True,
+        add_memories_to_context=True,
+        # Agno: Stream intermediate steps (tool calls, delegations)
+        stream_intermediate_steps=True,
+        stream_member_events=True,
+        # Agno: Share member interactions for better coordination
+        share_member_interactions=True,
+        # Agno: Store member responses for debugging
+        store_member_responses=True,
     )
 
 
@@ -452,15 +582,66 @@ class GodotySession:
             
             full_content = ""
             final_metrics = None
+            tool_calls: list[dict] = []  # Track tool calls for this message
+            reasoning_steps: list[str] = []  # Track reasoning/thoughts
             
             # Iterate through the async stream
             async for chunk in response_stream:
-                # Handle content chunks using RunEvent enum
-                if hasattr(chunk, "event") and chunk.event == RunEvent.run_content:
-                    # This is a content chunk
-                    if chunk.content:
-                        full_content += chunk.content
-                        yield {"type": "chunk", "content": chunk.content}
+                # Handle different event types
+                if hasattr(chunk, "event"):
+                    event = chunk.event
+                    
+                    # Content chunks
+                    if event == RunEvent.run_content:
+                        if chunk.content:
+                            full_content += chunk.content
+                            yield {"type": "chunk", "content": chunk.content}
+                    
+                    # Tool call started - agent is invoking a tool
+                    elif event == RunEvent.tool_call_started:
+                        tool_info = {
+                            "id": getattr(chunk, "tool_call_id", str(len(tool_calls))),
+                            "name": getattr(chunk, "tool_name", "unknown"),
+                            "arguments": getattr(chunk, "tool_args", {}),
+                            "status": "running",
+                        }
+                        tool_calls.append(tool_info)
+                        yield {
+                            "type": "tool_call_started",
+                            "tool": tool_info,
+                        }
+                    
+                    # Tool call completed - tool finished execution
+                    elif event == RunEvent.tool_call_completed:
+                        tool_id = getattr(chunk, "tool_call_id", None)
+                        result = getattr(chunk, "tool_result", None)
+                        # Update the tool call in our list
+                        for tc in tool_calls:
+                            if tc["id"] == tool_id or (tool_id is None and tc["status"] == "running"):
+                                tc["status"] = "completed"
+                                tc["result"] = str(result) if result else None
+                                yield {
+                                    "type": "tool_call_completed",
+                                    "tool": tc,
+                                }
+                                break
+                    
+                    # Reasoning/thinking events
+                    elif event == RunEvent.reasoning_started:
+                        yield {"type": "reasoning_started"}
+                    
+                    elif event == RunEvent.reasoning_step:
+                        reasoning_content = getattr(chunk, "reasoning_content", None)
+                        if reasoning_content:
+                            reasoning_steps.append(reasoning_content)
+                            yield {
+                                "type": "reasoning",
+                                "content": reasoning_content,
+                            }
+                    
+                    elif event == RunEvent.reasoning_completed:
+                        yield {"type": "reasoning_completed"}
+                
                 elif hasattr(chunk, "content") and chunk.content:
                     # Fallback: check for content attribute directly
                     # Calculate delta to avoid duplicates
@@ -509,11 +690,36 @@ class GodotySession:
             except Exception:
                 pass  # Spend tracking is best-effort
 
-            # Yield final result with full content and metrics
-            yield {"type": "done", "content": full_content, "metrics": metrics_dict}
+            # Yield final result with full content, metrics, and collected data
+            yield {
+                "type": "done",
+                "content": full_content,
+                "metrics": metrics_dict,
+                "tool_calls": tool_calls,
+                "reasoning": reasoning_steps,
+            }
 
         except Exception as e:
-            yield {"type": "error", "error": str(e)}
+            error_msg = str(e)
+            
+            model_error_indicators = [
+                "ServiceUnavailableError",
+                "MidStreamFallbackError",
+                "APIConnectionError",
+                "Upstream error",
+                "provider_name",
+                "BadRequestError",
+                "Unexpected token",
+            ]
+            
+            if any(indicator in error_msg for indicator in model_error_indicators):
+                yield {
+                    "type": "error",
+                    "error": "The selected model is temporarily unavailable. Please try a different model or try again later.",
+                    "error_type": "model_unavailable",
+                }
+            else:
+                yield {"type": "error", "error": error_msg}
 
     async def process_message(self, user_text: str) -> tuple[str, dict]:
         """Process a user message and return the response with metrics.

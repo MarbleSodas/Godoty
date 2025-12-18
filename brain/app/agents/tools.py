@@ -34,6 +34,10 @@ _connection_manager: Any = None
 # Set when Godot connects with a project, cleared on disconnect
 _project_path: str | None = None
 
+# Global Godot version for version-specific documentation queries
+# Set when Godot connects, parsed to major.minor format (e.g., "4.3")
+_godot_version: str | None = None
+
 _pending_requests: dict[int, asyncio.Future] = {}
 _request_id_counter = 1000
 
@@ -76,6 +80,15 @@ def set_project_path(path: str | None) -> None:
 def get_project_path() -> str | None:
     """Get the current Godot project path."""
     return _project_path
+
+
+def set_godot_version(version: str | None) -> None:
+    global _godot_version
+    _godot_version = version
+
+
+def get_godot_version() -> str | None:
+    return _godot_version
 
 
 def clear_pending_requests() -> None:
@@ -500,7 +513,8 @@ async def query_godot_docs(query: str, num_results: int = 5) -> list[dict]:
     try:
         from app.knowledge import get_godot_knowledge
         
-        knowledge = get_godot_knowledge()
+        version = get_godot_version() or "4.5"
+        knowledge = get_godot_knowledge(version=version)
         results = await knowledge.search(query, num_results=num_results)
         return results
     except Exception as e:
@@ -831,6 +845,42 @@ async def file_exists(path: str) -> bool:
 
 
 # ============================================================================
+# Project Context Tool
+# ============================================================================
+
+
+async def get_project_context(include_details: bool = True) -> str:
+    """Get comprehensive context about the current Godot project.
+    
+    Returns information about:
+    - Project settings (name, main scene, autoloads)
+    - Scene hierarchy and node structure
+    - Script dependencies and class relationships
+    - Directory structure
+    
+    Use this tool when you need to understand the project structure
+    before making changes or answering questions about the codebase.
+    
+    Args:
+        include_details: If True, includes detailed script/scene analysis.
+                        If False, returns just basic project info.
+    
+    Returns:
+        Formatted string with project context, or error message if no project connected.
+    """
+    try:
+        from app.agents.context import get_cached_context, format_context_for_agent
+        
+        ctx = await get_cached_context()
+        if ctx is None:
+            return "Error: No Godot project connected. Please connect a project from the Godot Editor."
+        
+        return format_context_for_agent(ctx)
+    except Exception as e:
+        return f"Error gathering project context: {e}"
+
+
+# ============================================================================
 # Exported tool list for agents
 # ============================================================================
 
@@ -856,6 +906,8 @@ __all__ = [
     "query_godot_docs",
     "get_symbol_info",
     "get_code_completions",
+    # Project context
+    "get_project_context",
     # Connection management
     "set_ws_connection",
     "get_ws_connection",
@@ -863,6 +915,8 @@ __all__ = [
     "get_connection_manager",
     "set_project_path",
     "get_project_path",
+    "set_godot_version",
+    "get_godot_version",
     "resolve_response",
     "clear_pending_requests",
 ]

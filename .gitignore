@@ -62,6 +62,9 @@ ENV/
 env/
 .virtualenv/
 
+# uv lockfile (using pip instead)
+uv.lock
+
 # PyInstaller
 *.pyc
 *.pyo

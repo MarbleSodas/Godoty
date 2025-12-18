@@ -126,12 +126,20 @@ onUnmounted(() => {
     >
       <div class="max-w-3xl mx-auto space-y-6 pb-20">
           <!-- Empty State -->
-          <div v-if="brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none">
+          <div v-if="!brainStore.isProcessing && brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none">
             <div class="w-16 h-16 bg-[#2d3546] rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-[#478cbf]/10">
                 <img :src="iconUrl" class="w-10 h-10 opacity-70" alt="Godoty" />
             </div>
             <h2 class="text-xl font-medium text-gray-300">How can I help with your Godot project?</h2>
             <p class="text-sm text-gray-500 mt-2">Ask about GDScript, shaders, or scene composition.</p>
+          </div>
+
+          <!-- Loading State -->
+          <div v-else-if="brainStore.isProcessing && brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none animate-pulse">
+            <div class="w-16 h-16 bg-[#2d3546] rounded-2xl mb-4"></div>
+            <div class="h-6 w-64 bg-[#2d3546] rounded mb-3"></div>
+            <div class="h-4 w-48 bg-[#2d3546] rounded"></div>
+            <p class="text-sm text-gray-500 mt-8">Loading session...</p>
           </div>
 
           <!-- Message List -->

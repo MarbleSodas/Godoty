@@ -45,6 +45,118 @@ PRIORITY_CLASSES = [
 ]
 
 
+# GDScript language reference classes (core language features)
+GDSCRIPT_REFERENCE_CLASSES = [
+    # Built-in functions and global scope
+    "@GDScript",      # Built-in functions (preload, load, range, print, etc.)
+    "@GlobalScope",   # Global enums, constants, and singletons
+    
+    # Primitive types
+    "bool", "int", "float", "String", "StringName",
+    
+    # Container types
+    "Array", "Dictionary",
+    "PackedByteArray", "PackedInt32Array", "PackedInt64Array",
+    "PackedFloat32Array", "PackedFloat64Array",
+    "PackedStringArray", "PackedVector2Array", "PackedVector3Array",
+    "PackedColorArray",
+    
+    # Math types (essential for game dev)
+    "Vector2", "Vector2i", "Vector3", "Vector3i", "Vector4", "Vector4i",
+    "Rect2", "Rect2i", "AABB",
+    "Transform2D", "Transform3D", "Basis", "Quaternion",
+    "Projection", "Plane",
+    "Color",
+    
+    # Core utilities
+    "Callable", "Signal", "RID", "NodePath",
+    "Object", "RefCounted", "Resource", "Node",
+    
+    # Commonly used resources
+    "Texture2D", "ImageTexture", "AtlasTexture",
+    "AudioStream", "AudioStreamWAV", "AudioStreamMP3",
+    "Font", "FontFile", "Theme",
+    "Material", "ShaderMaterial", "StandardMaterial3D",
+    "Mesh", "ArrayMesh", "PrimitiveMesh",
+    
+    # Tweening and animation
+    "Tween", "PropertyTweener", "IntervalTweener",
+]
+
+
+# Curated tutorials with version placeholders - {version} is replaced at runtime
+TUTORIAL_TEMPLATES = [
+    {
+        "name": "GDScript Style Guide",
+        "url_template": "https://docs.godotengine.org/en/{version}/tutorials/scripting/gdscript/gdscript_styleguide.html",
+        "type": "best_practices",
+        "description": "Official style guide for GDScript conventions",
+    },
+    {
+        "name": "GDScript Reference",
+        "url_template": "https://docs.godotengine.org/en/{version}/tutorials/scripting/gdscript/gdscript_basics.html",
+        "type": "reference",
+        "description": "GDScript language basics and syntax",
+    },
+    {
+        "name": "GDScript Exports",
+        "url_template": "https://docs.godotengine.org/en/{version}/tutorials/scripting/gdscript/gdscript_exports.html",
+        "type": "reference",
+        "description": "@export annotations for inspector properties",
+    },
+    {
+        "name": "Signals",
+        "url_template": "https://docs.godotengine.org/en/{version}/getting_started/step_by_step/signals.html",
+        "type": "tutorial",
+        "description": "Using signals for decoupled communication",
+    },
+    {
+        "name": "Using CharacterBody2D",
+        "url_template": "https://docs.godotengine.org/en/{version}/tutorials/physics/using_character_body_2d.html",
+        "type": "tutorial",
+        "description": "2D character movement with CharacterBody2D",
+    },
+    {
+        "name": "Custom Resources",
+        "url_template": "https://docs.godotengine.org/en/{version}/tutorials/scripting/resources.html",
+        "type": "patterns",
+        "description": "Using Resource for data containers",
+    },
+    {
+        "name": "Singletons (Autoload)",
+        "url_template": "https://docs.godotengine.org/en/{version}/tutorials/scripting/singletons_autoload.html",
+        "type": "patterns",
+        "description": "Global managers with Autoload",
+    },
+    {
+        "name": "Running Code in the Editor",
+        "url_template": "https://docs.godotengine.org/en/{version}/tutorials/plugins/running_code_in_the_editor.html",
+        "type": "patterns",
+        "description": "@tool annotation and editor plugins",
+    },
+]
+
+
+def get_tutorials_for_version(version: str) -> list[dict]:
+    """Generate tutorial list with URLs adapted for the given version."""
+    return [
+        {
+            "name": tutorial["name"],
+            "url": tutorial["url_template"].format(version=version),
+            "type": tutorial["type"],
+            "description": tutorial["description"],
+        }
+        for tutorial in TUTORIAL_TEMPLATES
+    ]
+
+
+# Legacy dict kept for backwards compatibility
+COMMUNITY_TUTORIALS: dict[str, list[dict]] = {
+    "4.3": get_tutorials_for_version("4.3"),
+    "4.2": get_tutorials_for_version("4.2"),
+}
+
+
 class GodotDocsLoader:
     """Fetches and parses Godot documentation from GitHub.
     

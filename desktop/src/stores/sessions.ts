@@ -253,10 +253,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         }
     }
 
-    /**
-     * Get session history (chat messages)
-     */
-    async function getSessionHistory(sessionId: string): Promise<Array<{ role: string; content: string }>> {
+    async function getSessionHistory(sessionId: string): Promise<Array<{ role: string; content: string; created_at?: string }>> {
         if (!_sendRequest) return []
 
         try {
@@ -265,7 +262,7 @@ export const useSessionsStore = defineStore('sessions', () => {
             }) as {
                 session_id: string
                 title: string
-                messages: Array<{ role: string; content: string }>
+                messages: Array<{ role: string; content: string; created_at?: string }>
             }
 
             return response.messages
