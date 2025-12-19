@@ -257,20 +257,48 @@ class DeleteNodeResult(BaseModel):
 
 
 class ConfirmationRequest(BaseModel):
-    """Sent to Godot to request user confirmation."""
+    """Sent to Tauri to request user confirmation."""
 
     confirmation_id: str
-    action_type: Literal["write_file", "set_setting", "create_node", "delete_node"]
+    action_type: Literal[
+        "write_file",
+        "delete_file",
+        "set_setting",
+        "create_node",
+        "delete_node",
+        "set_project_setting",
+        "create_directory",
+        "rename_file",
+        "move_file",
+        "copy_file",
+    ]
     description: str
-    details: dict[str, Any]  # Action-specific details (diff, values, etc.)
+    details: dict[str, Any]
 
 
 class ConfirmationResponse(BaseModel):
-    """Response from Godot after user decision."""
+    """Response from Tauri after user decision."""
 
     confirmation_id: str
     approved: bool
-    modified_content: str | None = None  # If user edited the proposed change
+    modified_content: str | None = None
+
+
+class HITLPreferences(BaseModel):
+    """Device-level HITL confirmation preferences."""
+    
+    always_allow_all: bool = False
+    always_allow: dict[str, bool] = Field(default_factory=lambda: {
+        "write_file": False,
+        "delete_file": False,
+        "create_node": False,
+        "delete_node": False,
+        "set_project_setting": False,
+        "create_directory": False,
+        "rename_file": False,
+        "move_file": False,
+        "copy_file": False,
+    })
 
 
 # ============================================================================

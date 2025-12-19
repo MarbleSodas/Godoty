@@ -137,6 +137,9 @@ function formatDate(date: Date | string): string {
                 <div class="text-xs text-gray-500 mt-0.5">{{ formatDate(session.updatedAt) }}</div>
             </div>
             
+            <!-- Processing Indicator -->
+            <div v-if="brainStore.processingSessionId === session.id" class="w-2 h-2 rounded-full bg-blue-500 animate-pulse flex-shrink-0 mr-2"></div>
+
             <!-- Delete button (show on hover) -->
             <button 
                 @click="confirmDelete(session.id, $event)"

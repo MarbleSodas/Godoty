@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useAuthStore } from './auth'
 import { useSessionsStore } from './sessions'
+import { useHitlStore } from './hitl'
 import { isBudgetExceededError } from '@/lib/litellmKeys'
 
 export interface MessageMetrics {
@@ -53,7 +54,7 @@ const LIFETIME_METRICS_KEY = 'godoty_lifetime_metrics'
 
 export interface PendingConfirmation {
   id: string
-  action_type: 'write_file' | 'set_setting' | 'create_node' | 'delete_node' | 'delete_file'
+  action_type: 'write_file' | 'set_setting' | 'create_node' | 'delete_node' | 'delete_file' | 'create_directory' | 'rename_file' | 'move_file' | 'copy_file'
   description: string
   details: {
     path?: string
@@ -64,6 +65,10 @@ export interface PendingConfirmation {
     node_name?: string
     node_type?: string
     node_path?: string
+    source_path?: string
+    destination_path?: string
+    old_path?: string
+    new_name?: string
   }
 }
 
@@ -105,6 +110,10 @@ export const useBrainStore = defineStore('brain', () => {
 
   // Streaming state
   const streamingMessageId = ref<string | null>(null)
+
+  const sessionMessagesCache = ref<Map<string, Message[]>>(new Map())
+  const processingSessionId = ref<string | null>(null)
+  const streamingSessionMessageId = ref<Map<string, string>>(new Map())
 
   // Session metrics (per chat session)
   const sessionMetrics = ref<SessionMetrics>(loadSessionMetrics())
@@ -251,6 +260,10 @@ export const useBrainStore = defineStore('brain', () => {
       // Initialize sessions store with sendRequest function
       sessionsStore.setSendRequest(sendRequest)
 
+      const hitlStore = useHitlStore()
+      hitlStore.setSendRequest(sendRequest)
+      hitlStore.syncToBrain()
+
       // Send hello handshake and handle response
       try {
         const response = await sendRequest('hello', {
@@ -375,108 +388,176 @@ export const useBrainStore = defineStore('brain', () => {
           tokenCount.value = (data.params as { total: number }).total
           break
         case 'stream_chunk':
-          // Append streaming content to the current streaming message
-          if (streamingMessageId.value) {
-            const msg = messages.value.find(m => m.id === streamingMessageId.value)
-            if (msg) {
-              msg.content += (data.params as { content: string }).content
+          {
+            const params = data.params as { content: string; session_id?: string }
+            const sessionId = params.session_id
+            const targetMsgId = sessionId 
+              ? streamingSessionMessageId.value.get(sessionId) 
+              : streamingMessageId.value
+            
+            if (targetMsgId) {
+              const targetMessages = sessionId === sessionsStore.activeSessionId 
+                ? messages.value 
+                : sessionMessagesCache.value.get(sessionId || '')
+              
+              const msg = targetMessages?.find(m => m.id === targetMsgId)
+              if (msg) {
+                msg.content += params.content
+              }
             }
           }
           break
         case 'stream_tool_call':
-          // Handle tool call events
-          if (streamingMessageId.value) {
-            const msg = messages.value.find(m => m.id === streamingMessageId.value)
-            if (msg) {
-              const params = data.params as { status: string; tool: ToolCall }
-              if (!msg.toolCalls) msg.toolCalls = []
+          {
+            const params = data.params as { status: string; tool: ToolCall; session_id?: string }
+            const sessionId = params.session_id
+            const targetMsgId = sessionId 
+              ? streamingSessionMessageId.value.get(sessionId) 
+              : streamingMessageId.value
+            
+            if (targetMsgId) {
+              const targetMessages = sessionId === sessionsStore.activeSessionId 
+                ? messages.value 
+                : sessionMessagesCache.value.get(sessionId || '')
+              
+              const msg = targetMessages?.find(m => m.id === targetMsgId)
+              if (msg) {
+                if (!msg.toolCalls) msg.toolCalls = []
 
-              if (params.status === 'started') {
-                // Add new tool call
-                msg.toolCalls.push({
-                  id: params.tool.id,
-                  name: params.tool.name,
-                  arguments: params.tool.arguments || {},
-                  status: 'running',
-                })
-              } else if (params.status === 'completed') {
-                // Update existing tool call
-                const tc = msg.toolCalls.find(t => t.id === params.tool.id)
-                if (tc) {
-                  tc.status = 'completed'
-                  tc.result = params.tool.result
+                if (params.status === 'started') {
+                  msg.toolCalls.push({
+                    id: params.tool.id,
+                    name: params.tool.name,
+                    arguments: params.tool.arguments || {},
+                    status: 'running',
+                  })
+                } else if (params.status === 'completed') {
+                  const tc = msg.toolCalls.find(t => t.id === params.tool.id)
+                  if (tc) {
+                    tc.status = 'completed'
+                    tc.result = params.tool.result
+                  }
                 }
               }
             }
           }
           break
         case 'stream_reasoning':
-          // Handle reasoning/thinking events
-          if (streamingMessageId.value) {
-            const msg = messages.value.find(m => m.id === streamingMessageId.value)
-            if (msg) {
-              const params = data.params as { status: string; content?: string }
-              if (!msg.reasoning) msg.reasoning = []
+          {
+            const params = data.params as { status: string; content?: string; session_id?: string }
+            const sessionId = params.session_id
+            const targetMsgId = sessionId 
+              ? streamingSessionMessageId.value.get(sessionId) 
+              : streamingMessageId.value
+            
+            if (targetMsgId) {
+              const targetMessages = sessionId === sessionsStore.activeSessionId 
+                ? messages.value 
+                : sessionMessagesCache.value.get(sessionId || '')
+              
+              const msg = targetMessages?.find(m => m.id === targetMsgId)
+              if (msg) {
+                if (!msg.reasoning) msg.reasoning = []
 
-              if (params.status === 'started') {
-                msg.isReasoningActive = true
-              } else if (params.status === 'step' && params.content) {
-                msg.reasoning.push(params.content)
-              } else if (params.status === 'completed') {
-                msg.isReasoningActive = false
+                if (params.status === 'started') {
+                  msg.isReasoningActive = true
+                } else if (params.status === 'step' && params.content) {
+                  msg.reasoning.push(params.content)
+                } else if (params.status === 'completed') {
+                  msg.isReasoningActive = false
+                }
               }
             }
           }
           break
         case 'stream_complete':
-          // Finalize streaming message with metrics
-          if (streamingMessageId.value) {
-            const msg = messages.value.find(m => m.id === streamingMessageId.value)
-            if (msg) {
-              msg.isStreaming = false
-              msg.isReasoningActive = false
-              const params = data.params as {
-                metrics?: Record<string, unknown>
-                session_id?: string
-                tool_calls?: ToolCall[]
-                reasoning?: string[]
-              }
+          {
+            const params = data.params as {
+              metrics?: Record<string, unknown>
+              session_id?: string
+              tool_calls?: ToolCall[]
+              reasoning?: string[]
+            }
+            const sessionId = params.session_id
+            const targetMsgId = sessionId 
+              ? streamingSessionMessageId.value.get(sessionId) 
+              : streamingMessageId.value
+            
+            if (targetMsgId) {
+              const targetMessages = sessionId === sessionsStore.activeSessionId 
+                ? messages.value 
+                : sessionMessagesCache.value.get(sessionId || '')
+              
+              const msg = targetMessages?.find(m => m.id === targetMsgId)
+              if (msg) {
+                msg.isStreaming = false
+                msg.isReasoningActive = false
 
-              // Set final tool calls and reasoning if provided
-              if (params.tool_calls && params.tool_calls.length > 0) {
-                msg.toolCalls = params.tool_calls
-              }
-              if (params.reasoning && params.reasoning.length > 0) {
-                msg.reasoning = params.reasoning
-              }
-
-              if (params.metrics) {
-                msg.metrics = {
-                  inputTokens: (params.metrics.input_tokens as number) || 0,
-                  outputTokens: (params.metrics.output_tokens as number) || 0,
-                  totalTokens: (params.metrics.total_tokens as number) || 0,
-                  cost: (params.metrics.request_cost as number) || 0,
+                if (params.tool_calls && params.tool_calls.length > 0) {
+                  msg.toolCalls = params.tool_calls
                 }
-                // Update session metrics
-                sessionMetrics.value.totalTokens += msg.metrics.totalTokens
-                sessionMetrics.value.totalCost += msg.metrics.cost || 0
-                sessionMetrics.value.messageCount++
-                saveSessionMetrics()
+                if (params.reasoning && params.reasoning.length > 0) {
+                  msg.reasoning = params.reasoning
+                }
 
-                // Update lifetime metrics
-                lifetimeMetrics.value.totalTokens += msg.metrics.totalTokens
-                lifetimeMetrics.value.totalCost += msg.metrics.cost || 0
-                lifetimeMetrics.value.totalMessages++
-                saveLifetimeMetrics()
+                if (params.metrics) {
+                  msg.metrics = {
+                    inputTokens: (params.metrics.input_tokens as number) || 0,
+                    outputTokens: (params.metrics.output_tokens as number) || 0,
+                    totalTokens: (params.metrics.total_tokens as number) || 0,
+                    cost: (params.metrics.request_cost as number) || 0,
+                  }
+                  sessionMetrics.value.totalTokens += msg.metrics.totalTokens
+                  sessionMetrics.value.totalCost += msg.metrics.cost || 0
+                  sessionMetrics.value.messageCount++
+                  saveSessionMetrics()
+
+                  lifetimeMetrics.value.totalTokens += msg.metrics.totalTokens
+                  lifetimeMetrics.value.totalCost += msg.metrics.cost || 0
+                  lifetimeMetrics.value.totalMessages++
+                  saveLifetimeMetrics()
+                }
+
+                if (sessionId && sessionsStore.activeSessionId !== sessionId) {
+                  sessionsStore.activeSessionId = sessionId
+                  sessionsStore.persistActiveSession()
+                }
               }
-
-              // Update active session ID if provided
-              if (params.session_id && sessionsStore.activeSessionId !== params.session_id) {
-                sessionsStore.activeSessionId = params.session_id
-                sessionsStore.persistActiveSession()
+              
+              streamingMessageId.value = null
+              if (sessionId) {
+                streamingSessionMessageId.value.delete(sessionId)
               }
             }
+          }
+          break
+        case 'stream_cancelled':
+          {
+            const params = data.params as { session_id?: string }
+            const sessionId = params.session_id
+            const targetMsgId = sessionId 
+              ? streamingSessionMessageId.value.get(sessionId) 
+              : streamingMessageId.value
+            
+            if (targetMsgId) {
+              const targetMessages = sessionId === sessionsStore.activeSessionId 
+                ? messages.value 
+                : sessionMessagesCache.value.get(sessionId || '')
+              
+              const msgIndex = targetMessages?.findIndex(m => m.id === targetMsgId) ?? -1
+              if (msgIndex >= 0 && targetMessages) {
+                targetMessages.splice(msgIndex, 1)
+              }
+            }
+            
             streamingMessageId.value = null
+            if (sessionId) {
+              streamingSessionMessageId.value.delete(sessionId)
+            }
+            if (processingSessionId.value === sessionId) {
+              processingSessionId.value = null
+              isProcessing.value = false
+            }
           }
           break
         case 'session_updated':
@@ -606,40 +687,48 @@ export const useBrainStore = defineStore('brain', () => {
   }
 
   async function sendUserMessage(text: string) {
-    if (!text.trim() || isProcessing.value) return
+    if (!text.trim()) return
+    
+    if (processingSessionId.value) {
+      showToast('Please wait for the current request to complete or cancel it', 'info')
+      return
+    }
 
+    const targetSessionId = sessionsStore.activeSessionId
+    
     addMessage('user', text)
     isProcessing.value = true
+    processingSessionId.value = targetSessionId
     error.value = null
     budgetExceeded.value = false
 
-    // Create streaming placeholder message for assistant response
     const assistantMsgId = addMessage('assistant', '', { isStreaming: true })
     streamingMessageId.value = assistantMsgId
+    
+    if (targetSessionId) {
+      streamingSessionMessageId.value.set(targetSessionId, assistantMsgId)
+    }
 
     try {
-      // Ensure we have a valid virtual key before making requests
       if (authStore.isAuthenticated && !authStore.hasValidKey) {
         await authStore.ensureVirtualKey()
       }
 
       const response = await sendRequest('user_message', {
         text,
-        // Use virtual key instead of raw JWT for secure LiteLLM access
         authorization: authStore.virtualKey ? `Bearer ${authStore.virtualKey}` : undefined,
-        // Include selected model for the brain to use
         model: authStore.selectedModel,
-        // Include session ID for conversation continuity
-        session_id: sessionsStore.activeSessionId,
-      }) as { text: string; metrics?: Record<string, unknown>; session_id?: string }
+        session_id: targetSessionId,
+      }) as { text: string; metrics?: Record<string, unknown>; session_id?: string; cancelled?: boolean }
 
-      // Response is complete - stream_complete handler already updated the message
-      // Just update token count from response if available
+      if (response.cancelled) {
+        return
+      }
+
       if (response.metrics?.session_total_tokens) {
         tokenCount.value = response.metrics.session_total_tokens as number
       }
 
-      // Refresh credit balance after each message
       if (authStore.isAuthenticated) {
         authStore.refreshCreditBalance()
       }
@@ -647,14 +736,22 @@ export const useBrainStore = defineStore('brain', () => {
       const err = e as Error
       error.value = err.message
 
-      // Remove the streaming message on error
-      const msgIndex = messages.value.findIndex(m => m.id === assistantMsgId)
-      if (msgIndex >= 0) {
-        messages.value.splice(msgIndex, 1)
+      const targetMessages = targetSessionId === sessionsStore.activeSessionId 
+        ? messages.value 
+        : sessionMessagesCache.value.get(targetSessionId || '')
+      
+      if (targetMessages) {
+        const msgIndex = targetMessages.findIndex(m => m.id === assistantMsgId)
+        if (msgIndex >= 0) {
+          targetMessages.splice(msgIndex, 1)
+        }
       }
+      
       streamingMessageId.value = null
+      if (targetSessionId) {
+        streamingSessionMessageId.value.delete(targetSessionId)
+      }
 
-      // Check if this is a budget exceeded error
       if (isBudgetExceededError(err) || err.message.includes('Insufficient credits')) {
         budgetExceeded.value = true
         showPurchasePrompt.value = true
@@ -664,6 +761,10 @@ export const useBrainStore = defineStore('brain', () => {
       }
     } finally {
       isProcessing.value = false
+      processingSessionId.value = null
+      if (targetSessionId) {
+        streamingSessionMessageId.value.delete(targetSessionId)
+      }
     }
   }
 
@@ -687,6 +788,16 @@ export const useBrainStore = defineStore('brain', () => {
     }
   }
 
+  async function cancelCurrentRequest(): Promise<void> {
+    if (!processingSessionId.value) return
+    
+    try {
+      await sendRequest('cancel_request', { session_id: processingSessionId.value })
+    } catch (e) {
+      console.warn('Failed to cancel request:', e)
+    }
+  }
+
   async function clearMessages() {
     // Clear messages and reset active session
     // A new session will be created when user sends the next message
@@ -697,8 +808,32 @@ export const useBrainStore = defineStore('brain', () => {
   }
 
   async function loadSessionMessages(sessionId: string): Promise<void> {
-    isProcessing.value = true
     error.value = null
+
+    const currentSessionId = sessionsStore.activeSessionId
+    if (currentSessionId && currentSessionId !== sessionId && messages.value.length > 0) {
+      sessionMessagesCache.value.set(currentSessionId, [...messages.value])
+    }
+
+    const cachedMessages = sessionMessagesCache.value.get(sessionId)
+    if (cachedMessages) {
+      messages.value = cachedMessages
+      await sessionsStore.switchSession(sessionId)
+      
+      const session = sessionsStore.sessions.find(s => s.id === sessionId)
+      if (session) {
+        sessionMetrics.value = {
+          totalTokens: session.totalTokens,
+          totalCost: session.totalCost,
+          messageCount: session.messageCount,
+          startTime: session.createdAt.getTime(),
+        }
+        saveSessionMetrics()
+      }
+      return
+    }
+
+    isProcessing.value = true
 
     try {
       const history = await sessionsStore.getSessionHistory(sessionId)
@@ -814,6 +949,7 @@ export const useBrainStore = defineStore('brain', () => {
     startupStatus,
     messages,
     isProcessing,
+    processingSessionId,
     tokenCount,
     knowledgeStatus,
     pendingConfirmation,
@@ -832,6 +968,7 @@ export const useBrainStore = defineStore('brain', () => {
     connectWebSocket,
     disconnectWebSocket,
     sendUserMessage,
+    cancelCurrentRequest,
     respondToConfirmation,
     clearMessages,
     loadSessionMessages,

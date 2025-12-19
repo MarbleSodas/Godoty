@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useHitlStore } from '@/stores/hitl'
 import type { PendingConfirmation } from '@/stores/brain'
 
 const props = defineProps<{
@@ -10,8 +11,10 @@ const emit = defineEmits<{
   respond: [approved: boolean, modifiedContent?: string]
 }>()
 
+const hitlStore = useHitlStore()
 const editedContent = ref(props.confirmation.details.content || '')
 const showDiff = ref(false)
+const alwaysAllowChecked = ref(false)
 
 const actionLabel = computed(() => {
   switch (props.confirmation.action_type) {
@@ -20,6 +23,10 @@ const actionLabel = computed(() => {
     case 'create_node': return 'Create Node'
     case 'delete_node': return 'Delete Node'
     case 'delete_file': return 'Delete File'
+    case 'create_directory': return 'Create Directory'
+    case 'rename_file': return 'Rename File'
+    case 'move_file': return 'Move File'
+    case 'copy_file': return 'Copy File'
     default: return 'Action'
   }
 })
@@ -31,6 +38,10 @@ const actionIcon = computed(() => {
     case 'create_node': return '➕'
     case 'delete_node': return '🗑️'
     case 'delete_file': return '🗑️'
+    case 'create_directory': return '📁'
+    case 'rename_file': return '✏️'
+    case 'move_file': return '📦'
+    case 'copy_file': return '📋'
     default: return '❓'
   }
 })
@@ -66,6 +77,10 @@ const diffLines = computed(() => {
 })
 
 function approve() {
+  if (alwaysAllowChecked.value) {
+    // Cast to any to avoid strict type checking issues between stores
+    hitlStore.setAlwaysAllowAction(props.confirmation.action_type as any, true)
+  }
   emit('respond', true, editedContent.value)
 }
 
@@ -101,6 +116,38 @@ function deny() {
           <code class="block bg-godot-darker px-3 py-2 rounded text-godot-blue text-sm">
             {{ confirmation.details.path }}
           </code>
+        </div>
+
+        <!-- Source/Dest Paths (Move/Copy) -->
+        <div v-if="confirmation.details.source_path || confirmation.details.destination_path" class="mb-4 space-y-2">
+          <div v-if="confirmation.details.source_path">
+            <label class="block text-sm text-godot-muted mb-1">Source Path</label>
+            <code class="block bg-godot-darker px-3 py-2 rounded text-godot-blue text-sm">
+              {{ confirmation.details.source_path }}
+            </code>
+          </div>
+          <div v-if="confirmation.details.destination_path">
+            <label class="block text-sm text-godot-muted mb-1">Destination Path</label>
+            <code class="block bg-godot-darker px-3 py-2 rounded text-godot-blue text-sm">
+              {{ confirmation.details.destination_path }}
+            </code>
+          </div>
+        </div>
+
+        <!-- Rename details (old_path + new_name) -->
+        <div v-if="confirmation.details.old_path || confirmation.details.new_name" class="mb-4 space-y-2">
+          <div v-if="confirmation.details.old_path">
+            <label class="block text-sm text-godot-muted mb-1">Original Path</label>
+            <code class="block bg-godot-darker px-3 py-2 rounded text-godot-blue text-sm">
+              {{ confirmation.details.old_path }}
+            </code>
+          </div>
+          <div v-if="confirmation.details.new_name">
+            <label class="block text-sm text-godot-muted mb-1">New Name</label>
+            <code class="block bg-godot-darker px-3 py-2 rounded text-godot-blue text-sm">
+              {{ confirmation.details.new_name }}
+            </code>
+          </div>
         </div>
 
         <!-- Setting Path & Value -->
@@ -186,13 +233,23 @@ function deny() {
       </div>
 
       <!-- Actions -->
-      <div class="flex justify-end gap-3 p-4 border-t border-godot-border">
-        <button @click="deny" class="btn btn-secondary">
-          Deny
-        </button>
-        <button @click="approve" class="btn btn-success">
-          Approve
-        </button>
+      <div class="flex items-center justify-between p-4 border-t border-godot-border">
+        <label class="flex items-center gap-2 text-sm text-godot-muted select-none cursor-pointer hover:text-godot-text">
+          <input 
+            type="checkbox" 
+            v-model="alwaysAllowChecked" 
+            class="rounded bg-godot-darker border-godot-border text-godot-blue focus:ring-godot-blue focus:ring-offset-godot-bg" 
+          />
+          Always allow {{ actionLabel }} actions
+        </label>
+        <div class="flex gap-3">
+          <button @click="deny" class="btn btn-secondary">
+            Deny
+          </button>
+          <button @click="approve" class="btn btn-success">
+            Approve
+          </button>
+        </div>
       </div>
     </div>
   </div>

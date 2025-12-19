@@ -139,24 +139,29 @@ async def _send_request(method: str, params: dict | None = None) -> Any:
         _pending_requests.pop(request_id, None)
 
 
+import logging
+
+_hitl_logger = logging.getLogger("godoty.hitl")
+
+
 async def _request_hitl_confirmation(
     action_type: str,
     description: str,
     details: dict[str, Any],
 ) -> bool:
-    """Request human-in-the-loop confirmation via Tauri UI.
-    
-    Args:
-        action_type: Type of action ('write_file', 'delete_node', etc.)
-        description: Human-readable description of the action
-        details: Detailed information about the change (diff, paths, etc.)
-    
-    Returns:
-        True if user approved, False otherwise
-    """
+    """Request human-in-the-loop confirmation via Tauri UI. Checks device-level preferences first."""
     if _connection_manager is None:
-        # No connection manager - deny for safety
         return False
+    
+    prefs = _connection_manager.get_hitl_preferences()
+    if prefs:
+        if prefs.always_allow_all:
+            _hitl_logger.info(f"HITL auto-approved (always_allow_all): {action_type} - {description}")
+            return True
+        
+        if prefs.always_allow.get(action_type, False):
+            _hitl_logger.info(f"HITL auto-approved ({action_type}): {description}")
+            return True
     
     response = await _connection_manager.request_confirmation(
         action_type=action_type,
@@ -615,7 +620,10 @@ async def get_code_completions(
 # ============================================================================
 
 
-def _validate_path_in_project(relative_path: str) -> "Path":
+from pathlib import Path as PathType
+
+
+def _validate_path_in_project(relative_path: str) -> PathType:
     """Validate a path is within the project and return the absolute path.
     
     Security: Uses Path.resolve() to handle '..' traversal and symlinks.
@@ -673,7 +681,12 @@ async def list_project_files(
     from pathlib import Path
     
     try:
-        target_dir = _validate_path_in_project(directory) if directory else Path(_project_path).resolve()
+        if directory:
+            target_dir = _validate_path_in_project(directory)
+        elif _project_path:
+            target_dir = Path(_project_path).resolve()
+        else:
+            return [{"error": "No Godot project connected"}]
     except ValueError as e:
         return [{"error": str(e)}]
     
@@ -686,11 +699,12 @@ async def list_project_files(
         else:
             files = list(target_dir.glob(pattern))
         
-        # Limit results to prevent overwhelming context
         max_files = 100
         if len(files) > max_files:
             files = files[:max_files]
         
+        if _project_path is None:
+            return [{"error": "No Godot project connected"}]
         project_root = Path(_project_path).resolve()
         return [
             {
@@ -829,19 +843,177 @@ async def delete_file(path: str) -> dict:
 
 
 async def file_exists(path: str) -> bool:
-    """Check if a file or directory exists in the Godot project.
-    
-    Args:
-        path: Path relative to project root
-        
-    Returns:
-        True if the file/directory exists, False otherwise
-    """
+    """Check if a file or directory exists in the Godot project."""
     try:
         target_path = _validate_path_in_project(path)
         return target_path.exists()
     except ValueError:
         return False
+
+
+async def create_directory(path: str) -> dict:
+    """Create a new directory in the Godot project. Requires HITL confirmation."""
+    from pathlib import Path
+    
+    try:
+        target_path = _validate_path_in_project(path)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    
+    if target_path.exists():
+        if target_path.is_dir():
+            return {"success": True, "message": f"Directory already exists: {path}"}
+        return {"success": False, "message": f"A file already exists at this path: {path}"}
+    
+    approved = await _request_hitl_confirmation(
+        action_type="create_directory",
+        description=f"Create directory: {path}",
+        details={"path": path},
+    )
+    
+    if not approved:
+        return {"success": False, "message": "Operation denied by user", "denied": True}
+    
+    try:
+        target_path.mkdir(parents=True, exist_ok=True)
+        return {"success": True, "message": f"Directory created: {path}"}
+    except Exception as e:
+        return {"success": False, "message": f"Failed to create directory: {e}"}
+
+
+async def rename_file(old_path: str, new_name: str) -> dict:
+    """Rename a file or directory in the Godot project. Requires HITL confirmation."""
+    from pathlib import Path
+    
+    if _project_path is None:
+        return {"success": False, "message": "No Godot project connected"}
+    
+    try:
+        old_target = _validate_path_in_project(old_path)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    
+    if not old_target.exists():
+        return {"success": False, "message": f"Path not found: {old_path}"}
+    
+    if "/" in new_name or "\\" in new_name:
+        return {"success": False, "message": "new_name should be just a filename, not a path. Use move_file for moving."}
+    
+    new_target = old_target.parent / new_name
+    project_root = Path(_project_path).resolve()
+    
+    try:
+        new_target.relative_to(project_root)
+    except ValueError:
+        return {"success": False, "message": "New path would escape project directory"}
+    
+    if new_target.exists():
+        return {"success": False, "message": f"Target already exists: {new_name}"}
+    
+    new_path_relative = str(new_target.relative_to(project_root))
+    
+    approved = await _request_hitl_confirmation(
+        action_type="rename_file",
+        description=f"Rename: {old_path} → {new_name}",
+        details={"old_path": old_path, "new_path": new_path_relative, "new_name": new_name},
+    )
+    
+    if not approved:
+        return {"success": False, "message": "Operation denied by user", "denied": True}
+    
+    try:
+        old_target.rename(new_target)
+        return {"success": True, "message": f"Renamed: {old_path} → {new_path_relative}", "new_path": new_path_relative}
+    except Exception as e:
+        return {"success": False, "message": f"Failed to rename: {e}"}
+
+
+async def move_file(source_path: str, destination_path: str) -> dict:
+    """Move a file or directory to a new location in the Godot project. Requires HITL confirmation."""
+    from pathlib import Path
+    
+    if _project_path is None:
+        return {"success": False, "message": "No Godot project connected"}
+    
+    try:
+        source = _validate_path_in_project(source_path)
+    except ValueError as e:
+        return {"success": False, "message": f"Invalid source path: {e}"}
+    
+    try:
+        project_root = Path(_project_path).resolve()
+        dest = (project_root / destination_path).resolve()
+        dest.relative_to(project_root)
+    except ValueError:
+        return {"success": False, "message": "Destination path escapes project directory"}
+    
+    if not source.exists():
+        return {"success": False, "message": f"Source not found: {source_path}"}
+    
+    if dest.exists():
+        return {"success": False, "message": f"Destination already exists: {destination_path}"}
+    
+    approved = await _request_hitl_confirmation(
+        action_type="move_file",
+        description=f"Move: {source_path} → {destination_path}",
+        details={"source_path": source_path, "destination_path": destination_path},
+    )
+    
+    if not approved:
+        return {"success": False, "message": "Operation denied by user", "denied": True}
+    
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(dest)
+        return {"success": True, "message": f"Moved: {source_path} → {destination_path}"}
+    except Exception as e:
+        return {"success": False, "message": f"Failed to move: {e}"}
+
+
+async def copy_file(source_path: str, destination_path: str) -> dict:
+    """Copy a file to a new location in the Godot project. Requires HITL confirmation. Only works for files, not directories."""
+    import shutil
+    from pathlib import Path
+    
+    if _project_path is None:
+        return {"success": False, "message": "No Godot project connected"}
+    
+    try:
+        source = _validate_path_in_project(source_path)
+    except ValueError as e:
+        return {"success": False, "message": f"Invalid source path: {e}"}
+    
+    try:
+        project_root = Path(_project_path).resolve()
+        dest = (project_root / destination_path).resolve()
+        dest.relative_to(project_root)
+    except ValueError:
+        return {"success": False, "message": "Destination path escapes project directory"}
+    
+    if not source.exists():
+        return {"success": False, "message": f"Source not found: {source_path}"}
+    
+    if not source.is_file():
+        return {"success": False, "message": f"Source must be a file, not a directory: {source_path}"}
+    
+    if dest.exists():
+        return {"success": False, "message": f"Destination already exists: {destination_path}"}
+    
+    approved = await _request_hitl_confirmation(
+        action_type="copy_file",
+        description=f"Copy: {source_path} → {destination_path}",
+        details={"source_path": source_path, "destination_path": destination_path},
+    )
+    
+    if not approved:
+        return {"success": False, "message": "Operation denied by user", "denied": True}
+    
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+        return {"success": True, "message": f"Copied: {source_path} → {destination_path}"}
+    except Exception as e:
+        return {"success": False, "message": f"Failed to copy: {e}"}
 
 
 # ============================================================================
@@ -902,6 +1074,10 @@ __all__ = [
     "write_file",
     "delete_file",
     "file_exists",
+    "create_directory",
+    "rename_file",
+    "move_file",
+    "copy_file",
     # Knowledge & LSP
     "query_godot_docs",
     "get_symbol_info",

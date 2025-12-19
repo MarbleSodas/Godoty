@@ -32,6 +32,7 @@ from app.protocol.jsonrpc import (
     ConsoleErrorParams,
     GodotyHelloParams,
     GodotyHelloResult,
+    HITLPreferences,
     JsonRpcError,
     JsonRpcErrorPayload,
     JsonRpcRequest,
@@ -138,9 +139,12 @@ class TauriConnection:
     """State for a Tauri Desktop App connection."""
     ws: WebSocket
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str | None = None  # Supabase user ID
+    user_id: str | None = None
     pending_confirmations: dict[str, asyncio.Future] = field(default_factory=dict)
     total_tokens: int = 0
+    hitl_preferences: HITLPreferences = field(default_factory=HITLPreferences)
+    active_request_task: asyncio.Task | None = None
+    active_request_session_id: str | None = None
 
 
 class ConnectionManager:
@@ -253,6 +257,12 @@ class ConnectionManager:
         """Resolve a pending confirmation with user's decision."""
         if self.tauri and confirmation_id in self.tauri.pending_confirmations:
             self.tauri.pending_confirmations[confirmation_id].set_result(response)
+    
+    def get_hitl_preferences(self) -> HITLPreferences | None:
+        """Get HITL preferences from the connected Tauri client."""
+        if self.tauri:
+            return self.tauri.hitl_preferences
+        return None
 
 
 # Global connection manager
@@ -528,6 +538,15 @@ async def _handle_tauri_request(conn: TauriConnection, req: JsonRpcRequest) -> s
         asyncio.create_task(_reindex_knowledge_task(conn, req.params or {}))
         return _success(req.id, {"status": "started"})
     
+    if req.method == "set_hitl_preferences":
+        return _handle_set_hitl_preferences(conn, req)
+    
+    if req.method == "get_hitl_preferences":
+        return _handle_get_hitl_preferences(conn, req)
+    
+    if req.method == "cancel_request":
+        return await _handle_cancel_request(conn, req)
+    
     return _error(req.id, -32601, f"Method not found: {req.method}")
 
 
@@ -574,14 +593,15 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
     try:
         from app.agents.team import GodotySession
         
-        # Get database for persistent session storage
         db = get_db()
+        
+        conn.active_request_session_id = session_id
         
         godoty_session = GodotySession(
             session_id=session_id,
-            jwt_token=authorization,  # Pass virtual key for LiteLLM auth
-            model_id=model,  # Pass user-selected model
-            db=db,  # Enable persistent session storage
+            jwt_token=authorization,
+            model_id=model,
+            db=db,
         )
         
         # Use streaming to send chunks in real-time
@@ -592,31 +612,28 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         
         async for chunk in godoty_session.process_message_stream(user_text):
             if chunk["type"] == "chunk":
-                # Send streaming chunk notification to desktop
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_chunk",
-                        params={"content": chunk["content"]}
+                        params={"content": chunk["content"], "session_id": session_id}
                     ).model_dump_json()
                 )
                 full_content += chunk["content"]
             
             elif chunk["type"] == "tool_call_started":
-                # Send tool call started notification
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_tool_call",
-                        params={"status": "started", "tool": chunk["tool"]}
+                        params={"status": "started", "tool": chunk["tool"], "session_id": session_id}
                     ).model_dump_json()
                 )
                 collected_tool_calls.append(chunk["tool"])
             
             elif chunk["type"] == "tool_call_completed":
-                # Send tool call completed notification
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_tool_call",
-                        params={"status": "completed", "tool": chunk["tool"]}
+                        params={"status": "completed", "tool": chunk["tool"], "session_id": session_id}
                     ).model_dump_json()
                 )
                 # Update in our list
@@ -626,30 +643,27 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                         break
             
             elif chunk["type"] == "reasoning_started":
-                # Send reasoning started notification
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_reasoning",
-                        params={"status": "started"}
+                        params={"status": "started", "session_id": session_id}
                     ).model_dump_json()
                 )
             
             elif chunk["type"] == "reasoning":
-                # Send reasoning step notification
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_reasoning",
-                        params={"status": "step", "content": chunk["content"]}
+                        params={"status": "step", "content": chunk["content"], "session_id": session_id}
                     ).model_dump_json()
                 )
                 collected_reasoning.append(chunk["content"])
             
             elif chunk["type"] == "reasoning_completed":
-                # Send reasoning completed notification
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_reasoning",
-                        params={"status": "completed"}
+                        params={"status": "completed", "session_id": session_id}
                     ).model_dump_json()
                 )
                 
@@ -697,11 +711,10 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         # Update token count
         conn.total_tokens = final_metrics.get("session_total_tokens", conn.total_tokens)
         
-        # Send token update notification
         await conn.ws.send_text(
             JsonRpcRequest(
                 method="token_update",
-                params={"total": conn.total_tokens}
+                params={"total": conn.total_tokens, "session_id": session_id}
             ).model_dump_json()
         )
         
@@ -744,11 +757,14 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
             "session_id": session_id,
         })
         
+    except asyncio.CancelledError:
+        logger.info(f"Request cancelled for session {session_id}")
+        return _success(req.id, {"cancelled": True, "session_id": session_id})
+        
     except Exception as e:
         error_msg = str(e).lower()
         logger.error(f"Error processing message: {e}")
         
-        # Check for budget exceeded errors (403 from LiteLLM or budget-related messages)
         if "403" in error_msg or "budget" in error_msg or "exceeded" in error_msg or "insufficient" in error_msg:
             return _error(req.id, -32001, "Insufficient credits. Please purchase more credits to continue.", {
                 "error_type": "budget_exceeded",
@@ -756,6 +772,9 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
             })
         
         return _error(req.id, -32000, str(e))
+    
+    finally:
+        conn.active_request_session_id = None
 
 
 async def _handle_confirmation_response(conn: TauriConnection, req: JsonRpcRequest) -> str | None:
@@ -770,6 +789,55 @@ async def _handle_confirmation_response(conn: TauriConnection, req: JsonRpcReque
         logger.error(f"Invalid confirmation response: {e}")
     
     return None
+
+
+# ============================================================================
+# HITL Preferences Handlers
+# ============================================================================
+
+
+def _handle_set_hitl_preferences(conn: TauriConnection, req: JsonRpcRequest) -> str:
+    params = req.params or {}
+    try:
+        prefs = HITLPreferences.model_validate(params)
+        conn.hitl_preferences = prefs
+        enabled_actions = [k for k, v in prefs.always_allow.items() if v]
+        logger.info(f"Updated HITL preferences: always_allow_all={prefs.always_allow_all}, enabled={enabled_actions}")
+        return _success(req.id, {"updated": True})
+    except Exception as e:
+        return _error(req.id, -32602, f"Invalid preferences: {e}")
+
+
+def _handle_get_hitl_preferences(conn: TauriConnection, req: JsonRpcRequest) -> str:
+    return _success(req.id, conn.hitl_preferences.model_dump())
+
+
+async def _handle_cancel_request(conn: TauriConnection, req: JsonRpcRequest) -> str:
+    session_id = conn.active_request_session_id
+    
+    if conn.active_request_task and not conn.active_request_task.done():
+        conn.active_request_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(conn.active_request_task), timeout=1.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        logger.info(f"Request cancelled by user for session {session_id}")
+    
+    if session_id:
+        try:
+            await conn.ws.send_text(
+                JsonRpcRequest(
+                    method="stream_cancelled",
+                    params={"session_id": session_id}
+                ).model_dump_json()
+            )
+        except Exception:
+            pass
+    
+    conn.active_request_task = None
+    conn.active_request_session_id = None
+    
+    return _success(req.id, {"cancelled": True, "session_id": session_id})
 
 
 # ============================================================================

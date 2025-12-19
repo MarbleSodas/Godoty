@@ -67,14 +67,7 @@ export const useSessionsStore = defineStore('sessions', () => {
             }))
         }
 
-        // Use persisted active session if available, otherwise use server default
-        const persisted = loadPersistedActiveSession()
-        if (persisted && sessions.value.some(s => s.id === persisted)) {
-            activeSessionId.value = persisted
-        } else if (data.active_session_id) {
-            activeSessionId.value = data.active_session_id
-            persistActiveSession()
-        }
+        activeSessionId.value = null
     }
 
     /**
