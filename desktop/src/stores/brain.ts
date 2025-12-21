@@ -85,6 +85,7 @@ export const useBrainStore = defineStore('brain', () => {
   const pendingConfirmation = ref<PendingConfirmation | null>(null)
   const error = ref<string | null>(null)
   const brainUrl = ref('ws://127.0.0.1:8000/ws/tauri')
+  const reconnectAttempts = ref(0)
   const startupStatus = ref('Initializing...')  // Status text for splash screen
   const budgetExceeded = ref(false)  // Track if user ran out of credits
   const showPurchasePrompt = ref(false)  // Show purchase credits dialog
@@ -255,6 +256,7 @@ export const useBrainStore = defineStore('brain', () => {
     ws.onopen = async () => {
       console.log('[Brain] WebSocket connected')
       connected.value = true
+      reconnectAttempts.value = 0
       error.value = null
 
       // Initialize sessions store with sendRequest function
@@ -324,10 +326,26 @@ export const useBrainStore = defineStore('brain', () => {
     ws.onclose = () => {
       console.log('[Brain] WebSocket disconnected')
       connected.value = false
-      // Attempt reconnection after 3 seconds
+      
+      // Calculate exponential backoff with jitter
+      // Start at 1s, max 30s
+      const baseDelay = 1000
+      const maxDelay = 30000
+      const jitter = Math.random() * 500 // 0-500ms jitter
+      
+      const backoffDelay = Math.min(
+        maxDelay, 
+        baseDelay * Math.pow(2, reconnectAttempts.value)
+      )
+      
+      const delay = backoffDelay + jitter
+      reconnectAttempts.value++
+
+      console.log(`[Brain] Reconnecting in ${Math.round(delay)}ms (Attempt ${reconnectAttempts.value})`)
+
       setTimeout(() => {
         if (!connected.value) connectWebSocket()
-      }, 3000)
+      }, delay)
     }
 
     ws.onerror = (e) => {

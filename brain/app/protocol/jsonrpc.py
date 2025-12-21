@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 JSONRPC_VERSION: Literal["2.0"] = "2.0"
-PROTOCOL_VERSION = "0.1"
+PROTOCOL_VERSION = "0.2"
 
 
 # ============================================================================

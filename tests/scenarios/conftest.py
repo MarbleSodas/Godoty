@@ -59,6 +59,41 @@ def mock_connection_manager() -> Generator[MagicMock, None, None]:
 
 
 @pytest.fixture
+def mock_connection_manager_deny() -> Generator[MagicMock, None, None]:
+    """Mock the ConnectionManager that denies all HITL requests.
+    
+    Use this fixture to test denial flow handling.
+    """
+    mock_manager = MagicMock()
+    
+    mock_response = MagicMock()
+    mock_response.approved = False
+    mock_response.modified_content = None
+    mock_manager.request_confirmation = AsyncMock(return_value=mock_response)
+    
+    with patch("app.agents.tools._connection_manager", mock_manager):
+        yield mock_manager
+
+
+@pytest.fixture
+def mock_connection_manager_timeout() -> Generator[MagicMock, None, None]:
+    """Mock the ConnectionManager that simulates a confirmation timeout.
+    
+    Use this fixture to test timeout handling.
+    """
+    mock_manager = MagicMock()
+    
+    async def timeout_confirmation(*args, **kwargs):
+        await asyncio.sleep(0.1)
+        return None
+    
+    mock_manager.request_confirmation = AsyncMock(side_effect=timeout_confirmation)
+    
+    with patch("app.agents.tools._connection_manager", mock_manager):
+        yield mock_manager
+
+
+@pytest.fixture
 def mock_project_path(tmp_path: Path) -> Generator[Path, None, None]:
     """Create a mock Godot project directory.
     

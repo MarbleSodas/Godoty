@@ -19,7 +19,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -42,6 +42,22 @@ from app.sessions import get_session_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("godoty.brain")
+
+# Allowed WebSocket origins for security
+ALLOWED_WS_ORIGINS = {
+    "tauri://localhost",
+    "http://localhost:1420",
+    "http://localhost:5173",
+    "http://127.0.0.1:1420",
+    "http://127.0.0.1:5173",
+}
+
+
+def _validate_ws_origin(origin: str | None) -> bool:
+    """Validate WebSocket connection origin. Returns True if origin is allowed or None (same-origin)."""
+    if origin is None:
+        return True
+    return origin in ALLOWED_WS_ORIGINS
 
 # Remote LiteLLM proxy URL (where API keys are securely stored)
 REMOTE_PROXY_URL = os.getenv(
@@ -606,9 +622,9 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         
         # Use streaming to send chunks in real-time
         full_content = ""
-        final_metrics = {}
-        collected_tool_calls = []
-        collected_reasoning = []
+        final_metrics: dict[str, Any] = {}
+        collected_tool_calls: list[dict[str, Any]] = []
+        collected_reasoning: list[str] = []
         
         async for chunk in godoty_session.process_message_stream(user_text):
             if chunk["type"] == "chunk":
@@ -621,25 +637,26 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                 full_content += chunk["content"]
             
             elif chunk["type"] == "tool_call_started":
+                tool_data = cast(dict[str, Any], chunk["tool"])
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_tool_call",
-                        params={"status": "started", "tool": chunk["tool"], "session_id": session_id}
+                        params={"status": "started", "tool": tool_data, "session_id": session_id}
                     ).model_dump_json()
                 )
-                collected_tool_calls.append(chunk["tool"])
+                collected_tool_calls.append(tool_data)
             
             elif chunk["type"] == "tool_call_completed":
+                tool_data = cast(dict[str, Any], chunk["tool"])
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_tool_call",
-                        params={"status": "completed", "tool": chunk["tool"], "session_id": session_id}
+                        params={"status": "completed", "tool": tool_data, "session_id": session_id}
                     ).model_dump_json()
                 )
-                # Update in our list
                 for tc in collected_tool_calls:
-                    if tc.get("id") == chunk["tool"].get("id"):
-                        tc.update(chunk["tool"])
+                    if tc.get("id") == tool_data.get("id"):
+                        tc.update(tool_data)
                         break
             
             elif chunk["type"] == "reasoning_started":
@@ -668,9 +685,10 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                 )
                 
             elif chunk["type"] == "done":
-                full_content = chunk["content"]
-                final_metrics = chunk.get("metrics", {})
-                # Update with collected data if not in metrics
+                full_content = str(chunk.get("content", ""))
+                metrics_data = chunk.get("metrics")
+                if isinstance(metrics_data, dict):
+                    final_metrics = metrics_data
                 if "tool_calls" not in final_metrics:
                     final_metrics["tool_calls"] = collected_tool_calls
                 if "reasoning" not in final_metrics:
@@ -1222,6 +1240,7 @@ async def _handle_delete_indexed_version(req: JsonRpcRequest) -> str:
 
 async def _reindex_knowledge_task(conn: TauriConnection, params: dict) -> None:
     """Background task to reindex Godot documentation."""
+    version = params.get("version") or "4.5"
     try:
         from app.knowledge.godot_knowledge import get_godot_knowledge
         from app.agents.tools import get_godot_version

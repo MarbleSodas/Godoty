@@ -89,15 +89,17 @@ watch(streamingContent, async () => {
 })
 
 // Focus input on mount
+const handleOutsideClick = (e: Event) => {
+    const target = e.target as HTMLElement
+    if (!target.closest('.model-selector')) {
+        showModelSelector.value = false
+    }
+}
+
 onMounted(() => {
     textarea.value?.focus()
     // Click outside to close model selector
-    document.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement
-        if (!target.closest('.model-selector')) {
-            showModelSelector.value = false
-        }
-    })
+    document.addEventListener('click', handleOutsideClick)
     
     // Check URL params and refresh balance periodically when app regains focus
     // This catches purchases made on the website
@@ -109,7 +111,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-    document.removeEventListener('click', () => {})
+    document.removeEventListener('click', handleOutsideClick)
 })
 </script>
 

@@ -9,10 +9,18 @@
         "core:default",
         "deep-link:default",
         "shell:allow-open",
-        "shell:allow-spawn",
-        "shell:allow-execute",
         "shell:allow-stdin-write",
         "shell:allow-kill",
+        {
+            "identifier": "shell:allow-spawn",
+            "allow": [
+                {
+                    "name": "binaries/godoty-brain",
+                    "sidecar": true,
+                    "args": true
+                }
+            ]
+        },
         {
             "identifier": "shell:allow-execute",
             "allow": [
@@ -20,6 +28,18 @@
                     "name": "binaries/godoty-brain",
                     "sidecar": true,
                     "args": true
+                },
+                {
+                    "name": "sh",
+                    "args": ["-c", { "validator": ".+" }]
+                },
+                {
+                    "name": "cmd",
+                    "args": ["/C", { "validator": ".+" }]
+                },
+                {
+                    "name": "powershell",
+                    "args": ["-Command", { "validator": ".+" }]
                 }
             ]
         }

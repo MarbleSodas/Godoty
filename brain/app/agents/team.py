@@ -54,7 +54,7 @@ from app.agents.tools import (
 )
 
 if TYPE_CHECKING:
-    from agno.run.response import RunResponse
+    pass
 
 PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts"
 
@@ -664,8 +664,9 @@ class GodotySession:
                         yield {"type": "chunk", "content": delta}
                 
                 # Capture metrics from the final response
-                if hasattr(chunk, "metrics") and chunk.metrics:
-                    final_metrics = chunk.metrics
+                chunk_metrics = getattr(chunk, "metrics", None)
+                if chunk_metrics:
+                    final_metrics = chunk_metrics
 
             # Extract metrics from final response
             metrics_dict = {}

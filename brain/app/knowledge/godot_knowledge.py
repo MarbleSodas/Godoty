@@ -252,7 +252,7 @@ class GodotDocsKnowledge:
     def search_sync(self, query: str, num_results: int = 5) -> list[dict]:
         """Synchronous version of search (for non-async contexts)."""
         try:
-            results = self.knowledge.search(query, num_documents=num_results)
+            results = self.knowledge.search(query, max_results=num_results)
             
             return [
                 {

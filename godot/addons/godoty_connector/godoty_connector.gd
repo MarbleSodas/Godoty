@@ -10,6 +10,14 @@ extends EditorPlugin
 const PROTOCOL_VERSION := "0.2"
 const DEFAULT_URL := "ws://127.0.0.1:8000/ws/godot"
 
+enum JsonRpcErrorCode {
+	PARSE_ERROR = -32700,
+	INVALID_REQUEST = -32600,
+	METHOD_NOT_FOUND = -32601,
+	INVALID_PARAMS = -32602,
+	INTERNAL_ERROR = -32603,
+}
+
 var _socket: WebSocketPeer
 var _next_id: int = 1
 var _pending_requests: Dictionary = {}  # id -> callback
@@ -101,6 +109,7 @@ func _handle_message(text: String) -> void:
 	var data: Variant = JSON.parse_string(text)
 	if data == null or not data is Dictionary:
 		push_warning("[Godoty] Invalid JSON received: %s" % text)
+		_send_error(null, JsonRpcErrorCode.PARSE_ERROR, "Parse error: Invalid JSON")
 		return
 
 	# Check if this is a response to our request
@@ -152,7 +161,7 @@ func _handle_brain_request(data: Dictionary) -> void:
 		"delete_node":
 			_handle_delete_node(params, request_id)
 		_:
-			_send_error(request_id, -32601, "Method not found: %s" % method)
+			_send_error(request_id, JsonRpcErrorCode.METHOD_NOT_FOUND, "Method not found: %s" % method)
 
 
 # ============================================================================
