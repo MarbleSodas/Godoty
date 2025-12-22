@@ -1017,6 +1017,124 @@ async def copy_file(source_path: str, destination_path: str) -> dict:
 
 
 # ============================================================================
+# File Discovery Tools
+# ============================================================================
+
+
+async def find_files(
+    pattern: str = "**/*.gd",
+    max_results: int = 50,
+) -> list[dict]:
+    """Find files in the project matching a glob pattern.
+    
+    Use this tool to discover files before reading them. Supports recursive
+    patterns like '**/*.gd' to find all GDScript files.
+    
+    Args:
+        pattern: Glob pattern (e.g., '**/*.gd', '**/player*.gd', 'scripts/**/*.gd')
+        max_results: Maximum number of files to return (default: 50)
+        
+    Returns:
+        List of matching files with path, name, and size
+    """
+    from pathlib import Path
+    
+    if _project_path is None:
+        return [{"error": "No Godot project connected"}]
+    
+    project_root = Path(_project_path).resolve()
+    
+    try:
+        matches = list(project_root.glob(pattern))
+        matches = [m for m in matches if m.is_file()]
+        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        
+        if len(matches) > max_results:
+            matches = matches[:max_results]
+        
+        return [
+            {
+                "path": str(m.relative_to(project_root)),
+                "name": m.name,
+                "size": m.stat().st_size,
+            }
+            for m in matches
+        ]
+    except Exception as e:
+        return [{"error": f"Failed to find files: {e}"}]
+
+
+async def search_project_files(
+    pattern: str,
+    file_pattern: str = "*.gd",
+    max_results: int = 20,
+    context_lines: int = 1,
+) -> list[dict]:
+    """Search project files for content matching a text pattern.
+    
+    Use this tool to find code by content (like grep). Useful for finding
+    where a function is defined, where a signal is emitted, etc.
+    
+    Args:
+        pattern: Text pattern to search for (case-insensitive)
+        file_pattern: Glob pattern to filter files (e.g., '*.gd', '*.tscn')
+        max_results: Maximum number of matching lines to return (default: 20)
+        context_lines: Number of lines of context around each match (default: 1)
+        
+    Returns:
+        List of matches with file path, line number, and matching content
+    """
+    import re
+    from pathlib import Path
+    
+    if _project_path is None:
+        return [{"error": "No Godot project connected"}]
+    
+    project_root = Path(_project_path).resolve()
+    results: list[dict] = []
+    
+    try:
+        regex = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        regex = re.compile(re.escape(pattern), re.IGNORECASE)
+    
+    try:
+        files = list(project_root.rglob(file_pattern))
+        files = [f for f in files if f.is_file() and not str(f).startswith(str(project_root / ".godot"))]
+        
+        for file_path in files:
+            if len(results) >= max_results:
+                break
+                
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                lines = content.splitlines()
+                
+                for i, line in enumerate(lines):
+                    if len(results) >= max_results:
+                        break
+                        
+                    if regex.search(line):
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        context = lines[start:end]
+                        
+                        results.append({
+                            "file": str(file_path.relative_to(project_root)),
+                            "line": i + 1,
+                            "match": line.strip(),
+                            "context": "\n".join(context),
+                        })
+            except (UnicodeDecodeError, IOError):
+                continue
+        
+        return results if results else [{"message": f"No matches found for '{pattern}'"}]
+        
+    except Exception as e:
+        return [{"error": f"Search failed: {e}"}]
+
+
+# ============================================================================
 # Project Context Tool
 # ============================================================================
 
@@ -1078,6 +1196,9 @@ __all__ = [
     "rename_file",
     "move_file",
     "copy_file",
+    # File discovery
+    "find_files",
+    "search_project_files",
     # Knowledge & LSP
     "query_godot_docs",
     "get_symbol_info",

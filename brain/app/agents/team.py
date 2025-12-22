@@ -11,14 +11,29 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from dataclasses import dataclass, field
 from agno.agent import Agent, RunEvent
 from agno.db.sqlite import SqliteDb
 from agno.models.litellm import LiteLLM
+from agno.run.agent import (
+    RunContentEvent,
+    RunCompletedEvent,
+    RunErrorEvent,
+    ToolCallStartedEvent,
+    ToolCallCompletedEvent,
+    ReasoningStartedEvent,
+    ReasoningStepEvent,
+    ReasoningCompletedEvent,
+    ReasoningContentDeltaEvent,
+)
 from agno.team import Team
+from agno.run.team import TeamRunEvent
+import logging
+
+_logger = logging.getLogger("godoty.team")
 from agno.tools.reasoning import ReasoningTools
 from pydantic import BaseModel
 
@@ -45,6 +60,9 @@ from app.agents.tools import (
     rename_file,
     move_file,
     copy_file,
+    # File discovery tools
+    find_files,
+    search_project_files,
     # Knowledge & LSP tools
     query_godot_docs,
     get_symbol_info,
@@ -301,6 +319,7 @@ def create_observer_agent() -> Agent:
     - Provides structured observations
     """
     return Agent(
+        id="observer",
         name="Observer",
         role="Perception Specialist",
         model=_get_model(_current_jwt_token, _current_model_id),
@@ -316,7 +335,6 @@ def create_observer_agent() -> Agent:
         markdown=True,
         retries=2,
         tool_call_limit=5,
-        # Agno: Enable reasoning for better analysis
         reasoning=True,
         reasoning_min_steps=1,
         reasoning_max_steps=3,
@@ -336,6 +354,7 @@ def create_coder_agent() -> Agent:
     output_schema = config.coder_schema if config.use_structured_output else None
     
     return Agent(
+        id="gdscript-coder",
         name="GDScript Coder",
         role="Code Implementation Specialist",
         model=_get_model(_current_jwt_token, _current_model_id),
@@ -361,6 +380,8 @@ def create_coder_agent() -> Agent:
             rename_file,
             move_file,
             copy_file,
+            find_files,
+            search_project_files,
             query_godot_docs,
             get_symbol_info,
             get_code_completions,
@@ -374,11 +395,10 @@ def create_coder_agent() -> Agent:
         reasoning=True,
         reasoning_min_steps=2,
         reasoning_max_steps=5,
-        compress_tool_results=True,
     )
 
 
-def create_architect_agent() -> Agent:
+def create_architect_agent(project_context: str = "") -> Agent:
     """Create the Systems Architect agent for planning complex features.
     
     Features:
@@ -390,10 +410,11 @@ def create_architect_agent() -> Agent:
     output_schema = config.architect_schema if config.use_structured_output else None
     
     return Agent(
+        id="systems-architect",
         name="Systems Architect",
         role="Planning and Design Specialist",
         model=_get_model(_current_jwt_token, _current_model_id),
-        instructions=_load_prompt("architect") or (
+        instructions=_load_prompt("architect", context=project_context) or (
             "You are the Systems Architect agent for Godoty. Your role is to break down "
             "complex feature requests into structured, actionable steps. When asked to implement "
             "a feature like 'inventory system', decompose it into: resource definitions, "
@@ -406,6 +427,8 @@ def create_architect_agent() -> Agent:
             list_project_files,
             read_file,
             file_exists,
+            find_files,
+            search_project_files,
             query_godot_docs,
             get_project_context,
         ],
@@ -421,7 +444,7 @@ def create_architect_agent() -> Agent:
     )
 
 
-def create_lead_agent(session_id: str | None = None) -> Agent:
+def create_lead_agent(session_id: str | None = None, project_context: str = "") -> Agent:
     """Create the Lead Developer agent that orchestrates the team.
     
     Features:
@@ -438,10 +461,11 @@ def create_lead_agent(session_id: str | None = None) -> Agent:
     )
     
     return Agent(
+        id="lead-developer",
         name="Lead Developer",
         role="Team Coordinator",
         model=_get_model(_current_jwt_token, _current_model_id),
-        instructions=_load_prompt("lead") or (
+        instructions=_load_prompt("lead", context=project_context) or (
             "You are the Lead Developer agent for Godoty. "
             "Prefer state-based perception (scene tree, open script) over screenshots. "
             "Never perform project modifications without HITL approval."
@@ -452,6 +476,8 @@ def create_lead_agent(session_id: str | None = None) -> Agent:
             get_open_script,
             read_project_file,
             get_project_context,
+            find_files,
+            search_project_files,
         ],
         description="Orchestrates requests and coordinates the agent team",
         expected_output="Clear action plan with delegated tasks or direct helpful response",
@@ -471,6 +497,7 @@ def create_lead_agent(session_id: str | None = None) -> Agent:
 def create_godoty_team(
     session_id: str | None = None,
     db: SqliteDb | None = None,
+    project_context: str = "",
 ) -> Team:
     """Create the full Godoty agent team.
 
@@ -485,6 +512,7 @@ def create_godoty_team(
                     If provided with a db, restores previous conversation.
         db: Optional SqliteDb instance for persistent session storage.
             When provided, conversation history is saved and can be resumed.
+        project_context: Optional formatted project context string for Lead/Architect.
 
     Returns:
         An Agno Team configured for Godot development assistance
@@ -492,10 +520,10 @@ def create_godoty_team(
     return Team(
         name="Godoty Team",
         members=[
-            create_lead_agent(session_id),
+            create_lead_agent(session_id, project_context),
             create_observer_agent(),
             create_coder_agent(),
-            create_architect_agent(),
+            create_architect_agent(project_context),
         ],
         instructions=(
             "You are Godoty, an AI assistant team for Godot game development. "
@@ -552,22 +580,51 @@ class GodotySession:
         self.jwt_token = jwt_token
         self.model_id = model_id
         self.db = db
+        self._project_context: str = ""
+        self._team: Team | None = None
         
         # Set the JWT token and model globally for model creation
         set_jwt_token(jwt_token)
         set_model_id(model_id)
         
-        # Create team with database for persistent session storage
-        self.team = create_godoty_team(session_id, db)
         self.total_tokens = 0
         self.pending_confirmations: dict[str, dict] = {}
+
+    async def _ensure_project_context(self) -> str:
+        """Get current project context, gathering fresh if not cached."""
+        if not self._project_context:
+            from app.agents.context import get_cached_context, format_context_for_agent
+            ctx = await get_cached_context()
+            if ctx:
+                self._project_context = format_context_for_agent(ctx)
+        return self._project_context
+
+    async def _get_team(self) -> Team:
+        """Get or create the team with project context injected."""
+        if self._team is None:
+            project_context = await self._ensure_project_context()
+            self._team = create_godoty_team(self.session_id, self.db, project_context)
+        return self._team
+
+    @property
+    def team(self) -> Team:
+        """Synchronous access to team (creates without context if not yet initialized)."""
+        if self._team is None:
+            self._team = create_godoty_team(self.session_id, self.db, self._project_context)
+        return self._team
 
     async def process_message_stream(self, user_text: str):
         """Process a user message with streaming, yielding chunks as they arrive.
 
         This is an async generator that yields dictionaries with either:
         - {"type": "chunk", "content": "..."} for content chunks
+        - {"type": "reasoning_started", ...} for reasoning start
+        - {"type": "reasoning", "content": "...", ...} for reasoning steps
+        - {"type": "reasoning_completed", ...} for reasoning end
+        - {"type": "tool_call_started", "tool": {...}} for tool call start
+        - {"type": "tool_call_completed", "tool": {...}} for tool call end
         - {"type": "done", "content": "...", "metrics": {...}} for final result
+        - {"type": "error", "error": "..."} for errors
 
         Args:
             user_text: The user's input text
@@ -575,6 +632,8 @@ class GodotySession:
         Yields:
             Dictionaries with chunk or final content and metrics
         """
+        DEBUG_EVENTS = True  # Set to True for verbose event logging
+        
         try:
             # Get spend before the request (for cost tracking)
             spend_before = 0.0
@@ -585,75 +644,220 @@ class GodotySession:
             except Exception:
                 pass  # Spend tracking is best-effort
 
-            # Use async streaming mode with team.arun() for proper async operation
-            response_stream = self.team.arun(user_text, stream=True)
+            team = await self._get_team()
+            response_stream = team.arun(user_text, stream=True, stream_events=True)
             
             full_content = ""
             final_metrics = None
-            tool_calls: list[dict] = []  # Track tool calls for this message
-            reasoning_steps: list[str] = []  # Track reasoning/thoughts
+            tool_calls: list[dict] = []
+            reasoning_steps: list[dict] = []
+            current_agent_id: str | None = None
+            reasoning_started_sent = False  # Track if we've sent reasoning_started
             
-            # Iterate through the async stream
+            def _get_agent_display_name(agent_id: str | None) -> str:
+                if not agent_id:
+                    return "Team"
+                name_map = {
+                    "lead-developer": "Lead Developer",
+                    "observer": "Observer",
+                    "gdscript-coder": "GDScript Coder",
+                    "systems-architect": "Systems Architect",
+                }
+                return name_map.get(agent_id, agent_id)
+            
             async for chunk in response_stream:
-                # Handle different event types
-                if hasattr(chunk, "event"):
-                    event = chunk.event
-                    
-                    # Content chunks
-                    if event == RunEvent.run_content:
-                        if chunk.content:
-                            full_content += chunk.content
-                            yield {"type": "chunk", "content": chunk.content}
-                    
-                    # Tool call started - agent is invoking a tool
-                    elif event == RunEvent.tool_call_started:
+                # === EXTRACT COMMON ATTRIBUTES ===
+                event_agent_id = getattr(chunk, "agent_id", None)
+                agent_name_attr = getattr(chunk, "agent_name", None)
+                if event_agent_id:
+                    current_agent_id = event_agent_id
+                
+                effective_agent_id = event_agent_id or current_agent_id
+                effective_agent_name = agent_name_attr or _get_agent_display_name(effective_agent_id)
+                
+                event_type = getattr(chunk, "event", None)
+                event_type_str = str(event_type) if event_type else "None"
+                
+                if DEBUG_EVENTS:
+                    _logger.debug(f"[STREAM] event={event_type_str}, type={type(chunk).__name__}, agent={effective_agent_id}")
+                
+                # === CONTENT EVENTS ===
+                if event_type == TeamRunEvent.run_content or event_type == RunEvent.run_content:
+                    content = getattr(chunk, "content", None)
+                    if DEBUG_EVENTS:
+                        _logger.info(f"[STREAM] 📝 RunContent: len={len(str(content)) if content else 0}")
+                    if content:
+                        full_content += str(content)
+                        yield {"type": "chunk", "content": str(content)}
+                
+                # === TOOL CALL STARTED ===
+                elif event_type == TeamRunEvent.tool_call_started or event_type == RunEvent.tool_call_started:
+                    tool = getattr(chunk, "tool", None)
+                    if tool:
                         tool_info = {
-                            "id": getattr(chunk, "tool_call_id", str(len(tool_calls))),
-                            "name": getattr(chunk, "tool_name", "unknown"),
-                            "arguments": getattr(chunk, "tool_args", {}),
+                            "id": getattr(tool, "tool_call_id", None) or str(len(tool_calls)),
+                            "name": getattr(tool, "tool_name", None) or "unknown",
+                            "arguments": getattr(tool, "tool_args", None) or {},
                             "status": "running",
+                            "agent_id": effective_agent_id,
+                            "agent_name": effective_agent_name,
                         }
                         tool_calls.append(tool_info)
-                        yield {
-                            "type": "tool_call_started",
-                            "tool": tool_info,
-                        }
-                    
-                    # Tool call completed - tool finished execution
-                    elif event == RunEvent.tool_call_completed:
-                        tool_id = getattr(chunk, "tool_call_id", None)
-                        result = getattr(chunk, "tool_result", None)
-                        # Update the tool call in our list
+                        _logger.info(f"[STREAM] 🔧 ToolCallStarted: {tool_info['name']}")
+                        yield {"type": "tool_call_started", "tool": tool_info}
+                
+                # === TOOL CALL COMPLETED ===
+                elif event_type == TeamRunEvent.tool_call_completed or event_type == RunEvent.tool_call_completed:
+                    tool = getattr(chunk, "tool", None)
+                    if tool:
+                        tool_id = getattr(tool, "tool_call_id", None)
                         for tc in tool_calls:
                             if tc["id"] == tool_id or (tool_id is None and tc["status"] == "running"):
                                 tc["status"] = "completed"
-                                tc["result"] = str(result) if result else None
-                                yield {
-                                    "type": "tool_call_completed",
-                                    "tool": tc,
-                                }
+                                tc["result"] = str(tool.result) if getattr(tool, "result", None) else None
+                                _logger.info(f"[STREAM] ✅ ToolCallCompleted: {tc['name']}")
+                                yield {"type": "tool_call_completed", "tool": tc}
                                 break
-                    
-                    # Reasoning/thinking events
-                    elif event == RunEvent.reasoning_started:
-                        yield {"type": "reasoning_started"}
-                    
-                    elif event == RunEvent.reasoning_step:
-                        reasoning_content = getattr(chunk, "reasoning_content", None)
-                        if reasoning_content:
-                            reasoning_steps.append(reasoning_content)
-                            yield {
-                                "type": "reasoning",
-                                "content": reasoning_content,
-                            }
-                    
-                    elif event == RunEvent.reasoning_completed:
-                        yield {"type": "reasoning_completed"}
                 
-                elif hasattr(chunk, "content") and chunk.content:
-                    # Fallback: check for content attribute directly
-                    # Calculate delta to avoid duplicates
-                    new_content = chunk.content
+                # === REASONING STARTED ===
+                elif event_type == TeamRunEvent.reasoning_started or event_type == RunEvent.reasoning_started:
+                    _logger.info(f"[STREAM] 🧠 ReasoningStarted: agent={effective_agent_name}")
+                    reasoning_started_sent = True
+                    yield {
+                        "type": "reasoning_started",
+                        "agent_id": effective_agent_id,
+                        "agent_name": effective_agent_name,
+                    }
+                
+                # === REASONING STEP (full step) ===
+                elif event_type == TeamRunEvent.reasoning_step or event_type == RunEvent.reasoning_step:
+                    reasoning_content = getattr(chunk, "reasoning_content", None) or getattr(chunk, "reasoning_step", None)
+                    if reasoning_content:
+                        _logger.info(f"[STREAM] 🧠 ReasoningStep: {str(reasoning_content)[:50]}...")
+                        # Send reasoning_started if not yet sent
+                        if not reasoning_started_sent:
+                            reasoning_started_sent = True
+                            yield {
+                                "type": "reasoning_started",
+                                "agent_id": effective_agent_id,
+                                "agent_name": effective_agent_name,
+                            }
+                        step = {
+                            "content": str(reasoning_content),
+                            "agent_id": effective_agent_id,
+                            "agent_name": effective_agent_name,
+                        }
+                        reasoning_steps.append(step)
+                        yield {"type": "reasoning", **step}
+                
+                # === REASONING CONTENT DELTA (streaming reasoning) ===
+                elif event_type == TeamRunEvent.reasoning_content_delta or event_type == RunEvent.reasoning_content_delta:
+                    reasoning_content = getattr(chunk, "reasoning_content", None)
+                    if reasoning_content:
+                        _logger.info(f"[STREAM] 🧠 ReasoningDelta: {str(reasoning_content)[:30]}...")
+                        # Send reasoning_started if not yet sent
+                        if not reasoning_started_sent:
+                            reasoning_started_sent = True
+                            yield {
+                                "type": "reasoning_started",
+                                "agent_id": effective_agent_id,
+                                "agent_name": effective_agent_name,
+                            }
+                        step = {
+                            "content": str(reasoning_content),
+                            "agent_id": effective_agent_id,
+                            "agent_name": effective_agent_name,
+                        }
+                        # Only add if not duplicate of last step
+                        if not reasoning_steps or reasoning_steps[-1]["content"] != step["content"]:
+                            reasoning_steps.append(step)
+                            yield {"type": "reasoning", **step}
+                
+                # === STRING-BASED FALLBACK for reasoning_content_delta ===
+                elif event_type_str in ("ReasoningContentDelta", "TeamReasoningContentDelta"):
+                    reasoning_content = getattr(chunk, "reasoning_content", None)
+                    if reasoning_content:
+                        _logger.info(f"[STREAM] 🧠 ReasoningDelta (str): {str(reasoning_content)[:30]}...")
+                        if not reasoning_started_sent:
+                            reasoning_started_sent = True
+                            yield {
+                                "type": "reasoning_started",
+                                "agent_id": effective_agent_id,
+                                "agent_name": effective_agent_name,
+                            }
+                        step = {
+                            "content": str(reasoning_content),
+                            "agent_id": effective_agent_id,
+                            "agent_name": effective_agent_name,
+                        }
+                        if not reasoning_steps or reasoning_steps[-1]["content"] != step["content"]:
+                            reasoning_steps.append(step)
+                            yield {"type": "reasoning", **step}
+                
+                # === REASONING COMPLETED ===
+                elif event_type == TeamRunEvent.reasoning_completed or event_type == RunEvent.reasoning_completed:
+                    _logger.info(f"[STREAM] 🧠 ReasoningCompleted: agent={effective_agent_name}")
+                    reasoning_started_sent = False  # Reset for next agent
+                    yield {
+                        "type": "reasoning_completed",
+                        "agent_id": effective_agent_id,
+                        "agent_name": effective_agent_name,
+                    }
+                
+                # === RUN COMPLETED ===
+                elif event_type == TeamRunEvent.run_completed or event_type == RunEvent.run_completed:
+                    content = getattr(chunk, "content", None)
+                    if content:
+                        full_content = str(content)
+                    chunk_metrics = getattr(chunk, "metrics", None)
+                    if chunk_metrics:
+                        final_metrics = chunk_metrics
+                    _logger.info(f"[STREAM] ✅ RunCompleted: content_len={len(full_content)}")
+                
+                # === RUN ERROR ===
+                elif event_type == RunEvent.run_error or event_type_str == "TeamRunError":
+                    error_content = getattr(chunk, "content", None) or "Unknown error"
+                    _logger.error(f"[STREAM] ❌ RunError: {error_content}")
+                    yield {"type": "error", "error": str(error_content)}
+                
+                # === FALLBACK: isinstance checks for type safety ===
+                elif isinstance(chunk, RunContentEvent):
+                    if chunk.content:
+                        full_content += str(chunk.content)
+                        yield {"type": "chunk", "content": str(chunk.content)}
+                
+                elif isinstance(chunk, RunCompletedEvent):
+                    if chunk.content:
+                        full_content = str(chunk.content)
+                    if chunk.metrics:
+                        final_metrics = chunk.metrics
+                
+                elif isinstance(chunk, RunErrorEvent):
+                    error_content = chunk.content or "Unknown error"
+                    yield {"type": "error", "error": str(error_content)}
+                
+                elif isinstance(chunk, ReasoningContentDeltaEvent):
+                    reasoning_content = getattr(chunk, "reasoning_content", None)
+                    if reasoning_content:
+                        if not reasoning_started_sent:
+                            reasoning_started_sent = True
+                            yield {
+                                "type": "reasoning_started",
+                                "agent_id": effective_agent_id,
+                                "agent_name": effective_agent_name,
+                            }
+                        step = {
+                            "content": str(reasoning_content),
+                            "agent_id": effective_agent_id,
+                            "agent_name": effective_agent_name,
+                        }
+                        if not reasoning_steps or reasoning_steps[-1]["content"] != step["content"]:
+                            reasoning_steps.append(step)
+                            yield {"type": "reasoning", **step}
+                
+                # === FALLBACK: Content with no event type ===
+                elif hasattr(chunk, "content") and chunk.content and event_type is None:
+                    new_content = str(chunk.content)
                     if new_content.startswith(full_content):
                         delta = new_content[len(full_content):]
                     else:
@@ -663,7 +867,29 @@ class GodotySession:
                         full_content = new_content
                         yield {"type": "chunk", "content": delta}
                 
-                # Capture metrics from the final response
+                # === ALWAYS: Check for reasoning_content on any chunk ===
+                chunk_reasoning = getattr(chunk, "reasoning_content", None)
+                if chunk_reasoning and event_type not in [
+                    RunEvent.reasoning_step, TeamRunEvent.reasoning_step,
+                    RunEvent.reasoning_content_delta, TeamRunEvent.reasoning_content_delta,
+                ]:
+                    step = {
+                        "content": str(chunk_reasoning),
+                        "agent_id": effective_agent_id,
+                        "agent_name": effective_agent_name,
+                    }
+                    if not reasoning_steps or reasoning_steps[-1]["content"] != step["content"]:
+                        if not reasoning_started_sent:
+                            reasoning_started_sent = True
+                            yield {
+                                "type": "reasoning_started",
+                                "agent_id": effective_agent_id,
+                                "agent_name": effective_agent_name,
+                            }
+                        reasoning_steps.append(step)
+                        yield {"type": "reasoning", **step}
+                
+                # === ALWAYS: Extract metrics if present ===
                 chunk_metrics = getattr(chunk, "metrics", None)
                 if chunk_metrics:
                     final_metrics = chunk_metrics
@@ -699,6 +925,8 @@ class GodotySession:
             except Exception:
                 pass  # Spend tracking is best-effort
 
+            _logger.info(f"[STREAM] 🏁 Stream complete: content_len={len(full_content)}, reasoning_steps={len(reasoning_steps)}, tool_calls={len(tool_calls)}")
+
             # Yield final result with full content, metrics, and collected data
             yield {
                 "type": "done",
@@ -710,6 +938,7 @@ class GodotySession:
 
         except Exception as e:
             error_msg = str(e)
+            _logger.error(f"[STREAM] ❌ Exception: {error_msg}")
             
             model_error_indicators = [
                 "ServiceUnavailableError",
@@ -730,7 +959,7 @@ class GodotySession:
             else:
                 yield {"type": "error", "error": error_msg}
 
-    async def process_message(self, user_text: str) -> tuple[str, dict]:
+    async def process_message(self, user_text: str) -> tuple[str, Any]:
         """Process a user message and return the response with metrics.
 
         This is a non-streaming version that collects the full response.

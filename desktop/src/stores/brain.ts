@@ -22,6 +22,12 @@ export interface ToolCall {
   status: 'running' | 'completed' | 'error'
 }
 
+export interface ReasoningStep {
+  content: string
+  agentId?: string
+  agentName?: string
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -30,8 +36,9 @@ export interface Message {
   metrics?: MessageMetrics
   isStreaming?: boolean
   toolCalls?: ToolCall[]
-  reasoning?: string[]
+  reasoning?: ReasoningStep[]
   isReasoningActive?: boolean
+  activeAgentName?: string
 }
 
 export interface SessionMetrics {
@@ -51,6 +58,7 @@ export interface LifetimeMetrics {
 // localStorage keys
 const SESSION_METRICS_KEY = 'godoty_session_metrics'
 const LIFETIME_METRICS_KEY = 'godoty_lifetime_metrics'
+const KNOWLEDGE_STATUS_KEY = 'godoty_knowledge_status'
 
 export interface PendingConfirmation {
   id: string
@@ -102,12 +110,7 @@ export const useBrainStore = defineStore('brain', () => {
       total: number
       phase?: 'fetching' | 'embedding'
     }
-  }>({
-    isIndexed: false,
-    isIndexing: false,
-    version: '4.5',
-    documentCount: 0
-  })
+  }>(loadKnowledgeStatus())
 
   // Streaming state
   const streamingMessageId = ref<string | null>(null)
@@ -177,6 +180,41 @@ export const useBrainStore = defineStore('brain', () => {
       localStorage.setItem(LIFETIME_METRICS_KEY, JSON.stringify(lifetimeMetrics.value))
     } catch (e) {
       console.warn('Failed to save lifetime metrics:', e)
+    }
+  }
+
+  // Load knowledge status from localStorage
+  function loadKnowledgeStatus(): {
+    isIndexed: boolean
+    isIndexing: boolean
+    version: string
+    documentCount: number
+  } {
+    try {
+      const stored = localStorage.getItem(KNOWLEDGE_STATUS_KEY)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        // Reset isIndexing to false on load - indexing state is transient
+        return {
+          isIndexed: parsed.isIndexed ?? false,
+          isIndexing: false,
+          version: parsed.version ?? '4.5',
+          documentCount: parsed.documentCount ?? 0,
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load knowledge status:', e)
+    }
+    return { isIndexed: false, isIndexing: false, version: '4.5', documentCount: 0 }
+  }
+
+  function saveKnowledgeStatus() {
+    try {
+      // Don't persist progress - it's transient
+      const { progress, ...statusToSave } = knowledgeStatus.value
+      localStorage.setItem(KNOWLEDGE_STATUS_KEY, JSON.stringify(statusToSave))
+    } catch (e) {
+      console.warn('Failed to save knowledge status:', e)
     }
   }
 
@@ -309,6 +347,9 @@ export const useBrainStore = defineStore('brain', () => {
             active_session_id: response.active_session_id,
           })
         }
+
+        // Refresh knowledge status on reconnection
+        await checkKnowledgeStatus()
       } catch (e) {
         console.error('[Brain] Handshake/Status failed:', e)
       }
@@ -408,10 +449,13 @@ export const useBrainStore = defineStore('brain', () => {
         case 'stream_chunk':
           {
             const params = data.params as { content: string; session_id?: string }
+            console.log('[BRAIN] stream_chunk received:', params.content?.substring(0, 50))
             const sessionId = params.session_id
             const targetMsgId = sessionId 
               ? streamingSessionMessageId.value.get(sessionId) 
               : streamingMessageId.value
+            
+            console.log('[BRAIN] Looking for message:', { targetMsgId, sessionId, activeSessionId: sessionsStore.activeSessionId })
             
             if (targetMsgId) {
               const targetMessages = sessionId === sessionsStore.activeSessionId 
@@ -419,6 +463,7 @@ export const useBrainStore = defineStore('brain', () => {
                 : sessionMessagesCache.value.get(sessionId || '')
               
               const msg = targetMessages?.find(m => m.id === targetMsgId)
+              console.log('[BRAIN] Found message:', { found: !!msg, msgId: msg?.id, currentContent: msg?.content?.substring(0, 20) })
               if (msg) {
                 msg.content += params.content
               }
@@ -462,7 +507,14 @@ export const useBrainStore = defineStore('brain', () => {
           break
         case 'stream_reasoning':
           {
-            const params = data.params as { status: string; content?: string; session_id?: string }
+            const params = data.params as { 
+              status: string
+              content?: string
+              session_id?: string
+              agent_id?: string
+              agent_name?: string 
+            }
+            console.log('[BRAIN] stream_reasoning received:', params)
             const sessionId = params.session_id
             const targetMsgId = sessionId 
               ? streamingSessionMessageId.value.get(sessionId) 
@@ -479,10 +531,17 @@ export const useBrainStore = defineStore('brain', () => {
 
                 if (params.status === 'started') {
                   msg.isReasoningActive = true
+                  msg.activeAgentName = params.agent_name || params.agent_id || 'Agent'
                 } else if (params.status === 'step' && params.content) {
-                  msg.reasoning.push(params.content)
-                } else if (params.status === 'completed') {
+                  msg.isReasoningActive = true
+                  msg.reasoning.push({
+                    content: params.content,
+                    agentId: params.agent_id,
+                    agentName: params.agent_name,
+                  })
+                } else if (params.status === 'completed' || params.status === 'error') {
                   msg.isReasoningActive = false
+                  msg.activeAgentName = undefined
                 }
               }
             }
@@ -494,7 +553,7 @@ export const useBrainStore = defineStore('brain', () => {
               metrics?: Record<string, unknown>
               session_id?: string
               tool_calls?: ToolCall[]
-              reasoning?: string[]
+              reasoning?: (string | ReasoningStep)[]
             }
             const sessionId = params.session_id
             const targetMsgId = sessionId 
@@ -510,12 +569,15 @@ export const useBrainStore = defineStore('brain', () => {
               if (msg) {
                 msg.isStreaming = false
                 msg.isReasoningActive = false
+                msg.activeAgentName = undefined
 
                 if (params.tool_calls && params.tool_calls.length > 0) {
                   msg.toolCalls = params.tool_calls
                 }
                 if (params.reasoning && params.reasoning.length > 0) {
-                  msg.reasoning = params.reasoning
+                  msg.reasoning = params.reasoning.map(r => 
+                    typeof r === 'string' ? { content: r } : r
+                  )
                 }
 
                 if (params.metrics) {
@@ -640,6 +702,7 @@ export const useBrainStore = defineStore('brain', () => {
         if (params.document_count !== undefined) {
           knowledgeStatus.value.documentCount = params.document_count
         }
+        saveKnowledgeStatus()
         showToast(`Godot ${params.version} documentation indexed successfully`, 'success')
       } else if (params.status === 'error') {
         knowledgeStatus.value.isIndexing = false
@@ -727,6 +790,24 @@ export const useBrainStore = defineStore('brain', () => {
       streamingSessionMessageId.value.set(targetSessionId, assistantMsgId)
     }
 
+    const STREAMING_TIMEOUT_MS = 300000
+    const streamingTimeoutId = setTimeout(() => {
+      const msg = messages.value.find(m => m.id === assistantMsgId)
+      if (msg && msg.isStreaming) {
+        msg.isStreaming = false
+        msg.isReasoningActive = false
+        if (!msg.content) {
+          msg.content = '⚠️ Response timed out. Please try again.'
+        }
+        streamingMessageId.value = null
+        if (targetSessionId) {
+          streamingSessionMessageId.value.delete(targetSessionId)
+        }
+        isProcessing.value = false
+        processingSessionId.value = null
+      }
+    }, STREAMING_TIMEOUT_MS)
+
     try {
       if (authStore.isAuthenticated && !authStore.hasValidKey) {
         await authStore.ensureVirtualKey()
@@ -738,6 +819,8 @@ export const useBrainStore = defineStore('brain', () => {
         model: authStore.selectedModel,
         session_id: targetSessionId,
       }) as { text: string; metrics?: Record<string, unknown>; session_id?: string; cancelled?: boolean }
+
+      clearTimeout(streamingTimeoutId)
 
       if (response.cancelled) {
         return
@@ -751,6 +834,7 @@ export const useBrainStore = defineStore('brain', () => {
         authStore.refreshCreditBalance()
       }
     } catch (e) {
+      clearTimeout(streamingTimeoutId)
       const err = e as Error
       error.value = err.message
 
@@ -759,6 +843,12 @@ export const useBrainStore = defineStore('brain', () => {
         : sessionMessagesCache.value.get(targetSessionId || '')
       
       if (targetMessages) {
+        const msg = targetMessages.find(m => m.id === assistantMsgId)
+        if (msg) {
+          msg.isStreaming = false
+          msg.isReasoningActive = false
+        }
+        
         const msgIndex = targetMessages.findIndex(m => m.id === assistantMsgId)
         if (msgIndex >= 0) {
           targetMessages.splice(msgIndex, 1)
@@ -778,8 +868,10 @@ export const useBrainStore = defineStore('brain', () => {
         addMessage('system', `Error: ${error.value}`)
       }
     } finally {
+      clearTimeout(streamingTimeoutId)
       isProcessing.value = false
       processingSessionId.value = null
+      streamingMessageId.value = null
       if (targetSessionId) {
         streamingSessionMessageId.value.delete(targetSessionId)
       }
@@ -938,6 +1030,7 @@ export const useBrainStore = defineStore('brain', () => {
         isIndexing: status.is_indexing,
         documentCount: status.document_count
       }
+      saveKnowledgeStatus()
     } catch (e) {
       console.warn('Failed to check knowledge status:', e)
     }

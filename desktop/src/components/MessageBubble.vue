@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Message } from '@/stores/brain'
+import { type Message, useBrainStore } from '@/stores/brain'
 import { useArtifactsStore } from '@/stores/artifacts'
 import { parseMarkdown } from '@/utils/markdown'
 import ThoughtsPanel from './ThoughtsPanel.vue'
@@ -13,6 +13,11 @@ const props = defineProps<{
 import iconUrl from '@/assets/icon.svg'
 
 const artifactsStore = useArtifactsStore()
+const brainStore = useBrainStore()
+
+const isAwaitingApproval = computed(() => 
+  props.message.isStreaming && brainStore.pendingConfirmation !== null
+)
 
 const isUser = computed(() => props.message.role === 'user')
 const isSystem = computed(() => props.message.role === 'system')
@@ -22,6 +27,12 @@ const isStreaming = computed(() => props.message.isStreaming)
 const hasContent = computed(() => 
   props.message.content || 
   (props.message.toolCalls && props.message.toolCalls.length > 0) ||
+  (props.message.reasoning && props.message.reasoning.length > 0)
+)
+
+const hasAnyActivity = computed(() => 
+  props.message.isReasoningActive || 
+  (props.message.toolCalls && props.message.toolCalls.some(t => t.status === 'running')) ||
   (props.message.reasoning && props.message.reasoning.length > 0)
 )
 
@@ -148,17 +159,22 @@ function openInPanel(wrapper: HTMLElement) {
             
             <div class="flex-1 space-y-2 min-w-0">
                 <!-- Active reasoning indicator -->
-                <div v-if="props.message.isReasoningActive" class="flex items-center gap-2 text-purple-400 text-xs mb-2">
-                    <svg class="w-3.5 h-3.5 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div v-if="props.message.isReasoningActive && isStreaming" class="flex items-center gap-2 text-purple-400 text-xs mb-2 overflow-hidden">
+                    <svg class="w-3.5 h-3.5 animate-pulse flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                     </svg>
-                    <span class="italic">Thinking...</span>
+                    <span class="font-medium whitespace-nowrap">{{ props.message.activeAgentName || 'Agent' }}</span>
+                    <span class="italic whitespace-nowrap">is thinking...</span>
+                    <span v-if="props.message.reasoning && props.message.reasoning.length > 0" class="text-purple-400/60 truncate ml-1">
+                        {{ props.message.reasoning[props.message.reasoning.length - 1].content }}
+                    </span>
                 </div>
                 
-                <!-- Collapsible Thoughts Panel (after completion) -->
+                <!-- Collapsible Thoughts Panel -->
                 <ThoughtsPanel 
-                  v-if="props.message.reasoning && props.message.reasoning.length > 0 && !props.message.isReasoningActive" 
+                  v-if="props.message.reasoning && props.message.reasoning.length > 0" 
                   :thoughts="props.message.reasoning" 
+                  :is-active="props.message.isReasoningActive && isStreaming"
                 />
                 
                 <!-- Tool Calls -->
@@ -169,11 +185,23 @@ function openInPanel(wrapper: HTMLElement) {
                     :call="call" 
                   />
                 </div>
+
+                <!-- Waiting for approval indicator -->
+                <div v-if="isAwaitingApproval" class="flex items-center gap-2 text-amber-400 text-xs mb-2 px-3 py-2 bg-amber-500/10 rounded-lg border border-amber-500/20">
+                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <span class="font-medium">Waiting for your approval...</span>
+                    <span class="text-amber-300/70">Check the confirmation dialog</span>
+                </div>
                 
                 <!-- Thinking indicator - only show while streaming with no content -->
-                <div v-if="isStreaming && !props.message.content && !props.message.isReasoningActive && !(props.message.toolCalls && props.message.toolCalls.length > 0)" class="flex items-center gap-2 text-gray-500 italic">
+                <div v-if="isStreaming && !props.message.content && !hasAnyActivity && !(props.message.toolCalls && props.message.toolCalls.length > 0)" class="flex items-center gap-2 text-gray-500 italic">
                     <span class="w-1.5 h-1.5 bg-[#478cbf] rounded-full animate-ping"></span>
-                    Thinking...
+                    <div class="grid" style="grid-template-areas: 'stack';">
+                        <span class="thinking-text" style="grid-area: stack;">Thinking...</span>
+                        <span class="processing-text" style="grid-area: stack;">Processing...</span>
+                    </div>
                 </div>
                 
                 <!-- Message content -->
@@ -265,5 +293,23 @@ function openInPanel(wrapper: HTMLElement) {
   50% {
     opacity: 0.85;
   }
+}
+
+/* Time-based feedback animations */
+.thinking-text {
+  animation: fadeOutText 0.1s linear 15s forwards;
+}
+
+.processing-text {
+  opacity: 0;
+  animation: fadeInText 0.1s linear 15s forwards;
+}
+
+@keyframes fadeOutText {
+  to { opacity: 0; }
+}
+
+@keyframes fadeInText {
+  to { opacity: 1; }
 }
 </style>

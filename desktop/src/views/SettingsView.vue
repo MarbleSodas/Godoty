@@ -423,7 +423,7 @@ onMounted(() => {
           <button 
             @click="handleRegenerateKey()" 
             :disabled="authStore.keyLoading"
-            class="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 text-white rounded-lg transition-colors text-sm font-medium"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-lg transition-colors text-sm font-medium"
           >
             <span v-if="authStore.keyLoading">Regenerating...</span>
             <span v-else>Regenerate Key</span>

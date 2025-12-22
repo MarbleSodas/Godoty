@@ -10,6 +10,10 @@ Protocol: JSON-RPC 2.0 over WebSocket
 
 from __future__ import annotations
 
+# Apply Agno patches before importing other modules
+from app.agno_patches import apply_patches
+apply_patches()
+
 import asyncio
 import json
 import logging
@@ -68,6 +72,9 @@ REMOTE_PROXY_URL = os.getenv(
 # Shutdown state
 _shutdown_event = asyncio.Event()
 _active_tasks: set[asyncio.Task] = set()
+
+# Background indexing state - prevent duplicate indexing of the same version
+_indexing_versions: set[str] = set()
 
 
 @asynccontextmanager
@@ -128,6 +135,32 @@ async def _perform_shutdown():
     
     # Clear pending tool requests
     clear_pending_requests()
+    
+    # Clean up loky/joblib worker pool to avoid semaphore leaks
+    try:
+        import gc
+        gc.collect()
+        
+        try:
+            from loky import get_reusable_executor
+            executor = get_reusable_executor()
+            executor.shutdown(wait=False, kill_workers=True)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"[Brain] loky cleanup: {e}")
+        
+        try:
+            import joblib
+            from joblib.externals.loky import get_reusable_executor as get_joblib_executor
+            executor = get_joblib_executor()
+            executor.shutdown(wait=False, kill_workers=True)
+        except (ImportError, AttributeError):
+            pass
+        except Exception as e:
+            logger.debug(f"[Brain] joblib cleanup: {e}")
+    except Exception as e:
+        logger.debug(f"[Brain] Resource cleanup: {e}")
     
     logger.info("[Brain] All resources cleaned up")
 
@@ -401,9 +434,9 @@ async def _handle_godot_request(conn: GodotConnection, req: JsonRpcRequest) -> s
         
         logger.info(f"Godot handshake: project={params.project_name}, version={parsed_version}, path={conn.project_path}")
         
-        # Trigger background documentation check/indexing
+        # Trigger low-priority background documentation check/indexing
         if parsed_version:
-            asyncio.create_task(_check_and_index_documentation(parsed_version))
+            asyncio.create_task(_background_index_documentation(parsed_version))
         
         return _success(req.id, {
             "client": params.client,
@@ -590,6 +623,7 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         session = session_manager.create_session(title=title)
         session_id = session.id
         is_new_session = True
+        invalidate_context_cache()
     else:
         # Check if session exists
         session = session_manager.get_session(session_id)
@@ -598,6 +632,7 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
             title = session_manager.generate_title_from_message(user_text)
             session = session_manager.create_session(title=title, session_id=session_id)
             is_new_session = True
+            invalidate_context_cache()
     
     # The authorization token is now a LiteLLM virtual key (from Supabase Edge Function)
     # This key has:
@@ -624,9 +659,11 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         full_content = ""
         final_metrics: dict[str, Any] = {}
         collected_tool_calls: list[dict[str, Any]] = []
-        collected_reasoning: list[str] = []
+        collected_reasoning: list[dict[str, Any]] = []
         
         async for chunk in godoty_session.process_message_stream(user_text):
+            logger.info(f"[MAIN] Received chunk type={chunk.get('type')}")
+            
             if chunk["type"] == "chunk":
                 await conn.ws.send_text(
                     JsonRpcRequest(
@@ -660,27 +697,51 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                         break
             
             elif chunk["type"] == "reasoning_started":
+                logger.info(f"[MAIN] 🧠 Reasoning STARTED: agent={chunk.get('agent_name')}")
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_reasoning",
-                        params={"status": "started", "session_id": session_id}
+                        params={
+                            "status": "started",
+                            "session_id": session_id,
+                            "agent_id": chunk.get("agent_id"),
+                            "agent_name": chunk.get("agent_name"),
+                        }
                     ).model_dump_json()
                 )
             
             elif chunk["type"] == "reasoning":
+                content_preview = chunk['content'][:50] if chunk.get('content') else 'empty'
+                logger.info(f"[MAIN] 🧠 Reasoning STEP: {content_preview}...")
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_reasoning",
-                        params={"status": "step", "content": chunk["content"], "session_id": session_id}
+                        params={
+                            "status": "step",
+                            "content": chunk["content"],
+                            "session_id": session_id,
+                            "agent_id": chunk.get("agent_id"),
+                            "agent_name": chunk.get("agent_name"),
+                        }
                     ).model_dump_json()
                 )
-                collected_reasoning.append(chunk["content"])
+                collected_reasoning.append({
+                    "content": chunk["content"],
+                    "agent_id": chunk.get("agent_id"),
+                    "agent_name": chunk.get("agent_name"),
+                })
             
             elif chunk["type"] == "reasoning_completed":
+                logger.info(f"[MAIN] 🧠 Reasoning COMPLETED: agent={chunk.get('agent_name')}")
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_reasoning",
-                        params={"status": "completed", "session_id": session_id}
+                        params={
+                            "status": "completed",
+                            "session_id": session_id,
+                            "agent_id": chunk.get("agent_id"),
+                            "agent_name": chunk.get("agent_name"),
+                        }
                     ).model_dump_json()
                 )
                 
@@ -1071,8 +1132,23 @@ def get_connection_manager() -> ConnectionManager:
     return connections
 
 
+async def _background_index_documentation(version: str) -> None:
+    """Low-priority background task for documentation indexing.
+    
+    Adds a delay before starting to prioritize user interactions.
+    """
+    await asyncio.sleep(2.0)
+    await _check_and_index_documentation(version)
+
+
 async def _check_and_index_documentation(version: str) -> None:
     """Check if docs are indexed for this version, index in background if not."""
+    global _indexing_versions
+    
+    if version in _indexing_versions:
+        logger.debug(f"Indexing already in progress for Godot {version}, skipping")
+        return
+    
     try:
         from app.knowledge.godot_knowledge import get_godot_knowledge
         
@@ -1099,61 +1175,66 @@ async def _check_and_index_documentation(version: str) -> None:
             )
         
         if not is_indexed and not knowledge.is_indexing:
-            logger.info(f"Starting background indexing for Godot {version}")
+            _indexing_versions.add(version)
+            logger.info(f"Starting low-priority background indexing for Godot {version}")
             
-            if connections.tauri:
-                await connections.tauri.ws.send_text(
-                    JsonRpcRequest(
-                        method="knowledge_status_update",
-                        params={"status": "indexing", "version": version}
-                    ).model_dump_json()
-                )
-            
-            def progress_callback(current: int, total: int) -> None:
+            try:
                 if connections.tauri:
-                    asyncio.create_task(connections.tauri.ws.send_text(
+                    await connections.tauri.ws.send_text(
                         JsonRpcRequest(
-                            method="knowledge_indexing_progress",
-                            params={"current": current, "total": total, "version": version, "phase": "fetching"}
+                            method="knowledge_status_update",
+                            params={"status": "indexing", "version": version}
                         ).model_dump_json()
-                    ))
-            
-            def embedding_callback(current: int, total: int) -> None:
-                if connections.tauri:
-                    asyncio.create_task(connections.tauri.ws.send_text(
-                        JsonRpcRequest(
-                            method="knowledge_indexing_progress",
-                            params={"current": current, "total": total, "version": version, "phase": "embedding"}
-                        ).model_dump_json()
-                    ))
-            
-            success = await knowledge.load(
-                progress_callback=progress_callback,
-                embedding_callback=embedding_callback
-            )
-            
-            doc_count = 0
-            if success:
-                try:
-                    doc_count = await knowledge.vector_db.async_get_count()
-                except Exception:
-                    pass
-            
-            if connections.tauri:
-                await connections.tauri.ws.send_text(
-                    JsonRpcRequest(
-                        method="knowledge_status_update",
-                        params={
-                            "status": "loaded" if success else "error",
-                            "version": version,
-                            "document_count": doc_count,
-                            "error": None if success else "Failed to load documentation"
-                        }
-                    ).model_dump_json()
+                    )
+                
+                def progress_callback(current: int, total: int) -> None:
+                    if connections.tauri:
+                        asyncio.create_task(connections.tauri.ws.send_text(
+                            JsonRpcRequest(
+                                method="knowledge_indexing_progress",
+                                params={"current": current, "total": total, "version": version, "phase": "fetching"}
+                            ).model_dump_json()
+                        ))
+                
+                def embedding_callback(current: int, total: int) -> None:
+                    if connections.tauri:
+                        asyncio.create_task(connections.tauri.ws.send_text(
+                            JsonRpcRequest(
+                                method="knowledge_indexing_progress",
+                                params={"current": current, "total": total, "version": version, "phase": "embedding"}
+                            ).model_dump_json()
+                        ))
+                
+                success = await knowledge.load(
+                    progress_callback=progress_callback,
+                    embedding_callback=embedding_callback
                 )
+                
+                doc_count = 0
+                if success:
+                    try:
+                        doc_count = await knowledge.vector_db.async_get_count()
+                    except Exception:
+                        pass
+                
+                if connections.tauri:
+                    await connections.tauri.ws.send_text(
+                        JsonRpcRequest(
+                            method="knowledge_status_update",
+                            params={
+                                "status": "loaded" if success else "error",
+                                "version": version,
+                                "document_count": doc_count,
+                                "error": None if success else "Failed to load documentation"
+                            }
+                        ).model_dump_json()
+                    )
+            finally:
+                _indexing_versions.discard(version)
                 
     except Exception as e:
         logger.error(f"Background indexing check failed: {e}")
+        _indexing_versions.discard(version)
 
 
 async def _handle_list_indexed_versions(req: JsonRpcRequest) -> str:
@@ -1240,6 +1321,8 @@ async def _handle_delete_indexed_version(req: JsonRpcRequest) -> str:
 
 async def _reindex_knowledge_task(conn: TauriConnection, params: dict) -> None:
     """Background task to reindex Godot documentation."""
+    global _indexing_versions
+    
     version = params.get("version") or "4.5"
     try:
         from app.knowledge.godot_knowledge import get_godot_knowledge
@@ -1247,6 +1330,17 @@ async def _reindex_knowledge_task(conn: TauriConnection, params: dict) -> None:
         
         version = params.get("version") or get_godot_version() or "4.5"
         
+        if version in _indexing_versions:
+            logger.info(f"Indexing already in progress for Godot {version}, skipping duplicate request")
+            await conn.ws.send_text(
+                JsonRpcRequest(
+                    method="knowledge_status_update",
+                    params={"status": "indexing", "version": version}
+                ).model_dump_json()
+            )
+            return
+        
+        _indexing_versions.add(version)
         logger.info(f"Starting manual reindexing for Godot {version}")
         
         # Notify start
@@ -1312,3 +1406,5 @@ async def _reindex_knowledge_task(conn: TauriConnection, params: dict) -> None:
                 }
             ).model_dump_json()
         )
+    finally:
+        _indexing_versions.discard(version)
