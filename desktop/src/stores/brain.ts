@@ -3,7 +3,6 @@ import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useAuthStore } from './auth'
 import { useSessionsStore } from './sessions'
-import { useHitlStore } from './hitl'
 import { isBudgetExceededError } from '@/lib/litellmKeys'
 
 export interface MessageMetrics {
@@ -19,7 +18,7 @@ export interface ToolCall {
   name: string
   arguments: Record<string, unknown>
   result?: string
-  status: 'running' | 'completed' | 'error'
+  status: 'running' | 'completed' | 'error' | 'denied'
 }
 
 export interface ReasoningStep {
@@ -60,26 +59,6 @@ const SESSION_METRICS_KEY = 'godoty_session_metrics'
 const LIFETIME_METRICS_KEY = 'godoty_lifetime_metrics'
 const KNOWLEDGE_STATUS_KEY = 'godoty_knowledge_status'
 
-export interface PendingConfirmation {
-  id: string
-  action_type: 'write_file' | 'set_setting' | 'create_node' | 'delete_node' | 'delete_file' | 'create_directory' | 'rename_file' | 'move_file' | 'copy_file'
-  description: string
-  details: {
-    path?: string
-    content?: string
-    original_content?: string
-    setting_path?: string
-    value?: unknown
-    node_name?: string
-    node_type?: string
-    node_path?: string
-    source_path?: string
-    destination_path?: string
-    old_path?: string
-    new_name?: string
-  }
-}
-
 export const useBrainStore = defineStore('brain', () => {
   const authStore = useAuthStore()
   const sessionsStore = useSessionsStore()
@@ -90,7 +69,6 @@ export const useBrainStore = defineStore('brain', () => {
   const messages = ref<Message[]>([])
   const isProcessing = ref(false)
   const tokenCount = ref(0)
-  const pendingConfirmation = ref<PendingConfirmation | null>(null)
   const error = ref<string | null>(null)
   const brainUrl = ref('ws://127.0.0.1:8000/ws/tauri')
   const reconnectAttempts = ref(0)
@@ -300,10 +278,6 @@ export const useBrainStore = defineStore('brain', () => {
       // Initialize sessions store with sendRequest function
       sessionsStore.setSendRequest(sendRequest)
 
-      const hitlStore = useHitlStore()
-      hitlStore.setSendRequest(sendRequest)
-      hitlStore.syncToBrain()
-
       // Send hello handshake and handle response
       try {
         const response = await sendRequest('hello', {
@@ -426,10 +400,8 @@ export const useBrainStore = defineStore('brain', () => {
 
     // Handle incoming requests/notifications from brain
     if (data.method) {
+      console.log('[Brain] Received method:', data.method)
       switch (data.method) {
-        case 'confirmation_request':
-          handleConfirmationRequest(data.params as PendingConfirmation)
-          break
         case 'godot_connected':
           console.log('[Brain] Godot connected:', data.params)
           godotConnected.value = true
@@ -449,23 +421,28 @@ export const useBrainStore = defineStore('brain', () => {
         case 'stream_chunk':
           {
             const params = data.params as { content: string; session_id?: string }
-            console.log('[BRAIN] stream_chunk received:', params.content?.substring(0, 50))
             const sessionId = params.session_id
             const targetMsgId = sessionId 
-              ? streamingSessionMessageId.value.get(sessionId) 
+              ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
             
-            console.log('[BRAIN] Looking for message:', { targetMsgId, sessionId, activeSessionId: sessionsStore.activeSessionId })
-            
             if (targetMsgId) {
-              const targetMessages = sessionId === sessionsStore.activeSessionId 
-                ? messages.value 
-                : sessionMessagesCache.value.get(sessionId || '')
+              // Always check messages.value first since that's where the streaming message was added
+              // This handles the case where a new session was created and activeSessionId hasn't updated yet
+              let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
+              let targetMessages: Message[] | undefined = messages.value
               
-              const msg = targetMessages?.find(m => m.id === targetMsgId)
-              console.log('[BRAIN] Found message:', { found: !!msg, msgId: msg?.id, currentContent: msg?.content?.substring(0, 20) })
-              if (msg) {
-                msg.content += params.content
+              // If not found in current messages, check the cache
+              if (msgIndex < 0 && sessionId) {
+                targetMessages = sessionMessagesCache.value.get(sessionId)
+                msgIndex = targetMessages?.findIndex(m => m.id === targetMsgId) ?? -1
+              }
+              
+              if (msgIndex >= 0 && targetMessages) {
+                targetMessages[msgIndex] = {
+                  ...targetMessages[msgIndex],
+                  content: targetMessages[msgIndex].content + params.content
+                }
               }
             }
           }
@@ -475,31 +452,43 @@ export const useBrainStore = defineStore('brain', () => {
             const params = data.params as { status: string; tool: ToolCall; session_id?: string }
             const sessionId = params.session_id
             const targetMsgId = sessionId 
-              ? streamingSessionMessageId.value.get(sessionId) 
+              ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
             
             if (targetMsgId) {
-              const targetMessages = sessionId === sessionsStore.activeSessionId 
-                ? messages.value 
-                : sessionMessagesCache.value.get(sessionId || '')
+              let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
+              let targetMessages: Message[] | undefined = messages.value
               
-              const msg = targetMessages?.find(m => m.id === targetMsgId)
-              if (msg) {
-                if (!msg.toolCalls) msg.toolCalls = []
+              if (msgIndex < 0 && sessionId) {
+                targetMessages = sessionMessagesCache.value.get(sessionId)
+                msgIndex = targetMessages?.findIndex(m => m.id === targetMsgId) ?? -1
+              }
+              
+              if (msgIndex >= 0 && targetMessages) {
+                const currentMsg = targetMessages[msgIndex]
+                const toolCalls = [...(currentMsg.toolCalls || [])]
 
                 if (params.status === 'started') {
-                  msg.toolCalls.push({
+                  toolCalls.push({
                     id: params.tool.id,
                     name: params.tool.name,
                     arguments: params.tool.arguments || {},
                     status: 'running',
                   })
                 } else if (params.status === 'completed') {
-                  const tc = msg.toolCalls.find(t => t.id === params.tool.id)
-                  if (tc) {
-                    tc.status = 'completed'
-                    tc.result = params.tool.result
+                  const tcIndex = toolCalls.findIndex(t => t.id === params.tool.id)
+                  if (tcIndex >= 0) {
+                    toolCalls[tcIndex] = {
+                      ...toolCalls[tcIndex],
+                      status: 'completed',
+                      result: params.tool.result,
+                    }
                   }
+                }
+                
+                targetMessages[msgIndex] = {
+                  ...currentMsg,
+                  toolCalls
                 }
               }
             }
@@ -514,34 +503,87 @@ export const useBrainStore = defineStore('brain', () => {
               agent_id?: string
               agent_name?: string 
             }
-            console.log('[BRAIN] stream_reasoning received:', params)
+            
             const sessionId = params.session_id
             const targetMsgId = sessionId 
-              ? streamingSessionMessageId.value.get(sessionId) 
+              ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
             
             if (targetMsgId) {
-              const targetMessages = sessionId === sessionsStore.activeSessionId 
-                ? messages.value 
-                : sessionMessagesCache.value.get(sessionId || '')
+              let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
+              let targetMessages: Message[] | undefined = messages.value
               
-              const msg = targetMessages?.find(m => m.id === targetMsgId)
-              if (msg) {
-                if (!msg.reasoning) msg.reasoning = []
+              if (msgIndex < 0 && sessionId) {
+                targetMessages = sessionMessagesCache.value.get(sessionId)
+                msgIndex = targetMessages?.findIndex(m => m.id === targetMsgId) ?? -1
+              }
+              
+              if (msgIndex >= 0 && targetMessages) {
+                const currentMsg = targetMessages[msgIndex]
+                const reasoning = [...(currentMsg.reasoning || [])]
 
                 if (params.status === 'started') {
-                  msg.isReasoningActive = true
-                  msg.activeAgentName = params.agent_name || params.agent_id || 'Agent'
-                } else if (params.status === 'step' && params.content) {
-                  msg.isReasoningActive = true
-                  msg.reasoning.push({
-                    content: params.content,
+                  reasoning.push({
+                    content: '',
                     agentId: params.agent_id,
                     agentName: params.agent_name,
                   })
+                  targetMessages[msgIndex] = {
+                    ...currentMsg,
+                    isReasoningActive: true,
+                    activeAgentName: params.agent_name || params.agent_id || 'Agent',
+                    reasoning
+                  }
+                } else if (params.status === 'step' && params.content) {
+                  const lastStep = reasoning[reasoning.length - 1]
+                  const isSameAgentEmptyStep = lastStep && lastStep.agentId === params.agent_id && lastStep.content === ''
+                  const isSameAgentWithContent = lastStep && lastStep.agentId === params.agent_id
+                  
+                  if (isSameAgentEmptyStep || isSameAgentWithContent) {
+                    reasoning[reasoning.length - 1] = {
+                      content: params.content,
+                      agentId: params.agent_id,
+                      agentName: params.agent_name,
+                    }
+                  } else {
+                    reasoning.push({
+                      content: params.content,
+                      agentId: params.agent_id,
+                      agentName: params.agent_name,
+                    })
+                  }
+                  targetMessages[msgIndex] = {
+                    ...currentMsg,
+                    isReasoningActive: true,
+                    reasoning
+                  }
+                } else if (params.status === 'delta' && params.content) {
+                  const lastStep = reasoning[reasoning.length - 1]
+                  const isSameAgent = lastStep && lastStep.agentId === params.agent_id
+                  
+                  if (isSameAgent) {
+                    reasoning[reasoning.length - 1] = {
+                      ...lastStep,
+                      content: lastStep.content + params.content
+                    }
+                  } else {
+                    reasoning.push({
+                      content: params.content,
+                      agentId: params.agent_id,
+                      agentName: params.agent_name,
+                    })
+                  }
+                  targetMessages[msgIndex] = {
+                    ...currentMsg,
+                    isReasoningActive: true,
+                    reasoning
+                  }
                 } else if (params.status === 'completed' || params.status === 'error') {
-                  msg.isReasoningActive = false
-                  msg.activeAgentName = undefined
+                  targetMessages[msgIndex] = {
+                    ...currentMsg,
+                    isReasoningActive: false,
+                    activeAgentName: undefined
+                  }
                 }
               }
             }
@@ -557,46 +599,58 @@ export const useBrainStore = defineStore('brain', () => {
             }
             const sessionId = params.session_id
             const targetMsgId = sessionId 
-              ? streamingSessionMessageId.value.get(sessionId) 
+              ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
             
             if (targetMsgId) {
-              const targetMessages = sessionId === sessionsStore.activeSessionId 
-                ? messages.value 
-                : sessionMessagesCache.value.get(sessionId || '')
+              let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
+              let targetMessages: Message[] | undefined = messages.value
               
-              const msg = targetMessages?.find(m => m.id === targetMsgId)
-              if (msg) {
-                msg.isStreaming = false
-                msg.isReasoningActive = false
-                msg.activeAgentName = undefined
-
-                if (params.tool_calls && params.tool_calls.length > 0) {
-                  msg.toolCalls = params.tool_calls
+              if (msgIndex < 0 && sessionId) {
+                targetMessages = sessionMessagesCache.value.get(sessionId)
+                msgIndex = targetMessages?.findIndex(m => m.id === targetMsgId) ?? -1
+              }
+              
+              if (msgIndex >= 0 && targetMessages) {
+                const currentMsg = targetMessages[msgIndex]
+                
+                const updatedMsg: Message = {
+                  ...currentMsg,
+                  isStreaming: false,
+                  isReasoningActive: false,
+                  activeAgentName: undefined,
                 }
-                if (params.reasoning && params.reasoning.length > 0) {
-                  msg.reasoning = params.reasoning.map(r => 
+
+                // Only use backend data if we didn't already collect it during streaming
+                if (params.tool_calls && params.tool_calls.length > 0 && !currentMsg.toolCalls?.length) {
+                  updatedMsg.toolCalls = params.tool_calls
+                }
+                // Preserve streamed reasoning - only use backend if we have nothing
+                if (params.reasoning && params.reasoning.length > 0 && !currentMsg.reasoning?.length) {
+                  updatedMsg.reasoning = params.reasoning.map(r => 
                     typeof r === 'string' ? { content: r } : r
                   )
                 }
 
                 if (params.metrics) {
-                  msg.metrics = {
+                  updatedMsg.metrics = {
                     inputTokens: (params.metrics.input_tokens as number) || 0,
                     outputTokens: (params.metrics.output_tokens as number) || 0,
                     totalTokens: (params.metrics.total_tokens as number) || 0,
                     cost: (params.metrics.request_cost as number) || 0,
                   }
-                  sessionMetrics.value.totalTokens += msg.metrics.totalTokens
-                  sessionMetrics.value.totalCost += msg.metrics.cost || 0
+                  sessionMetrics.value.totalTokens += updatedMsg.metrics.totalTokens
+                  sessionMetrics.value.totalCost += updatedMsg.metrics.cost || 0
                   sessionMetrics.value.messageCount++
                   saveSessionMetrics()
 
-                  lifetimeMetrics.value.totalTokens += msg.metrics.totalTokens
-                  lifetimeMetrics.value.totalCost += msg.metrics.cost || 0
+                  lifetimeMetrics.value.totalTokens += updatedMsg.metrics.totalTokens
+                  lifetimeMetrics.value.totalCost += updatedMsg.metrics.cost || 0
                   lifetimeMetrics.value.totalMessages++
                   saveLifetimeMetrics()
                 }
+                
+                targetMessages[msgIndex] = updatedMsg
 
                 if (sessionId && sessionsStore.activeSessionId !== sessionId) {
                   sessionsStore.activeSessionId = sessionId
@@ -616,15 +670,18 @@ export const useBrainStore = defineStore('brain', () => {
             const params = data.params as { session_id?: string }
             const sessionId = params.session_id
             const targetMsgId = sessionId 
-              ? streamingSessionMessageId.value.get(sessionId) 
+              ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
             
             if (targetMsgId) {
-              const targetMessages = sessionId === sessionsStore.activeSessionId 
-                ? messages.value 
-                : sessionMessagesCache.value.get(sessionId || '')
+              let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
+              let targetMessages: Message[] | undefined = messages.value
               
-              const msgIndex = targetMessages?.findIndex(m => m.id === targetMsgId) ?? -1
+              if (msgIndex < 0 && sessionId) {
+                targetMessages = sessionMessagesCache.value.get(sessionId)
+                msgIndex = targetMessages?.findIndex(m => m.id === targetMsgId) ?? -1
+              }
+              
               if (msgIndex >= 0 && targetMessages) {
                 targetMessages.splice(msgIndex, 1)
               }
@@ -667,10 +724,13 @@ export const useBrainStore = defineStore('brain', () => {
             }
 
             if (params.is_new) {
-              // Add new session to the top of the list
               sessionsStore.sessions.unshift(sessionData)
               sessionsStore.activeSessionId = sessionData.id
               sessionsStore.persistActiveSession()
+              
+              if (streamingMessageId.value) {
+                streamingSessionMessageId.value.set(sessionData.id, streamingMessageId.value)
+              }
             } else {
               // Update existing session
               const existing = sessionsStore.sessions.find(s => s.id === sessionData.id)
@@ -737,12 +797,14 @@ export const useBrainStore = defineStore('brain', () => {
       const id = requestId++
       pendingRequests.set(id, { resolve, reject })
 
-      ws.send(JSON.stringify({
+      const message = {
         jsonrpc: '2.0',
         method,
         params,
         id,
-      }))
+      }
+      console.log('[Brain] Sending request:', method, params)
+      ws.send(JSON.stringify(message))
 
       // Timeout after 5 minutes
       setTimeout(() => {
@@ -790,6 +852,12 @@ export const useBrainStore = defineStore('brain', () => {
       streamingSessionMessageId.value.set(targetSessionId, assistantMsgId)
     }
 
+    console.log('[BRAIN] 🚀 Started streaming for message:', {
+      assistantMsgId,
+      targetSessionId,
+      streamingMessageId: streamingMessageId.value,
+    })
+
     const STREAMING_TIMEOUT_MS = 300000
     const streamingTimeoutId = setTimeout(() => {
       const msg = messages.value.find(m => m.id === assistantMsgId)
@@ -828,10 +896,6 @@ export const useBrainStore = defineStore('brain', () => {
 
       if (response.metrics?.session_total_tokens) {
         tokenCount.value = response.metrics.session_total_tokens as number
-      }
-
-      if (authStore.isAuthenticated) {
-        authStore.refreshCreditBalance()
       }
     } catch (e) {
       clearTimeout(streamingTimeoutId)
@@ -875,26 +939,6 @@ export const useBrainStore = defineStore('brain', () => {
       if (targetSessionId) {
         streamingSessionMessageId.value.delete(targetSessionId)
       }
-    }
-  }
-
-  function handleConfirmationRequest(data: PendingConfirmation) {
-    pendingConfirmation.value = data
-  }
-
-  async function respondToConfirmation(approved: boolean, modifiedContent?: string) {
-    if (!pendingConfirmation.value) return
-
-    try {
-      await sendRequest('confirmation_response', {
-        confirmation_id: pendingConfirmation.value.id,
-        approved,
-        modified_content: modifiedContent,
-      })
-    } catch (e) {
-      error.value = (e as Error).message
-    } finally {
-      pendingConfirmation.value = null
     }
   }
 
@@ -992,15 +1036,10 @@ export const useBrainStore = defineStore('brain', () => {
     showPurchasePrompt.value = false
   }
 
-  // Called after successful credit purchase
   function onCreditsPurchased() {
     budgetExceeded.value = false
     showPurchasePrompt.value = false
     showToast('Credits added successfully! You can continue using Godoty.', 'success')
-    // Refresh balance
-    if (authStore.isAuthenticated) {
-      authStore.refreshCreditBalance()
-    }
   }
 
 
@@ -1063,7 +1102,6 @@ export const useBrainStore = defineStore('brain', () => {
     processingSessionId,
     tokenCount,
     knowledgeStatus,
-    pendingConfirmation,
     error,
     projectInfo,
     budgetExceeded,
@@ -1080,7 +1118,6 @@ export const useBrainStore = defineStore('brain', () => {
     disconnectWebSocket,
     sendUserMessage,
     cancelCurrentRequest,
-    respondToConfirmation,
     clearMessages,
     loadSessionMessages,
     resetSessionMetrics,

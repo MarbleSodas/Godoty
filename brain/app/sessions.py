@@ -14,8 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Import the shared database path from team module
-from app.agents.team import DB_DIR, DB_PATH
+# Import the shared database path from agent module
+from app.agents.agent import DB_DIR, DB_PATH
 
 
 @dataclass

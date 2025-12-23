@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useArtifactsStore } from '@/stores/artifacts'
-import hljs from 'highlight.js/lib/core'
+import { safeHighlight } from '@/utils/highlight'
 
 const artifactsStore = useArtifactsStore()
 
@@ -10,14 +10,10 @@ const copied = ref(false)
 const highlightedCode = computed(() => {
   if (!artifactsStore.currentArtifact) return ''
   
-  try {
-    return hljs.highlight(
-      artifactsStore.currentArtifact.content,
-      { language: artifactsStore.currentArtifact.language }
-    ).value
-  } catch {
-    return artifactsStore.currentArtifact.content
-  }
+  return safeHighlight(
+    artifactsStore.currentArtifact.content,
+    artifactsStore.currentArtifact.language
+  )
 })
 
 async function copyCode() {

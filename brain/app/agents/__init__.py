@@ -1,9 +1,21 @@
 """Godoty Agents package.
 
-This package contains the Agno-based agent team and tools for
-the Godoty AI assistant.
+Unified single-agent architecture for the Godoty AI assistant.
+Replaces the previous multi-agent team with a streamlined design.
 """
 
+from app.agents.agent import (
+    DB_DIR,
+    DB_PATH,
+    GodotySession,
+    create_godoty_agent,
+    get_db,
+    get_jwt_token,
+    get_key_spend_info,
+    get_model_id,
+    set_jwt_token,
+    set_model_id,
+)
 from app.agents.schemas import (
     ArchitecturePlan,
     CodeFile,
@@ -12,32 +24,20 @@ from app.agents.schemas import (
     PlanTask,
     SceneNodeInfo,
 )
-from app.agents.team import (
-    DB_PATH,
-    GodotySession,
-    TeamConfig,
-    create_godoty_team,
-    create_lead_agent,
-    create_coder_agent,
-    create_architect_agent,
-    create_observer_agent,
-    get_db,
-    get_team_config,
-    set_team_config,
-)
 
 __all__ = [
+    # Agent
+    "DB_DIR",
     "DB_PATH",
     "GodotySession",
-    "TeamConfig",
-    "create_godoty_team",
-    "create_lead_agent",
-    "create_coder_agent",
-    "create_architect_agent",
-    "create_observer_agent",
+    "create_godoty_agent",
     "get_db",
-    "get_team_config",
-    "set_team_config",
+    "get_jwt_token",
+    "get_key_spend_info",
+    "get_model_id",
+    "set_jwt_token",
+    "set_model_id",
+    # Schemas (kept for backwards compatibility)
     "ArchitecturePlan",
     "CodeFile",
     "CodeProposal",

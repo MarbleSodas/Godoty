@@ -3,23 +3,115 @@
 Tools are categorized into:
 - Perception: Screenshot, scene tree, script introspection
 - Actuation: File read/write, project settings modification
-- HITL: Tools requiring human confirmation before execution
-
-HITL Flow (Split-Brain Architecture):
-1. Actuation tools request confirmation via ConnectionManager (→ Tauri UI)
-2. User approves/denies in Tauri desktop app
-3. If approved, command is sent to Godot plugin for execution
+- Knowledge: Godot documentation search, LSP integration
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     pass
+
+
+# ============================================================================
+# Path Normalization
+# ============================================================================
+
+
+def _normalize_godot_path(path: str) -> str:
+    """Normalize Godot res:// paths to relative paths for file tools.
+    
+    Handles:
+    - res://Player.gd → Player.gd
+    - res://scripts/player.gd → scripts/player.gd
+    - Player.gd → Player.gd (unchanged)
+    
+    Args:
+        path: A file path, optionally with res:// prefix
+        
+    Returns:
+        The path with res:// prefix stripped if present
+    """
+    if path.startswith("res://"):
+        return path[6:]
+    return path
+
+
+# ============================================================================
+# Console Error Storage
+# ============================================================================
+
+
+@dataclass
+class ConsoleError:
+    """A captured console error from Godot."""
+    text: str
+    error_type: str  # "error", "warning", "script_error"
+    script_path: str | None
+    line: int | None
+    timestamp: datetime
+
+
+# Store last N console errors (circular buffer)
+_recent_errors: deque[ConsoleError] = deque(maxlen=20)
+
+
+def add_console_error(
+    text: str,
+    error_type: str = "error",
+    script_path: str | None = None,
+    line: int | None = None,
+) -> None:
+    """Add a console error to the recent errors buffer.
+    
+    Called by main.py when Godot sends console_error events.
+    These errors are then included in agent context for debugging.
+    
+    Args:
+        text: The error message text
+        error_type: One of "error", "warning", "script_error"
+        script_path: Optional path to the script that caused the error
+        line: Optional line number where the error occurred
+    """
+    _recent_errors.append(ConsoleError(
+        text=text,
+        error_type=error_type,
+        script_path=script_path,
+        line=line,
+        timestamp=datetime.now(),
+    ))
+
+
+def get_recent_errors(limit: int = 10) -> list[ConsoleError]:
+    """Get the most recent console errors.
+    
+    Args:
+        limit: Maximum number of errors to return
+        
+    Returns:
+        List of recent ConsoleError objects, most recent last
+    """
+    return list(_recent_errors)[-limit:]
+
+
+def clear_recent_errors() -> None:
+    """Clear the recent errors buffer.
+    
+    Called when Godot disconnects or when errors are acknowledged.
+    """
+    _recent_errors.clear()
+
+
+# ============================================================================
+# Global State
+# ============================================================================
 
 
 # Global reference to the WebSocket connection for Godot communication
@@ -137,39 +229,6 @@ async def _send_request(method: str, params: dict | None = None) -> Any:
         return {"error": "Request timed out"}
     finally:
         _pending_requests.pop(request_id, None)
-
-
-import logging
-
-_hitl_logger = logging.getLogger("godoty.hitl")
-
-
-async def _request_hitl_confirmation(
-    action_type: str,
-    description: str,
-    details: dict[str, Any],
-) -> bool:
-    """Request human-in-the-loop confirmation via Tauri UI. Checks device-level preferences first."""
-    if _connection_manager is None:
-        return False
-    
-    prefs = _connection_manager.get_hitl_preferences()
-    if prefs:
-        if prefs.always_allow_all:
-            _hitl_logger.info(f"HITL auto-approved (always_allow_all): {action_type} - {description}")
-            return True
-        
-        if prefs.always_allow.get(action_type, False):
-            _hitl_logger.info(f"HITL auto-approved ({action_type}): {description}")
-            return True
-    
-    response = await _connection_manager.request_confirmation(
-        action_type=action_type,
-        description=description,
-        details=details,
-    )
-    
-    return response.approved
 
 
 def resolve_response(request_id: int, result: Any) -> None:
@@ -291,10 +350,12 @@ async def read_project_file(path: str) -> str:
 
     Args:
         path: The file path relative to project root (e.g., 'scripts/player.gd')
+              Also accepts Godot res:// paths which are normalized automatically.
 
     Returns:
         The file contents as a string, or an error message
     """
+    path = _normalize_godot_path(path)
     result = await _send_request("read_file", {"path": path})
 
     if isinstance(result, dict) and "error" in result:
@@ -322,37 +383,17 @@ async def write_project_file(
 ) -> dict:
     """Write content to a file in the Godot project.
 
-    IMPORTANT: This tool requires HITL confirmation before execution.
-    The request will be sent to the Tauri desktop app for user approval
-    before the file is actually modified.
-
     Args:
         path: The file path relative to project root
+              Also accepts Godot res:// paths which are normalized automatically.
         content: The new content to write
         create_backup: Whether to backup the original file first
 
     Returns:
         Result dictionary with success status and message
     """
-    # First, request HITL confirmation via Tauri
-    approved = await _request_hitl_confirmation(
-        action_type="write_file",
-        description=f"Write to file: {path}",
-        details={
-            "path": path,
-            "content": content,
-            "create_backup": create_backup,
-        },
-    )
+    path = _normalize_godot_path(path)
     
-    if not approved:
-        return {
-            "success": False,
-            "message": "Operation denied by user",
-            "denied": True,
-        }
-    
-    # User approved - send command to Godot (without requires_confirmation)
     result = await _send_request("write_file", {
         "path": path,
         "content": content,
@@ -368,8 +409,6 @@ async def write_project_file(
 async def set_project_setting(path: str, value: Any) -> dict:
     """Set a project setting in the Godot project.
 
-    IMPORTANT: This tool requires HITL confirmation via Tauri.
-
     Args:
         path: The setting path (e.g., 'display/window/size/viewport_width')
         value: The value to set
@@ -377,24 +416,6 @@ async def set_project_setting(path: str, value: Any) -> dict:
     Returns:
         Result dictionary with success status
     """
-    # Request HITL confirmation via Tauri
-    approved = await _request_hitl_confirmation(
-        action_type="set_project_setting",
-        description=f"Set project setting: {path}",
-        details={
-            "path": path,
-            "value": value,
-        },
-    )
-    
-    if not approved:
-        return {
-            "success": False,
-            "message": "Operation denied by user",
-            "denied": True,
-        }
-    
-    # User approved - send to Godot
     result = await _send_request("set_project_setting", {
         "path": path,
         "value": value,
@@ -414,8 +435,6 @@ async def create_node(
 ) -> dict:
     """Create a new node in the scene tree.
 
-    IMPORTANT: This tool requires HITL confirmation via Tauri.
-
     Args:
         parent_path: NodePath to the parent node
         node_name: Name for the new node
@@ -425,26 +444,6 @@ async def create_node(
     Returns:
         Result dictionary with success status
     """
-    # Request HITL confirmation via Tauri
-    approved = await _request_hitl_confirmation(
-        action_type="create_node",
-        description=f"Create {node_type} node '{node_name}' under {parent_path}",
-        details={
-            "parent_path": parent_path,
-            "node_name": node_name,
-            "node_type": node_type,
-            "properties": properties or {},
-        },
-    )
-    
-    if not approved:
-        return {
-            "success": False,
-            "message": "Operation denied by user",
-            "denied": True,
-        }
-    
-    # User approved - send to Godot
     result = await _send_request("create_node", {
         "parent_path": parent_path,
         "node_name": node_name,
@@ -461,31 +460,12 @@ async def create_node(
 async def delete_node(node_path: str) -> dict:
     """Delete a node from the scene tree.
 
-    IMPORTANT: This tool requires HITL confirmation via Tauri.
-
     Args:
         node_path: NodePath to the node to delete
 
     Returns:
         Result dictionary with success status
     """
-    # Request HITL confirmation via Tauri
-    approved = await _request_hitl_confirmation(
-        action_type="delete_node",
-        description=f"Delete node: {node_path}",
-        details={
-            "node_path": node_path,
-        },
-    )
-    
-    if not approved:
-        return {
-            "success": False,
-            "message": "Operation denied by user",
-            "denied": True,
-        }
-    
-    # User approved - send to Godot
     result = await _send_request("delete_node", {
         "node_path": node_path,
     })
@@ -672,6 +652,7 @@ async def list_project_files(
     
     Args:
         directory: Directory path relative to project root (empty = root)
+                   Also accepts Godot res:// paths which are normalized automatically.
         pattern: Glob pattern to filter files (e.g., '*.gd', '*.tscn')
         recursive: If True, search recursively in subdirectories
         
@@ -679,6 +660,8 @@ async def list_project_files(
         List of file info dicts with 'name', 'path', 'is_dir', 'size' keys
     """
     from pathlib import Path
+    
+    directory = _normalize_godot_path(directory) if directory else ""
     
     try:
         if directory:
@@ -728,10 +711,12 @@ async def read_file(path: str) -> str:
     
     Args:
         path: File path relative to project root (e.g., 'scripts/player.gd')
+              Also accepts Godot res:// paths which are normalized automatically.
         
     Returns:
         The file contents as a string, or an error message
     """
+    path = _normalize_godot_path(path)
     try:
         target_path = _validate_path_in_project(path)
     except ValueError as e:
@@ -756,38 +741,20 @@ async def write_file(
 ) -> dict:
     """Write content to a file in the Godot project.
     
-    IMPORTANT: This tool requires HITL confirmation before execution.
-    
     Args:
         path: File path relative to project root
+              Also accepts Godot res:// paths which are normalized automatically.
         content: The content to write
         create_dirs: If True, create parent directories if they don't exist
         
     Returns:
         Result dictionary with success status and message
     """
+    path = _normalize_godot_path(path)
     try:
         target_path = _validate_path_in_project(path)
     except ValueError as e:
         return {"success": False, "message": str(e)}
-    
-    # Request HITL confirmation via Tauri
-    approved = await _request_hitl_confirmation(
-        action_type="write_file",
-        description=f"Write to file: {path}",
-        details={
-            "path": path,
-            "content": content,
-            "create_dirs": create_dirs,
-        },
-    )
-    
-    if not approved:
-        return {
-            "success": False,
-            "message": "Operation denied by user",
-            "denied": True,
-        }
     
     try:
         if create_dirs:
@@ -802,14 +769,14 @@ async def write_file(
 async def delete_file(path: str) -> dict:
     """Delete a file from the Godot project.
     
-    IMPORTANT: This tool requires HITL confirmation before execution.
-    
     Args:
         path: File path relative to project root
+              Also accepts Godot res:// paths which are normalized automatically.
         
     Returns:
         Result dictionary with success status and message
     """
+    path = _normalize_godot_path(path)
     try:
         target_path = _validate_path_in_project(path)
     except ValueError as e:
@@ -821,20 +788,6 @@ async def delete_file(path: str) -> dict:
     if target_path.is_dir():
         return {"success": False, "message": f"'{path}' is a directory, not a file"}
     
-    # Request HITL confirmation via Tauri
-    approved = await _request_hitl_confirmation(
-        action_type="delete_file",
-        description=f"Delete file: {path}",
-        details={"path": path},
-    )
-    
-    if not approved:
-        return {
-            "success": False,
-            "message": "Operation denied by user",
-            "denied": True,
-        }
-    
     try:
         target_path.unlink()
         return {"success": True, "message": f"File deleted: {path}"}
@@ -844,6 +797,7 @@ async def delete_file(path: str) -> dict:
 
 async def file_exists(path: str) -> bool:
     """Check if a file or directory exists in the Godot project."""
+    path = _normalize_godot_path(path)
     try:
         target_path = _validate_path_in_project(path)
         return target_path.exists()
@@ -852,9 +806,10 @@ async def file_exists(path: str) -> bool:
 
 
 async def create_directory(path: str) -> dict:
-    """Create a new directory in the Godot project. Requires HITL confirmation."""
+    """Create a new directory in the Godot project."""
     from pathlib import Path
     
+    path = _normalize_godot_path(path)
     try:
         target_path = _validate_path_in_project(path)
     except ValueError as e:
@@ -865,15 +820,6 @@ async def create_directory(path: str) -> dict:
             return {"success": True, "message": f"Directory already exists: {path}"}
         return {"success": False, "message": f"A file already exists at this path: {path}"}
     
-    approved = await _request_hitl_confirmation(
-        action_type="create_directory",
-        description=f"Create directory: {path}",
-        details={"path": path},
-    )
-    
-    if not approved:
-        return {"success": False, "message": "Operation denied by user", "denied": True}
-    
     try:
         target_path.mkdir(parents=True, exist_ok=True)
         return {"success": True, "message": f"Directory created: {path}"}
@@ -882,8 +828,10 @@ async def create_directory(path: str) -> dict:
 
 
 async def rename_file(old_path: str, new_name: str) -> dict:
-    """Rename a file or directory in the Godot project. Requires HITL confirmation."""
+    """Rename a file or directory in the Godot project."""
     from pathlib import Path
+    
+    old_path = _normalize_godot_path(old_path)
     
     if _project_path is None:
         return {"success": False, "message": "No Godot project connected"}
@@ -912,15 +860,6 @@ async def rename_file(old_path: str, new_name: str) -> dict:
     
     new_path_relative = str(new_target.relative_to(project_root))
     
-    approved = await _request_hitl_confirmation(
-        action_type="rename_file",
-        description=f"Rename: {old_path} → {new_name}",
-        details={"old_path": old_path, "new_path": new_path_relative, "new_name": new_name},
-    )
-    
-    if not approved:
-        return {"success": False, "message": "Operation denied by user", "denied": True}
-    
     try:
         old_target.rename(new_target)
         return {"success": True, "message": f"Renamed: {old_path} → {new_path_relative}", "new_path": new_path_relative}
@@ -929,8 +868,11 @@ async def rename_file(old_path: str, new_name: str) -> dict:
 
 
 async def move_file(source_path: str, destination_path: str) -> dict:
-    """Move a file or directory to a new location in the Godot project. Requires HITL confirmation."""
+    """Move a file or directory to a new location in the Godot project."""
     from pathlib import Path
+    
+    source_path = _normalize_godot_path(source_path)
+    destination_path = _normalize_godot_path(destination_path)
     
     if _project_path is None:
         return {"success": False, "message": "No Godot project connected"}
@@ -953,15 +895,6 @@ async def move_file(source_path: str, destination_path: str) -> dict:
     if dest.exists():
         return {"success": False, "message": f"Destination already exists: {destination_path}"}
     
-    approved = await _request_hitl_confirmation(
-        action_type="move_file",
-        description=f"Move: {source_path} → {destination_path}",
-        details={"source_path": source_path, "destination_path": destination_path},
-    )
-    
-    if not approved:
-        return {"success": False, "message": "Operation denied by user", "denied": True}
-    
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         source.rename(dest)
@@ -971,9 +904,12 @@ async def move_file(source_path: str, destination_path: str) -> dict:
 
 
 async def copy_file(source_path: str, destination_path: str) -> dict:
-    """Copy a file to a new location in the Godot project. Requires HITL confirmation. Only works for files, not directories."""
+    """Copy a file to a new location in the Godot project. Only works for files, not directories."""
     import shutil
     from pathlib import Path
+    
+    source_path = _normalize_godot_path(source_path)
+    destination_path = _normalize_godot_path(destination_path)
     
     if _project_path is None:
         return {"success": False, "message": "No Godot project connected"}
@@ -999,15 +935,6 @@ async def copy_file(source_path: str, destination_path: str) -> dict:
     if dest.exists():
         return {"success": False, "message": f"Destination already exists: {destination_path}"}
     
-    approved = await _request_hitl_confirmation(
-        action_type="copy_file",
-        description=f"Copy: {source_path} → {destination_path}",
-        details={"source_path": source_path, "destination_path": destination_path},
-    )
-    
-    if not approved:
-        return {"success": False, "message": "Operation denied by user", "denied": True}
-    
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
@@ -1032,12 +959,15 @@ async def find_files(
     
     Args:
         pattern: Glob pattern (e.g., '**/*.gd', '**/player*.gd', 'scripts/**/*.gd')
+                 Also accepts Godot res:// prefixed patterns.
         max_results: Maximum number of files to return (default: 50)
         
     Returns:
         List of matching files with path, name, and size
     """
     from pathlib import Path
+    
+    pattern = _normalize_godot_path(pattern)
     
     if _project_path is None:
         return [{"error": "No Godot project connected"}]
@@ -1065,7 +995,7 @@ async def find_files(
 
 
 async def search_project_files(
-    pattern: str,
+    query: str,
     file_pattern: str = "*.gd",
     max_results: int = 20,
     context_lines: int = 1,
@@ -1076,8 +1006,9 @@ async def search_project_files(
     where a function is defined, where a signal is emitted, etc.
     
     Args:
-        pattern: Text pattern to search for (case-insensitive)
-        file_pattern: Glob pattern to filter files (e.g., '*.gd', '*.tscn')
+        query: Text to search for in file contents (case-insensitive)
+        file_pattern: Glob pattern to filter which files to search (e.g., '*.gd', '*.tscn')
+                      Also accepts Godot res:// prefixed patterns.
         max_results: Maximum number of matching lines to return (default: 20)
         context_lines: Number of lines of context around each match (default: 1)
         
@@ -1087,6 +1018,8 @@ async def search_project_files(
     import re
     from pathlib import Path
     
+    file_pattern = _normalize_godot_path(file_pattern)
+    
     if _project_path is None:
         return [{"error": "No Godot project connected"}]
     
@@ -1094,9 +1027,9 @@ async def search_project_files(
     results: list[dict] = []
     
     try:
-        regex = re.compile(pattern, re.IGNORECASE)
+        regex = re.compile(query, re.IGNORECASE)
     except re.error:
-        regex = re.compile(re.escape(pattern), re.IGNORECASE)
+        regex = re.compile(re.escape(query), re.IGNORECASE)
     
     try:
         files = list(project_root.rglob(file_pattern))
@@ -1128,7 +1061,7 @@ async def search_project_files(
             except (UnicodeDecodeError, IOError):
                 continue
         
-        return results if results else [{"message": f"No matches found for '{pattern}'"}]
+        return results if results else [{"message": f"No matches found for '{query}'"}]
         
     except Exception as e:
         return [{"error": f"Search failed: {e}"}]
@@ -1205,6 +1138,11 @@ __all__ = [
     "get_code_completions",
     # Project context
     "get_project_context",
+    # Console error management
+    "add_console_error",
+    "get_recent_errors",
+    "clear_recent_errors",
+    "ConsoleError",
     # Connection management
     "set_ws_connection",
     "get_ws_connection",

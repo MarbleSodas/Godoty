@@ -274,6 +274,7 @@ class ConfirmationRequest(BaseModel):
     ]
     description: str
     details: dict[str, Any]
+    risk_level: Literal["low", "medium", "high"] = "medium"
 
 
 class ConfirmationResponse(BaseModel):

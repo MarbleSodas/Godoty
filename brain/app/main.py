@@ -10,10 +10,6 @@ Protocol: JSON-RPC 2.0 over WebSocket
 
 from __future__ import annotations
 
-# Apply Agno patches before importing other modules
-from app.agno_patches import apply_patches
-apply_patches()
-
 import asyncio
 import json
 import logging
@@ -23,12 +19,12 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.agents import get_db
-from app.agents.tools import resolve_response, set_ws_connection, set_connection_manager, set_project_path, set_godot_version, clear_pending_requests
+from app.agents.tools import resolve_response, set_ws_connection, set_connection_manager, set_project_path, set_godot_version, clear_pending_requests, add_console_error, clear_recent_errors
 from app.agents.context import invalidate_context_cache
 from app.protocol.jsonrpc import (
     ConfirmationRequest,
@@ -75,6 +71,9 @@ _active_tasks: set[asyncio.Task] = set()
 
 # Background indexing state - prevent duplicate indexing of the same version
 _indexing_versions: set[str] = set()
+
+# Background project indexing state - prevent duplicate indexing
+_indexing_projects: set[str] = set()
 
 
 @asynccontextmanager
@@ -262,50 +261,78 @@ class ConnectionManager:
         details: dict[str, Any],
     ) -> ConfirmationResponse:
         """Request user confirmation via Tauri UI."""
+        logger.info(f"[HITL] request_confirmation called: action={action_type}, desc={description}")
+        
         if not self.tauri:
-            # No Tauri connected - auto-deny for safety
+            logger.warning("[HITL] No Tauri connection for confirmation request!")
             return ConfirmationResponse(
                 confirmation_id="",
                 approved=False,
             )
         
         confirmation_id = str(uuid.uuid4())
+        logger.info(f"[HITL] Generated confirmation_id: {confirmation_id}")
+        
+        risk_level = self._compute_risk_level(action_type)
         
         request = ConfirmationRequest(
             confirmation_id=confirmation_id,
             action_type=action_type,  # type: ignore
             description=description,
             details=details,
+            risk_level=risk_level,
         )
         
-        # Create future to await response
         future: asyncio.Future = asyncio.Future()
         self.tauri.pending_confirmations[confirmation_id] = future
+        logger.info(f"[HITL] Registered pending confirmation, now have: {list(self.tauri.pending_confirmations.keys())}")
         
-        # Send confirmation request to Tauri
         await self.tauri.ws.send_text(
             JsonRpcRequest(
                 method="confirmation_request",
                 params=request.model_dump(),
             ).model_dump_json()
         )
+        logger.info(f"[HITL] Sent confirmation_request to Tauri, waiting for response...")
         
         try:
-            # Wait for user response (5 min timeout)
             response = await asyncio.wait_for(future, timeout=300.0)
+            logger.info(f"[HITL] Received response: approved={response.approved}")
             return response
         except asyncio.TimeoutError:
+            logger.warning(f"[HITL] Confirmation {confirmation_id} timed out!")
             return ConfirmationResponse(
                 confirmation_id=confirmation_id,
                 approved=False,
             )
         finally:
             self.tauri.pending_confirmations.pop(confirmation_id, None)
+            logger.info(f"[HITL] Cleaned up confirmation {confirmation_id}")
+    
+    def _compute_risk_level(self, action_type: str) -> Literal["low", "medium", "high"]:
+        """Compute risk level based on action type."""
+        high_risk = {"delete_file", "delete_node"}
+        low_risk = {"create_directory", "copy_file", "create_node"}
+        
+        if action_type in high_risk:
+            return "high"
+        elif action_type in low_risk:
+            return "low"
+        else:
+            return "medium"
     
     def resolve_confirmation(self, confirmation_id: str, response: ConfirmationResponse) -> None:
         """Resolve a pending confirmation with user's decision."""
-        if self.tauri and confirmation_id in self.tauri.pending_confirmations:
-            self.tauri.pending_confirmations[confirmation_id].set_result(response)
+        logger.info(f"[HITL] resolve_confirmation called: id={confirmation_id}")
+        if self.tauri:
+            logger.info(f"[HITL] Tauri connected, pending confirmations: {list(self.tauri.pending_confirmations.keys())}")
+            if confirmation_id in self.tauri.pending_confirmations:
+                logger.info(f"[HITL] Found pending confirmation, setting result")
+                self.tauri.pending_confirmations[confirmation_id].set_result(response)
+            else:
+                logger.warning(f"[HITL] Confirmation ID {confirmation_id} not found in pending confirmations!")
+        else:
+            logger.warning("[HITL] No Tauri connection available!")
     
     def get_hitl_preferences(self) -> HITLPreferences | None:
         """Get HITL preferences from the connected Tauri client."""
@@ -368,6 +395,7 @@ async def godot_ws_endpoint(ws: WebSocket) -> None:
         set_project_path(None)
         set_godot_version(None)
         clear_pending_requests()
+        clear_recent_errors()
         invalidate_context_cache()
 
 
@@ -438,6 +466,10 @@ async def _handle_godot_request(conn: GodotConnection, req: JsonRpcRequest) -> s
         if parsed_version:
             asyncio.create_task(_background_index_documentation(parsed_version))
         
+        # Trigger low-priority background project file indexing
+        if conn.project_path:
+            asyncio.create_task(_background_index_project(conn.project_path))
+        
         return _success(req.id, {
             "client": params.client,
             "session_id": conn.session_id,
@@ -456,6 +488,13 @@ async def _handle_godot_request(conn: GodotConnection, req: JsonRpcRequest) -> s
         try:
             params = ConsoleErrorParams.model_validate(req.params or {})
             logger.info(f"Console {params.type}: {params.text}")
+            
+            add_console_error(
+                text=params.text,
+                error_type=params.type,
+                script_path=params.script_path,
+                line=params.line,
+            )
         except Exception as e:
             logger.error(f"Invalid console error: {e}")
         return None
@@ -642,7 +681,7 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
     # The remote LiteLLM proxy validates the virtual key directly
     
     try:
-        from app.agents.team import GodotySession
+        from app.agents.agent import GodotySession
         
         db = get_db()
         
@@ -730,6 +769,35 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                     "agent_id": chunk.get("agent_id"),
                     "agent_name": chunk.get("agent_name"),
                 })
+
+            elif chunk["type"] == "reasoning_delta":
+                # Don't log every delta to avoid noise
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="stream_reasoning",
+                        params={
+                            "status": "delta",
+                            "content": chunk["content"],
+                            "session_id": session_id,
+                            "agent_id": chunk.get("agent_id"),
+                            "agent_name": chunk.get("agent_name"),
+                        }
+                    ).model_dump_json()
+                )
+                # We optionally collect deltas or just wait for the full step
+                # For now, let's NOT add deltas to collected_reasoning to avoid massive duplication in the final history
+                # We assume a "reasoning" (step) event will eventually come or we reconstruct it.
+                # Actually, if we only get deltas, we might miss the final text in collected_reasoning.
+                # Let's accumulate deltas into the LAST item of collected_reasoning if it matches.
+                
+                if collected_reasoning and collected_reasoning[-1].get("agent_id") == chunk.get("agent_id"):
+                     collected_reasoning[-1]["content"] += chunk["content"]
+                else:
+                     collected_reasoning.append({
+                        "content": chunk["content"],
+                        "agent_id": chunk.get("agent_id"),
+                        "agent_name": chunk.get("agent_name"),
+                    })
             
             elif chunk["type"] == "reasoning_completed":
                 logger.info(f"[MAIN] 🧠 Reasoning COMPLETED: agent={chunk.get('agent_name')}")
@@ -856,18 +924,30 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         conn.active_request_session_id = None
 
 
-async def _handle_confirmation_response(conn: TauriConnection, req: JsonRpcRequest) -> str | None:
+async def _handle_confirmation_response(conn: TauriConnection, req: JsonRpcRequest) -> str:
     """Handle user's confirmation decision from Tauri."""
     params = req.params or {}
+    logger.info(f"[HITL] Received confirmation_response: {params}")
     
     try:
         response = ConfirmationResponse.model_validate(params)
+        logger.info(f"[HITL] Parsed response: confirmation_id={response.confirmation_id}, approved={response.approved}")
+        
+        # Check if we have pending confirmations
+        if connections.tauri:
+            pending_ids = list(connections.tauri.pending_confirmations.keys())
+            logger.info(f"[HITL] Pending confirmation IDs: {pending_ids}")
+        
         connections.resolve_confirmation(response.confirmation_id, response)
-        logger.info(f"Confirmation {response.confirmation_id}: approved={response.approved}")
+        logger.info(f"[HITL] Resolved confirmation {response.confirmation_id}: approved={response.approved}")
+        return _success(req.id, {
+            "acknowledged": True,
+            "confirmation_id": response.confirmation_id,
+            "approved": response.approved,
+        })
     except Exception as e:
         logger.error(f"Invalid confirmation response: {e}")
-    
-    return None
+        return _error(req.id, -32602, f"Invalid confirmation response: {e}")
 
 
 # ============================================================================
@@ -1028,15 +1108,15 @@ async def _handle_get_session_history(req: JsonRpcRequest) -> str:
     # Query Agno's session storage for messages
     try:
         from datetime import datetime
-        from app.agents.team import GodotySession
+        from app.agents.agent import GodotySession
         
         db = get_db()
         godoty_session = GodotySession(session_id=session_id, db=db)
         
-        # Try to get chat history from the team - pass session_id explicitly
+        # Try to get chat history from the agent - pass session_id explicitly
         messages = []
         try:
-            history = godoty_session.team.get_chat_history(session_id=session_id)
+            history = godoty_session.agent.get_chat_history(session_id=session_id)
             if history:
                 for msg in history:
                     # Handle Pydantic models properly
@@ -1235,6 +1315,101 @@ async def _check_and_index_documentation(version: str) -> None:
     except Exception as e:
         logger.error(f"Background indexing check failed: {e}")
         _indexing_versions.discard(version)
+
+
+async def _background_index_project(project_path: str) -> None:
+    """Low-priority background task for project file indexing.
+    
+    Indexes all .gd and .tscn files with hash-based invalidation.
+    Only re-indexes files that have changed since last index.
+    """
+    global _indexing_projects
+    
+    if project_path in _indexing_projects:
+        logger.debug(f"Project indexing already in progress for {project_path}, skipping")
+        return
+    
+    # Add a delay to prioritize user interactions
+    await asyncio.sleep(3.0)
+    
+    try:
+        from app.knowledge.project_knowledge import get_project_knowledge
+        
+        _indexing_projects.add(project_path)
+        
+        project_kb = get_project_knowledge(project_path)
+        
+        # Check if already indexed
+        is_indexed = await project_kb.is_indexed()
+        
+        if connections.tauri:
+            await connections.tauri.ws.send_text(
+                JsonRpcRequest(
+                    method="project_knowledge_status_update",
+                    params={
+                        "status": "checking" if not is_indexed else "indexed",
+                        "project_path": project_path,
+                    }
+                ).model_dump_json()
+            )
+        
+        # Index project (hash-based - only indexes changed files)
+        logger.info(f"Starting project file indexing for: {project_path}")
+        
+        if connections.tauri:
+            await connections.tauri.ws.send_text(
+                JsonRpcRequest(
+                    method="project_knowledge_status_update",
+                    params={"status": "indexing", "project_path": project_path}
+                ).model_dump_json()
+            )
+        
+        stats = await project_kb.index_project(force=False)
+        
+        # Get document count
+        doc_count = 0
+        try:
+            doc_count = await project_kb.vector_db.async_get_count()
+        except Exception:
+            pass
+        
+        logger.info(
+            f"Project indexing complete: {stats.get('new', 0)} new, "
+            f"{stats.get('modified', 0)} modified, {stats.get('deleted', 0)} deleted, "
+            f"{doc_count} total documents"
+        )
+        
+        if connections.tauri:
+            await connections.tauri.ws.send_text(
+                JsonRpcRequest(
+                    method="project_knowledge_status_update",
+                    params={
+                        "status": "indexed",
+                        "project_path": project_path,
+                        "document_count": doc_count,
+                        "stats": stats,
+                    }
+                ).model_dump_json()
+            )
+            
+    except Exception as e:
+        logger.error(f"Project indexing failed: {e}")
+        if connections.tauri:
+            try:
+                await connections.tauri.ws.send_text(
+                    JsonRpcRequest(
+                        method="project_knowledge_status_update",
+                        params={
+                            "status": "error",
+                            "project_path": project_path,
+                            "error": str(e),
+                        }
+                    ).model_dump_json()
+                )
+            except Exception:
+                pass
+    finally:
+        _indexing_projects.discard(project_path)
 
 
 async def _handle_list_indexed_versions(req: JsonRpcRequest) -> str:

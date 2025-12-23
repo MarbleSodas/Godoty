@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { type Message, useBrainStore } from '@/stores/brain'
+import { type Message } from '@/stores/brain'
 import { useArtifactsStore } from '@/stores/artifacts'
 import { parseMarkdown } from '@/utils/markdown'
 import ThoughtsPanel from './ThoughtsPanel.vue'
@@ -13,17 +13,11 @@ const props = defineProps<{
 import iconUrl from '@/assets/icon.svg'
 
 const artifactsStore = useArtifactsStore()
-const brainStore = useBrainStore()
-
-const isAwaitingApproval = computed(() => 
-  props.message.isStreaming && brainStore.pendingConfirmation !== null
-)
 
 const isUser = computed(() => props.message.role === 'user')
 const isSystem = computed(() => props.message.role === 'system')
 const isStreaming = computed(() => props.message.isStreaming)
 
-// Check if message has any content to display (text, tool calls, or reasoning)
 const hasContent = computed(() => 
   props.message.content || 
   (props.message.toolCalls && props.message.toolCalls.length > 0) ||
@@ -36,12 +30,10 @@ const hasAnyActivity = computed(() =>
   (props.message.reasoning && props.message.reasoning.length > 0)
 )
 
-// Use the robust markdown parser
 const formattedContent = computed(() => {
   return parseMarkdown(props.message.content)
 })
 
-// Format token count for display
 function formatTokens(tokens: number): string {
   if (tokens >= 1000) {
     return `${(tokens / 1000).toFixed(1)}k`
@@ -49,7 +41,6 @@ function formatTokens(tokens: number): string {
   return tokens.toString()
 }
 
-// Handle clicks on code block buttons via event delegation
 function handleContentClick(event: MouseEvent) {
   const target = event.target as HTMLElement
   const button = target.closest('button')
@@ -58,20 +49,17 @@ function handleContentClick(event: MouseEvent) {
   const wrapper = button.closest('.code-block-wrapper') as HTMLElement
   if (!wrapper) return
   
-  // Handle copy button
   if (button.classList.contains('code-copy-btn')) {
     const code = decodeURIComponent(wrapper.dataset.code || '')
     copyToClipboard(code, button)
     return
   }
   
-  // Handle collapse button
   if (button.classList.contains('code-collapse-btn')) {
     toggleCollapse(wrapper, button)
     return
   }
   
-  // Handle view in panel button
   if (button.classList.contains('code-view-panel-btn')) {
     openInPanel(wrapper)
     return
@@ -102,12 +90,10 @@ function toggleCollapse(wrapper: HTMLElement, button: HTMLElement) {
   const isCollapsed = button.dataset.collapsed === 'true'
   
   if (isCollapsed) {
-    // Expand
     content.style.maxHeight = '600px'
     button.dataset.collapsed = 'false'
     icon.style.transform = 'rotate(0deg)'
   } else {
-    // Collapse
     content.style.maxHeight = '0px'
     button.dataset.collapsed = 'true'
     icon.style.transform = 'rotate(-90deg)'
@@ -120,7 +106,6 @@ function openInPanel(wrapper: HTMLElement) {
   const artifactId = wrapper.dataset.artifactId || ''
   const lineCount = code.split('\n').length
   
-  // Register and open the artifact
   artifactsStore.registerArtifact({
     id: artifactId,
     title: `${lang.charAt(0).toUpperCase() + lang.slice(1)} Code`,
@@ -184,15 +169,6 @@ function openInPanel(wrapper: HTMLElement) {
                     :key="call.id" 
                     :call="call" 
                   />
-                </div>
-
-                <!-- Waiting for approval indicator -->
-                <div v-if="isAwaitingApproval" class="flex items-center gap-2 text-amber-400 text-xs mb-2 px-3 py-2 bg-amber-500/10 rounded-lg border border-amber-500/20">
-                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                    <span class="font-medium">Waiting for your approval...</span>
-                    <span class="text-amber-300/70">Check the confirmation dialog</span>
                 </div>
                 
                 <!-- Thinking indicator - only show while streaming with no content -->

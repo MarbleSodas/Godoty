@@ -35,18 +35,30 @@ DEFAULT_EMBEDDING_MODEL = os.getenv(
 # Global cache for knowledge instances
 _knowledge_cache: dict[str, GodotDocsKnowledge] = {}
 
+# Global cache for the embedder instance (expensive to create)
+_embedder_cache: dict[str, object] = {}
+
 
 def _get_embedder():
-    """Get the embedder instance for vector embeddings.
+    """Get the cached embedder instance for vector embeddings.
     
     Uses SentenceTransformer from HuggingFace for local embeddings.
     Model is downloaded on first use and cached locally.
+    The embedder instance is cached globally to avoid reloading on every call.
     """
+    global _embedder_cache
+    
+    cache_key = DEFAULT_EMBEDDING_MODEL
+    if cache_key in _embedder_cache:
+        return _embedder_cache[cache_key]
+    
     try:
         from agno.knowledge.embedder.sentence_transformer import SentenceTransformerEmbedder
         
+        logger.info(f"Loading SentenceTransformerEmbedder with model: {DEFAULT_EMBEDDING_MODEL}")
         embedder = SentenceTransformerEmbedder(id=DEFAULT_EMBEDDING_MODEL)
-        logger.info(f"Using SentenceTransformerEmbedder with model: {DEFAULT_EMBEDDING_MODEL}")
+        _embedder_cache[cache_key] = embedder
+        logger.info(f"SentenceTransformerEmbedder loaded and cached")
         return embedder
     except Exception as e:
         logger.warning(f"Failed to initialize SentenceTransformerEmbedder: {e}")

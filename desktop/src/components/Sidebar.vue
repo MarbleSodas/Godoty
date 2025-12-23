@@ -24,6 +24,16 @@ const sessions = computed(() =>
 )
 const activeSessionId = computed(() => sessionsStore.activeSessionId)
 
+const headerTitle = computed(() => {
+    if (brainStore.godotConnected && brainStore.projectInfo?.name) {
+        return brainStore.projectInfo.name
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ')
+    }
+    return 'GODOTY'
+})
+
 async function createNewSession() {
     await brainStore.clearMessages()
     router.push('/')
@@ -97,7 +107,7 @@ function formatDate(date: Date | string): string {
     <div class="p-4 flex items-center justify-between border-b border-[#2d3546]">
         <div class="flex items-center space-x-2 font-bold text-[#478cbf]">
             <img :src="iconUrl" alt="Godoty" class="w-6 h-6" />
-            <span>GODOTY</span>
+            <span>{{ headerTitle }}</span>
         </div>
         <button @click="createNewSession" class="p-1.5 hover:bg-[#2d3546] rounded-md transition-colors text-gray-400 hover:text-white" title="New Chat">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import type { ReasoningStep } from '@/stores/brain'
 
 const props = defineProps<{
@@ -7,42 +7,54 @@ const props = defineProps<{
   isActive?: boolean
 }>()
 
+const thoughtsContainer = ref<HTMLElement | null>(null)
 const isExpanded = ref(props.isActive || false)
 
-import { watch } from 'vue'
 watch(() => props.isActive, (newVal) => {
-  if (newVal) isExpanded.value = true
+  if (newVal) {
+    isExpanded.value = true
+    scrollToBottom()
+  }
 })
+
+watch(() => props.thoughts.length, () => {
+  if (isExpanded.value) {
+    scrollToBottom()
+  }
+})
+
+// Watch for content changes in the last thought (for streaming deltas)
+watch(() => props.thoughts[props.thoughts.length - 1]?.content, () => {
+  if (isExpanded.value) {
+    scrollToBottom()
+  }
+})
+
+function scrollToBottom() {
+  nextTick(() => {
+    if (thoughtsContainer.value) {
+      thoughtsContainer.value.scrollTop = thoughtsContainer.value.scrollHeight
+    }
+  })
+}
 
 const hasThoughts = computed(() => props.thoughts && props.thoughts.length > 0)
 
 const processedThoughts = computed(() => {
   if (!props.thoughts) return []
-  return props.thoughts.map(t => {
-    const agentName = t.agentName || 'Team'
-    let badgeClass = 'bg-gray-500/20 text-gray-400 border-gray-500/30'
-    
-    const lowerName = agentName.toLowerCase()
-    if (lowerName.includes('lead')) {
-      badgeClass = 'bg-purple-500/20 text-purple-400 border-purple-500/30'
-    } else if (lowerName.includes('coder') || lowerName.includes('gdscript')) {
-      badgeClass = 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-    } else if (lowerName.includes('architect')) {
-      badgeClass = 'bg-green-500/20 text-green-400 border-green-500/30'
-    } else if (lowerName.includes('observer')) {
-      badgeClass = 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-    }
-
+  return props.thoughts.map((t, index) => {
     return {
       ...t,
-      displayName: agentName,
-      badgeClass
+      id: `thought-${index}`,
     }
   })
 })
 
 function toggle() {
   isExpanded.value = !isExpanded.value
+  if (isExpanded.value) {
+    scrollToBottom()
+  }
 }
 </script>
 
@@ -70,21 +82,18 @@ function toggle() {
     <!-- Collapsible content -->
     <div 
       class="overflow-hidden transition-all duration-300 ease-in-out"
-      :style="{ maxHeight: isExpanded ? `${thoughts.length * 100 + 100}px` : '0px' }"
+      :style="{ maxHeight: isExpanded ? '500px' : '0px' }"
     >
-      <div class="mt-2 space-y-2 pl-6 border-l-2 border-purple-500/30">
+      <div 
+        ref="thoughtsContainer"
+        class="mt-2 space-y-2 pl-6 border-l-2 border-purple-500/30 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar"
+      >
         <div 
-          v-for="(thought, index) in processedThoughts" 
-          :key="index"
-          class="text-xs text-gray-400 bg-[#1a1e29]/50 rounded px-3 py-2 flex gap-2 items-start"
+          v-for="thought in processedThoughts" 
+          :key="thought.id"
+          class="text-xs text-gray-400 bg-[#1a1e29]/50 rounded px-3 py-2"
         >
-          <span 
-            class="px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap border border-opacity-50"
-            :class="thought.badgeClass"
-          >
-            {{ thought.displayName }}
-          </span>
-          <span class="italic leading-relaxed">{{ thought.content }}</span>
+          <span class="italic leading-relaxed whitespace-pre-wrap break-words">{{ thought.content }}</span>
         </div>
       </div>
     </div>
@@ -94,5 +103,18 @@ function toggle() {
 <style scoped>
 .thoughts-panel {
   font-size: 0.75rem;
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(100, 100, 100, 0.3);
+  border-radius: 2px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 100, 100, 0.5);
 }
 </style>

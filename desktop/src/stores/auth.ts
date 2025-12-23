@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import {
   generateVirtualKey,
   fetchAvailableModels,
+  fetchCreditBalance,
   getCachedVirtualKey,
   clearVirtualKey,
   isKeyExpired,
@@ -11,11 +12,16 @@ import {
   setSelectedModel as saveSelectedModel,
   formatCredits,
   PRICING_URL,
+  isRateLimited,
+  getRateLimitResetSeconds,
+  clearRateLimitState,
+  updateCachedCreditBalance,
+  clearCachedCreditBalance,
   type VirtualKeyInfo,
   type ModelId,
   type ModelInfo,
 } from '@/lib/litellmKeys'
-import type { User, Session } from '@supabase/supabase-js'
+import type { User, Session, RealtimeChannel } from '@supabase/supabase-js'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
@@ -40,6 +46,11 @@ export const useAuthStore = defineStore('auth', () => {
   const selectedModel = ref<ModelId>(getSelectedModel())
   const availableModels = ref<ModelInfo[]>([])
   const modelsLoading = ref(false)
+
+  // Rate limit state for UI
+  const rateLimitedUntil = ref<Date | null>(null)
+
+  let balanceChannel: RealtimeChannel | null = null
 
   const isAuthenticated = computed(() => !!session.value)
   const accessToken = computed(() => session.value?.access_token ?? null)
@@ -75,19 +86,94 @@ export const useAuthStore = defineStore('auth', () => {
   // Check if user has sufficient credits (more than $0.0001)
   const hasSufficientCredits = computed(() => parseFloat(remainingCredits.value) > 0.0001)
 
-  /**
-   * Toggle key visibility
-   */
+  // Rate limit computed properties for UI
+  const isCurrentlyRateLimited = computed(() => isRateLimited())
+  const rateLimitSecondsRemaining = computed(() => getRateLimitResetSeconds())
+
+  function subscribeToBalanceUpdates(userId: string): void {
+    if (balanceChannel) {
+      supabase.removeChannel(balanceChannel)
+    }
+
+    balanceChannel = supabase
+      .channel(`balance-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'LiteLLM_UserTable',
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          const newData = payload.new as { max_budget?: number; spend?: number } | undefined
+          if (virtualKeyInfo.value && newData) {
+            const maxBudget = newData.max_budget ?? 0
+            const spend = newData.spend ?? 0
+            const remainingBudget = Math.max(0, maxBudget - spend).toFixed(4)
+            
+            // Update virtualKeyInfo
+            virtualKeyInfo.value = {
+              ...virtualKeyInfo.value,
+              maxBudget: maxBudget.toFixed(4),
+              spend: spend.toFixed(4),
+              remainingBudget,
+            }
+            
+            // Also update the cached credit balance so it stays in sync
+            updateCachedCreditBalance({
+              totalCredits: maxBudget.toFixed(4),
+              usedCredits: spend.toFixed(4),
+              remainingCredits: remainingBudget,
+            })
+          }
+        }
+      )
+      .on('system', { event: 'disconnect' }, () => {
+        console.warn('[Auth] Realtime disconnected, will auto-reconnect')
+      })
+      .on('system', { event: 'reconnect' }, () => {
+        console.log('[Auth] Realtime reconnected')
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.error('[Auth] Realtime channel error')
+        } else if (status === 'TIMED_OUT') {
+          console.warn('[Auth] Realtime subscription timed out, reconnecting...')
+          // Attempt to resubscribe after a delay
+          setTimeout(() => {
+            if (user.value?.id) {
+              subscribeToBalanceUpdates(user.value.id)
+            }
+          }, 5000)
+        }
+      })
+  }
+
+  function unsubscribeFromBalanceUpdates(): void {
+    if (balanceChannel) {
+      supabase.removeChannel(balanceChannel)
+      balanceChannel = null
+    }
+  }
+
   function toggleKeyVisibility(): void {
     showFullKey.value = !showFullKey.value
   }
 
   /**
    * Force regenerate virtual key (clears cache first)
+   * Note: This may be rate limited (5 calls per hour)
    */
   async function regenerateVirtualKey(): Promise<void> {
     if (!accessToken.value) {
       keyError.value = 'Not authenticated'
+      return
+    }
+
+    // Check if we're rate limited before attempting
+    if (isRateLimited()) {
+      keyError.value = `Rate limited. Try again in ${getRateLimitResetSeconds()} seconds.`
       return
     }
 
@@ -100,9 +186,15 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const keyInfo = await generateVirtualKey(accessToken.value, true)
       virtualKeyInfo.value = keyInfo
+      // Clear any rate limit state on success
+      clearRateLimitState()
     } catch (e) {
-      keyError.value = (e as Error).message
-      console.error('Failed to regenerate virtual key:', e)
+      const errorMessage = (e as Error).message
+      keyError.value = errorMessage
+      // Don't log rate limit errors as they're expected
+      if (!errorMessage.includes('Rate limit')) {
+        console.error('Failed to regenerate virtual key:', e)
+      }
     } finally {
       keyLoading.value = false
     }
@@ -130,26 +222,52 @@ export const useAuthStore = defineStore('auth', () => {
       const keyInfo = await generateVirtualKey(accessToken.value)
       virtualKeyInfo.value = keyInfo
     } catch (e) {
-      keyError.value = (e as Error).message
-      console.error('Failed to get virtual key:', e)
+      const errorMessage = (e as Error).message
+      keyError.value = errorMessage
+      // Don't log rate limit errors as they're expected
+      if (!errorMessage.includes('Rate limit')) {
+        console.error('Failed to get virtual key:', e)
+      }
     } finally {
       keyLoading.value = false
     }
   }
 
   /**
-   * Refresh the credit balance by fetching fresh key info from LiteLLM
-   * The generate-litellm-key endpoint returns current balance from LiteLLM
+   * Refresh the credit balance by querying Supabase directly
+   * This avoids calling the edge function and won't trigger rate limits
+   * Uses internal throttling to prevent excessive DB queries
    */
   async function refreshCreditBalance(): Promise<void> {
-    if (!accessToken.value) return
+    if (!session.value) return
 
     try {
-      // Force fetch fresh key info (bypassing cache) to get updated balance
-      const keyInfo = await generateVirtualKey(accessToken.value, true)
-      virtualKeyInfo.value = keyInfo
+      const balance = await fetchCreditBalance(supabase)
+      if (balance && virtualKeyInfo.value) {
+        virtualKeyInfo.value = {
+          ...virtualKeyInfo.value,
+          maxBudget: balance.totalCredits,
+          spend: balance.usedCredits,
+          remainingBudget: balance.remainingCredits,
+        }
+      } else if (balance && !virtualKeyInfo.value) {
+        // If we have balance but no key info, create partial info
+        // This allows showing balance even if key generation failed
+        virtualKeyInfo.value = {
+          apiKey: '',
+          expiresAt: '',
+          maxBudget: balance.totalCredits,
+          spend: balance.usedCredits,
+          remainingBudget: balance.remainingCredits,
+        }
+      }
     } catch (e) {
-      console.error('Failed to refresh credit balance:', e)
+      // Silently fail - realtime subscription will keep balance updated
+      // Only log unexpected errors (not network issues)
+      const errorMessage = (e as Error).message
+      if (!errorMessage.includes('Load failed') && !errorMessage.includes('network')) {
+        console.error('Failed to refresh credit balance:', e)
+      }
     }
   }
 
@@ -206,12 +324,14 @@ export const useAuthStore = defineStore('auth', () => {
             // User just signed in - get their virtual key
             session.value = newSession
             user.value = newSession?.user ?? null
-            if (newSession?.access_token) {
+            if (newSession?.access_token && newSession?.user?.id) {
               await ensureVirtualKey()
               await refreshModels()
+              subscribeToBalanceUpdates(newSession.user.id)
             }
           } else if (event === 'SIGNED_OUT') {
             // User signed out - clear everything
+            unsubscribeFromBalanceUpdates()
             session.value = null
             user.value = null
             virtualKeyInfo.value = null
@@ -229,9 +349,10 @@ export const useAuthStore = defineStore('auth', () => {
         session.value = data.session
         user.value = data.session?.user ?? null
 
-        if (data.session?.access_token) {
+        if (data.session?.access_token && data.session?.user?.id) {
           await ensureVirtualKey()
           await refreshModels()
+          subscribeToBalanceUpdates(data.session.user.id)
         }
       } catch (e) {
         error.value = (e as Error).message
@@ -341,11 +462,15 @@ export const useAuthStore = defineStore('auth', () => {
   async function signOut() {
     loading.value = true
     try {
+      unsubscribeFromBalanceUpdates()
       await supabase.auth.signOut()
       session.value = null
       user.value = null
       virtualKeyInfo.value = null
+      availableModels.value = []
       clearVirtualKey()
+      clearCachedCreditBalance()
+      clearRateLimitState()
     } catch (e) {
       error.value = (e as Error).message
     } finally {
@@ -438,6 +563,7 @@ export const useAuthStore = defineStore('auth', () => {
     keyError,
     selectedModel,
     showFullKey,
+    rateLimitedUntil,
 
     // Computed
     isAuthenticated,
@@ -454,6 +580,8 @@ export const useAuthStore = defineStore('auth', () => {
     formattedMaxCredits,
     formattedUsedCredits,
     hasSufficientCredits,
+    isCurrentlyRateLimited,
+    rateLimitSecondsRemaining,
 
     // Actions
     initialize,

@@ -3,7 +3,6 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBrainStore } from '@/stores/brain'
-import { useHitlStore } from '@/stores/hitl'
 
 interface IndexedVersion {
   version: string
@@ -14,7 +13,6 @@ interface IndexedVersion {
 const router = useRouter()
 const authStore = useAuthStore()
 const brainStore = useBrainStore()
-const hitlStore = useHitlStore()
 const copySuccess = ref(false)
 
 const indexedVersions = ref<IndexedVersion[]>([])
@@ -134,191 +132,6 @@ onMounted(() => {
             />
             <p class="text-xs text-gray-500 mt-1">The Python brain runs as a sidecar process</p>
           </div>
-        </div>
-      </section>
-
-      <!-- Action Confirmations Section -->
-      <section class="bg-[#1a1e29] border border-[#3b4458] rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-semibold mb-4 text-gray-200">Action Confirmations</h2>
-        
-        <!-- Warning Banner (show when any auto-approve is enabled) -->
-        <div v-if="hitlStore.autoApproveCount > 0" class="mb-4 p-3 bg-amber-900/20 border border-amber-700/50 rounded-lg">
-          <div class="flex items-center gap-2 text-amber-400 text-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
-            <span>{{ hitlStore.autoApproveCount }} action type(s) will be auto-approved without confirmation</span>
-          </div>
-        </div>
-
-        <div class="space-y-4">
-          <!-- Master Toggle -->
-          <div class="flex items-center justify-between p-3 bg-[#202531] rounded-lg">
-            <div>
-              <p class="text-gray-200 font-medium">Skip All Confirmations</p>
-              <p class="text-xs text-gray-500">Dangerous: All actions will execute without asking</p>
-            </div>
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input 
-                type="checkbox" 
-                :checked="hitlStore.preferences.alwaysAllowAll"
-                @change="hitlStore.setAlwaysAllowAll(($event.target as HTMLInputElement).checked)"
-                class="sr-only peer"
-              />
-              <div class="w-11 h-6 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
-            </label>
-          </div>
-
-          <!-- Divider -->
-          <div class="border-t border-[#3b4458]"></div>
-
-          <!-- Standard Actions Group -->
-          <div>
-            <p class="text-sm text-gray-400 mb-2">Standard Actions</p>
-            <div class="space-y-2">
-              <!-- Write File -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded">
-                <span class="text-gray-300 text-sm">📝 Write File</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.write_file"
-                    @change="hitlStore.setAlwaysAllowAction('write_file', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-              <!-- Create Directory -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded">
-                <span class="text-gray-300 text-sm">📁 Create Directory</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.create_directory"
-                    @change="hitlStore.setAlwaysAllowAction('create_directory', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-              <!-- Rename File -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded">
-                <span class="text-gray-300 text-sm">✏️ Rename File</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.rename_file"
-                    @change="hitlStore.setAlwaysAllowAction('rename_file', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-              <!-- Move File -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded">
-                <span class="text-gray-300 text-sm">📦 Move File</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.move_file"
-                    @change="hitlStore.setAlwaysAllowAction('move_file', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-              <!-- Copy File -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded">
-                <span class="text-gray-300 text-sm">📋 Copy File</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.copy_file"
-                    @change="hitlStore.setAlwaysAllowAction('copy_file', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-              <!-- Create Node -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded">
-                <span class="text-gray-300 text-sm">➕ Create Node</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.create_node"
-                    @change="hitlStore.setAlwaysAllowAction('create_node', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-              <!-- Set Project Setting -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded">
-                <span class="text-gray-300 text-sm">⚙️ Change Setting</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.set_project_setting"
-                    @change="hitlStore.setAlwaysAllowAction('set_project_setting', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <!-- Destructive Actions Group -->
-          <div>
-            <p class="text-sm text-gray-400 mb-2">Destructive Actions</p>
-            <div class="space-y-2">
-              <!-- Delete File -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded border border-red-900/30">
-                <span class="text-gray-300 text-sm">🗑️ Delete File</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.delete_file"
-                    @change="hitlStore.setAlwaysAllowAction('delete_file', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-              <!-- Delete Node -->
-              <div class="flex items-center justify-between p-2 bg-[#202531] rounded border border-red-900/30">
-                <span class="text-gray-300 text-sm">🗑️ Delete Node</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox"
-                    :disabled="hitlStore.preferences.alwaysAllowAll"
-                    :checked="hitlStore.preferences.alwaysAllow.delete_node"
-                    @change="hitlStore.setAlwaysAllowAction('delete_node', ($event.target as HTMLInputElement).checked)"
-                    class="sr-only peer"
-                  />
-                  <div class="w-9 h-5 bg-[#3b4458] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600 peer-disabled:opacity-50"></div>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <!-- Reset Button -->
-          <button 
-            @click="hitlStore.resetToDefaults()"
-            class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
-          >
-            Reset to Defaults
-          </button>
         </div>
       </section>
 

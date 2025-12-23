@@ -45,13 +45,17 @@ class ProjectContext:
     """Comprehensive context about the connected Godot project.
     
     Prioritizes:
-    1. Scene/node hierarchies
-    2. Script dependencies and class relationships
+    1. Recent console errors (for debugging)
+    2. Scene/node hierarchies
+    3. Script dependencies and class relationships
     """
     # Basic project info
     project_path: str
     project_name: str = ""
     godot_version: str = ""
+    
+    # Recent console errors (high priority for debugging)
+    recent_errors: list[dict] = field(default_factory=list)
     
     # Main entry points
     main_scene: str | None = None
@@ -259,6 +263,20 @@ async def gather_project_context(
         autoloads=project_info.get("autoloads", {}),
     )
     
+    # Gather recent console errors (highest priority for debugging)
+    from app.agents.tools import get_recent_errors
+    recent = get_recent_errors(limit=10)
+    context.recent_errors = [
+        {
+            "text": e.text,
+            "type": e.error_type,
+            "script_path": e.script_path,
+            "line": e.line,
+            "timestamp": e.timestamp.isoformat(),
+        }
+        for e in recent
+    ]
+    
     # Gather directories (excluding hidden and imports)
     try:
         for item in sorted(project_path.iterdir()):
@@ -325,7 +343,7 @@ def format_context_for_agent(ctx: ProjectContext) -> str:
     """Format project context as a system prompt section.
     
     Creates a concise but comprehensive summary for agent consumption.
-    Prioritizes scene/node hierarchies and script dependencies.
+    Prioritizes recent errors, scene/node hierarchies and script dependencies.
     """
     lines = [
         "## Current Project Context\n",
@@ -334,6 +352,15 @@ def format_context_for_agent(ctx: ProjectContext) -> str:
     
     if ctx.main_scene:
         lines.append(f"**Main Scene:** `{ctx.main_scene}`")
+    
+    # Recent console errors (highest priority - show first for debugging)
+    if ctx.recent_errors:
+        lines.append("\n### ⚠️ Recent Console Errors")
+        for err in ctx.recent_errors[-5:]:
+            script_info = f" in `{err['script_path']}`" if err.get('script_path') else ""
+            line_info = f" (line {err['line']})" if err.get('line') else ""
+            error_text = err['text'][:200] + "..." if len(err['text']) > 200 else err['text']
+            lines.append(f"- **{err['type'].upper()}**{script_info}{line_info}: {error_text}")
     
     # Autoloads (important for understanding globals)
     if ctx.autoloads:

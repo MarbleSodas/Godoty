@@ -2,7 +2,6 @@
 import { ref, computed } from 'vue'
 import { useBrainStore } from '@/stores/brain'
 import ChatPanel from '@/components/ChatPanel.vue'
-import ConfirmationDialog from '@/components/ConfirmationDialog.vue'
 import Sidebar from '@/components/Sidebar.vue'
 import ArtifactPanel from '@/components/ArtifactPanel.vue'
 
@@ -20,15 +19,6 @@ const projectTitle = computed(() => {
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
 }
-
-// Debug logs for title issues
-import { watch } from 'vue'
-watch(() => brainStore.projectInfo, (info) => {
-    console.log('[MainView] projectInfo updated:', info)
-}, { deep: true })
-
-
-
 </script>
 
 <template>
@@ -101,13 +91,6 @@ watch(() => brainStore.projectInfo, (info) => {
 
         <!-- Chat Area -->
         <ChatPanel class="flex-1 overflow-hidden" />
-        
-        <!-- Confirmation Dialog -->
-        <ConfirmationDialog 
-          v-if="brainStore.pendingConfirmation"
-          :confirmation="brainStore.pendingConfirmation"
-          @respond="brainStore.respondToConfirmation"
-        />
 
     </main>
     

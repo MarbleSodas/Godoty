@@ -98,16 +98,7 @@ const handleOutsideClick = (e: Event) => {
 
 onMounted(() => {
     textarea.value?.focus()
-    // Click outside to close model selector
     document.addEventListener('click', handleOutsideClick)
-    
-    // Check URL params and refresh balance periodically when app regains focus
-    // This catches purchases made on the website
-    window.addEventListener('focus', () => {
-      if (authStore.isAuthenticated) {
-        authStore.refreshCreditBalance()
-      }
-    })
 })
 
 onUnmounted(() => {
