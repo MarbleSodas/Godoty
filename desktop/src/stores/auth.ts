@@ -100,30 +100,43 @@ export const useAuthStore = defineStore('auth', () => {
       .on(
         'postgres_changes',
         {
-          event: '*',
+          event: 'UPDATE',
           schema: 'public',
           table: 'LiteLLM_UserTable',
           filter: `user_id=eq.${userId}`,
         },
         (payload) => {
           const newData = payload.new as { max_budget?: number; spend?: number } | undefined
-          if (virtualKeyInfo.value && newData) {
-            const maxBudget = newData.max_budget ?? 0
-            const spend = newData.spend ?? 0
-            const remainingBudget = Math.max(0, maxBudget - spend).toFixed(4)
+          const oldData = payload.old as { max_budget?: number; spend?: number } | undefined
+          
+          if (!newData) return
+          
+          const newMaxBudget = newData.max_budget ?? 0
+          const newSpend = newData.spend ?? 0
+          const oldMaxBudget = oldData?.max_budget ?? 0
+          const oldSpend = oldData?.spend ?? 0
+          
+          const EPSILON = 0.0001
+          const budgetChanged = Math.abs(newMaxBudget - oldMaxBudget) > EPSILON
+          const spendChanged = Math.abs(newSpend - oldSpend) > EPSILON
+          
+          if (!budgetChanged && !spendChanged) {
+            return
+          }
+          
+          if (virtualKeyInfo.value) {
+            const remainingBudget = Math.max(0, newMaxBudget - newSpend).toFixed(4)
             
-            // Update virtualKeyInfo
             virtualKeyInfo.value = {
               ...virtualKeyInfo.value,
-              maxBudget: maxBudget.toFixed(4),
-              spend: spend.toFixed(4),
+              maxBudget: newMaxBudget.toFixed(4),
+              spend: newSpend.toFixed(4),
               remainingBudget,
             }
             
-            // Also update the cached credit balance so it stays in sync
             updateCachedCreditBalance({
-              totalCredits: maxBudget.toFixed(4),
-              usedCredits: spend.toFixed(4),
+              totalCredits: newMaxBudget.toFixed(4),
+              usedCredits: newSpend.toFixed(4),
               remainingCredits: remainingBudget,
             })
           }

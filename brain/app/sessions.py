@@ -269,6 +269,51 @@ class SessionManager:
         
         return title if title else "New Chat"
 
+    def cleanup_empty_sessions(self) -> int:
+        """Remove sessions that have no messages.
+        
+        Cleans up sessions created but never received a successful message
+        (e.g., due to errors, cancellation, or crashes).
+        
+        Returns:
+            Number of sessions deleted
+        """
+        conn = self._get_conn()
+        deleted_count = 0
+        try:
+            cursor = conn.execute("""
+                SELECT id FROM godoty_sessions 
+                WHERE message_count = 0
+            """)
+            empty_session_ids = [row["id"] for row in cursor.fetchall()]
+            
+            if not empty_session_ids:
+                return 0
+            
+            for session_id in empty_session_ids:
+                has_agno_messages = False
+                try:
+                    agno_cursor = conn.execute(
+                        "SELECT COUNT(*) as cnt FROM agno_sessions WHERE session_id = ?",
+                        (session_id,)
+                    )
+                    row = agno_cursor.fetchone()
+                    has_agno_messages = row is not None and row["cnt"] > 0
+                except sqlite3.OperationalError:
+                    pass
+                
+                if not has_agno_messages:
+                    conn.execute(
+                        "DELETE FROM godoty_sessions WHERE id = ?",
+                        (session_id,)
+                    )
+                    deleted_count += 1
+            
+            conn.commit()
+            return deleted_count
+        finally:
+            conn.close()
+
 
 # Global session manager instance
 _session_manager: SessionManager | None = None

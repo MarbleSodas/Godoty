@@ -1,18 +1,51 @@
 import { safeHighlight } from './highlight'
+import DOMPurify from 'dompurify'
+
+// Configure DOMPurify with allowed tags and attributes for our markdown rendering
+const DOMPURIFY_CONFIG = {
+  ALLOWED_TAGS: [
+    'h1', 'h2', 'h3', 'p', 'code', 'pre', 'strong', 'em', 'a', 'div', 'span',
+    'br', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'button', 'svg', 'path'
+  ],
+  ALLOWED_ATTR: [
+    'class', 'style', 'href', 'target', 'title',
+    'data-artifact-id', 'data-lang', 'data-code', 'data-collapsed',
+    'viewBox', 'fill', 'stroke', 'stroke-linecap', 'stroke-linejoin', 'stroke-width', 'd'
+  ],
+  FORBID_ATTR: ['onerror', 'onclick', 'onload', 'onmouseover', 'onfocus', 'onblur'],
+  ALLOW_DATA_ATTR: true,
+}
+
+const MARKDOWN_CACHE_MAX_SIZE = 100
+const markdownCache = new Map<string, string>()
 
 export function parseMarkdown(text: string): string {
   if (!text) return ''
 
+  const cached = markdownCache.get(text)
+  if (cached !== undefined) return cached
+
   const codeBlockRegex = /(```[\w]*[\s\S]*?```)/g
   const parts = text.split(codeBlockRegex)
 
-  return parts.map(part => {
+  const rawHtml = parts.map(part => {
     if (part.startsWith('```')) {
       return parseCodeBlock(part)
     } else {
       return parseTextContent(part)
     }
   }).join('')
+
+  // Sanitize the final HTML output to prevent XSS attacks
+  const sanitized = DOMPurify.sanitize(rawHtml, DOMPURIFY_CONFIG)
+
+  if (markdownCache.size >= MARKDOWN_CACHE_MAX_SIZE) {
+    const firstKey = markdownCache.keys().next().value
+    if (firstKey) markdownCache.delete(firstKey)
+  }
+  markdownCache.set(text, sanitized)
+
+  return sanitized
 }
 
 function parseCodeBlock(block: string): string {
@@ -171,7 +204,13 @@ function parseTextContent(text: string): string {
 
   html = html.replace(/`([^`]+)`/g, '<code class="bg-[#1a1e29] px-1.5 py-0.5 rounded text-[#478cbf] font-mono text-xs border border-[#3b4458]">$1</code>')
 
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="text-[#478cbf] hover:underline">$1</a>')
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => {
+    const normalizedUrl = url.toLowerCase().trim()
+    if (normalizedUrl.startsWith('javascript:') || normalizedUrl.startsWith('data:')) {
+      return escapeHtml(linkText)
+    }
+    return `<a href="${escapeHtml(url)}" target="_blank" class="text-[#478cbf] hover:underline">${escapeHtml(linkText)}</a>`
+  })
 
   html = html.replace(/^- (.*$)/gm, '<div class="flex gap-2 mb-1 pl-4"><span class="text-gray-400">•</span><span class="text-gray-300 flex-1">$1</span></div>')
 

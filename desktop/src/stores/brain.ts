@@ -93,6 +93,9 @@ export const useBrainStore = defineStore('brain', () => {
   // Streaming state
   const streamingMessageId = ref<string | null>(null)
 
+  // Session history loading state (separate from message processing)
+  const isLoadingHistory = ref(false)
+
   const sessionMessagesCache = ref<Map<string, Message[]>>(new Map())
   const processingSessionId = ref<string | null>(null)
   const streamingSessionMessageId = ref<Map<string, string>>(new Map())
@@ -593,14 +596,20 @@ export const useBrainStore = defineStore('brain', () => {
           {
             const params = data.params as {
               metrics?: Record<string, unknown>
-              session_id?: string
+              session_id?: string | null
               tool_calls?: ToolCall[]
               reasoning?: (string | ReasoningStep)[]
             }
             const sessionId = params.session_id
-            const targetMsgId = sessionId 
-              ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
-              : streamingMessageId.value
+            
+            if (!sessionId) {
+              streamingMessageId.value = null
+              isProcessing.value = false
+              processingSessionId.value = null
+              break
+            }
+            
+            const targetMsgId = streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value
             
             if (targetMsgId) {
               let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
@@ -832,6 +841,11 @@ export const useBrainStore = defineStore('brain', () => {
   async function sendUserMessage(text: string) {
     if (!text.trim()) return
     
+    if (!godotConnected.value) {
+      showToast('Connect Godot to start chatting. Enable the Godoty plugin in your project.', 'info')
+      return
+    }
+    
     if (processingSessionId.value) {
       showToast('Please wait for the current request to complete or cancel it', 'info')
       return
@@ -987,7 +1001,7 @@ export const useBrainStore = defineStore('brain', () => {
       return
     }
 
-    isProcessing.value = true
+    isLoadingHistory.value = true
 
     try {
       const history = await sessionsStore.getSessionHistory(sessionId)
@@ -1014,7 +1028,7 @@ export const useBrainStore = defineStore('brain', () => {
     } catch (e) {
       error.value = `Failed to load session: ${(e as Error).message}`
     } finally {
-      isProcessing.value = false
+      isLoadingHistory.value = false
     }
   }
 
@@ -1099,6 +1113,7 @@ export const useBrainStore = defineStore('brain', () => {
     startupStatus,
     messages,
     isProcessing,
+    isLoadingHistory,
     processingSessionId,
     tokenCount,
     knowledgeStatus,

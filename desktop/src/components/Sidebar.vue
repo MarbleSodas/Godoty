@@ -25,13 +25,7 @@ const sessions = computed(() =>
 const activeSessionId = computed(() => sessionsStore.activeSessionId)
 
 const headerTitle = computed(() => {
-    if (brainStore.godotConnected && brainStore.projectInfo?.name) {
-        return brainStore.projectInfo.name
-            .split(' ')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(' ')
-    }
-    return 'GODOTY'
+    return 'Godoty'
 })
 
 async function createNewSession() {

@@ -15,11 +15,15 @@ const messagesContainer = ref<HTMLElement | null>(null)
 const textarea = ref<HTMLTextAreaElement | null>(null)
 
 async function sendMessage() {
-  if (!input.value.trim() || brainStore.isProcessing) return
+  if (!input.value.trim() || brainStore.isProcessing || !brainStore.godotConnected) return
   
   const text = input.value
   input.value = ''
-  autoResize() // Reset height
+  // Reset textarea height after sending
+  if (textarea.value) {
+    textarea.value.style.height = 'auto'
+    textarea.value.style.height = '48px'
+  }
   
   await brainStore.sendUserMessage(text)
 }
@@ -119,7 +123,7 @@ onUnmounted(() => {
     >
       <div class="max-w-3xl mx-auto space-y-6 pb-20">
           <!-- Empty State -->
-          <div v-if="!brainStore.isProcessing && brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none">
+          <div v-if="!brainStore.isProcessing && !brainStore.isLoadingHistory && brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none">
             <div class="w-16 h-16 bg-[#2d3546] rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-[#478cbf]/10">
                 <img :src="iconUrl" class="w-10 h-10 opacity-70" alt="Godoty" />
             </div>
@@ -127,8 +131,8 @@ onUnmounted(() => {
             <p class="text-sm text-gray-500 mt-2">Ask about GDScript, shaders, or scene composition.</p>
           </div>
 
-          <!-- Loading State -->
-          <div v-else-if="brainStore.isProcessing && brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none animate-pulse">
+          <!-- Loading State (History Loading) -->
+          <div v-else-if="brainStore.isLoadingHistory && brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none animate-pulse">
             <div class="w-16 h-16 bg-[#2d3546] rounded-2xl mb-4"></div>
             <div class="h-6 w-64 bg-[#2d3546] rounded mb-3"></div>
             <div class="h-4 w-48 bg-[#2d3546] rounded"></div>
@@ -142,8 +146,8 @@ onUnmounted(() => {
             :message="message"
           />
 
-          <!-- Processing Indicator (at bottom of chat) - only show when NOT streaming -->
-          <div v-if="brainStore.isProcessing && !brainStore.messages.some(m => m.isStreaming)" class="flex items-center gap-2 text-godot-muted animate-fade-in pl-4">
+          <!-- Processing Indicator (at bottom of chat) - only show when processing a message, not loading history -->
+          <div v-if="brainStore.isProcessing && !brainStore.isLoadingHistory && !brainStore.messages.some(m => m.isStreaming)" class="flex items-center gap-2 text-godot-muted animate-fade-in pl-4">
              <div class="flex gap-1">
                 <span class="w-1.5 h-1.5 bg-[#478cbf] rounded-full animate-bounce" style="animation-delay: 0ms"></span>
                 <span class="w-1.5 h-1.5 bg-[#478cbf] rounded-full animate-bounce" style="animation-delay: 150ms"></span>
@@ -155,14 +159,27 @@ onUnmounted(() => {
 
     <!-- Input Area -->
     <div class="p-4 bg-[#202531]">
-        <div class="max-w-3xl mx-auto bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200">
+        <!-- Godot Connection Banner -->
+        <div v-if="!brainStore.godotConnected" class="max-w-3xl mx-auto mb-3">
+            <div class="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-xs text-yellow-200/80">
+                <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>
+                    Connect Godot to chat. Enable the Godoty plugin in <span class="font-medium">Project &gt; Project Settings &gt; Plugins</span>.
+                    <a href="https://godoty.app/documentation" target="_blank" class="underline hover:text-yellow-100 ml-1">Learn more</a>
+                </span>
+            </div>
+        </div>
+        <div class="max-w-3xl mx-auto bg-[#2d3546] rounded-xl shadow-lg border border-[#3b4458] focus-within:border-[#478cbf] focus-within:ring-1 focus-within:ring-[#478cbf]/50 transition-all duration-200" :class="{ 'opacity-60': !brainStore.godotConnected }">
             <textarea
                 ref="textarea"
                 v-model="input"
-                @keydown.enter.prevent="brainStore.processingSessionId === null && sendMessage()"
+                @keydown.enter.prevent="brainStore.processingSessionId === null && brainStore.godotConnected && sendMessage()"
                 @input="autoResize"
-                placeholder="Ask Godoty a question..."
-                class="w-full bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 rounded-xl focus:outline-none resize-none overflow-y-auto"
+                :placeholder="brainStore.godotConnected ? 'Ask Godoty a question...' : 'Connect Godot to start chatting...'"
+                :disabled="!brainStore.godotConnected"
+                class="w-full bg-transparent text-gray-200 placeholder-gray-500 text-sm px-4 py-3 rounded-xl focus:outline-none resize-none overflow-y-auto disabled:cursor-not-allowed disabled:text-gray-500"
                 rows="1"
                 style="min-height: 48px; max-height: 200px;"
             ></textarea>
@@ -215,7 +232,7 @@ onUnmounted(() => {
                     <button 
                         v-else
                         @click="sendMessage"
-                        :disabled="!input.trim()"
+                        :disabled="!input.trim() || !brainStore.godotConnected"
                         class="p-2 rounded-lg bg-[#478cbf] text-white hover:bg-[#367fa9] disabled:opacity-50 disabled:bg-transparent disabled:text-gray-500 transition-all"
                         title="Send message"
                     >

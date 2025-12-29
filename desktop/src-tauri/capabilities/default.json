@@ -28,18 +28,6 @@
                     "name": "binaries/godoty-brain",
                     "sidecar": true,
                     "args": true
-                },
-                {
-                    "name": "sh",
-                    "args": ["-c", { "validator": ".+" }]
-                },
-                {
-                    "name": "cmd",
-                    "args": ["/C", { "validator": ".+" }]
-                },
-                {
-                    "name": "powershell",
-                    "args": ["-Command", { "validator": ".+" }]
                 }
             ]
         }

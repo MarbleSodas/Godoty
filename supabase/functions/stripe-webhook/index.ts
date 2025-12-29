@@ -128,6 +128,14 @@ serve(async (req) => {
             )
         }
 
+        if (!stripeSecretKey) {
+            console.error('Missing STRIPE_SECRET_KEY')
+            return new Response(
+                JSON.stringify({ error: 'Stripe secret key not configured' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
+
         // Get raw body and signature
         const body = await req.text()
         const signature = req.headers.get('stripe-signature')

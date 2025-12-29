@@ -230,7 +230,7 @@ def create_godoty_agent(
         db=db,
         # Chat history - inject previous conversation turns into context
         add_history_to_context=True,
-        num_history_runs=10,
+        num_history_runs=5,
         # Reasoning for transparent thinking
         reasoning=True,
         reasoning_min_steps=2,

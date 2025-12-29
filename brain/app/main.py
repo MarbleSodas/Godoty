@@ -54,9 +54,11 @@ ALLOWED_WS_ORIGINS = {
 
 
 def _validate_ws_origin(origin: str | None) -> bool:
-    """Validate WebSocket connection origin. Returns True if origin is allowed or None (same-origin)."""
+    """Validate WebSocket connection origin. Returns True if origin is allowed."""
     if origin is None:
-        return True
+        # Allow None origin only in development mode (Godot plugin has no origin)
+        # Godot plugin runs locally and doesn't send Origin header
+        return os.getenv("GODOTY_DEV_MODE", "true").lower() == "true"
     return origin in ALLOWED_WS_ORIGINS
 
 # Remote LiteLLM proxy URL (where API keys are securely stored)
@@ -68,6 +70,29 @@ REMOTE_PROXY_URL = os.getenv(
 # Shutdown state
 _shutdown_event = asyncio.Event()
 _active_tasks: set[asyncio.Task] = set()
+
+# Rate limiting state for WebSocket requests
+_client_requests: dict[str, list[float]] = {}
+RATE_LIMIT_REQUESTS = 30
+RATE_LIMIT_WINDOW = 60.0
+
+
+def _check_rate_limit(client_id: str) -> bool:
+    """Check if client is within rate limits. Returns True if request is allowed."""
+    import time
+    now = time.time()
+    
+    if client_id not in _client_requests:
+        _client_requests[client_id] = []
+    
+    requests = _client_requests[client_id]
+    requests[:] = [t for t in requests if now - t < RATE_LIMIT_WINDOW]
+    
+    if len(requests) >= RATE_LIMIT_REQUESTS:
+        return False
+    
+    requests.append(now)
+    return True
 
 # Background indexing state - prevent duplicate indexing of the same version
 _indexing_versions: set[str] = set()
@@ -81,23 +106,27 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler for startup and shutdown."""
     logger.info("[Brain] Starting up...")
     
-    # Setup signal handlers for graceful shutdown
+    try:
+        session_manager = get_session_manager()
+        deleted = session_manager.cleanup_empty_sessions()
+        if deleted > 0:
+            logger.info(f"[Brain] Cleaned up {deleted} empty session(s)")
+    except Exception as e:
+        logger.warning(f"[Brain] Failed to cleanup empty sessions: {e}")
+    
     def handle_signal(signum, frame):
         logger.info(f"[Brain] Received signal {signum}, initiating shutdown...")
         _shutdown_event.set()
-        # Schedule the async shutdown
         asyncio.get_event_loop().call_soon_threadsafe(
             lambda: asyncio.create_task(_perform_shutdown())
         )
     
-    # Register signal handlers (SIGTERM for graceful shutdown)
     if sys.platform != "win32":
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
     
-    yield  # Application runs here
+    yield
     
-    # Shutdown cleanup
     logger.info("[Brain] Shutting down...")
     await _perform_shutdown()
     logger.info("[Brain] Shutdown complete.")
@@ -367,6 +396,12 @@ def _success(id_: int | str | None, result: Any) -> str:
 @app.websocket("/ws/godot")
 async def godot_ws_endpoint(ws: WebSocket) -> None:
     """WebSocket endpoint for Godot Editor plugin."""
+    origin = ws.headers.get("origin")
+    if not _validate_ws_origin(origin):
+        logger.warning(f"Rejected Godot connection from invalid origin: {origin}")
+        await ws.close(code=4003, reason="Origin not allowed")
+        return
+    
     await ws.accept()
     conn = GodotConnection(ws=ws)
     
@@ -402,6 +437,12 @@ async def godot_ws_endpoint(ws: WebSocket) -> None:
 @app.websocket("/ws/tauri")
 async def tauri_ws_endpoint(ws: WebSocket) -> None:
     """WebSocket endpoint for Tauri desktop app."""
+    origin = ws.headers.get("origin")
+    if not _validate_ws_origin(origin):
+        logger.warning(f"Rejected Tauri connection from invalid origin: {origin}")
+        await ws.close(code=4003, reason="Origin not allowed")
+        return
+    
     await ws.accept()
     conn = TauriConnection(ws=ws)
     
@@ -642,43 +683,41 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
     """Handle user message - route to agent team with streaming and virtual key forwarding."""
     params = req.params or {}
     user_text = params.get("text")
-    authorization = params.get("authorization")  # LiteLLM virtual key (from Edge Function)
-    model = params.get("model")  # User-selected model (e.g., 'gpt-4o', 'claude-3-5-sonnet-20241022')
-    session_id = params.get("session_id")  # Session ID for conversation continuity
+    authorization = params.get("authorization")
+    model = params.get("model")
+    session_id = params.get("session_id")
     
     if not isinstance(user_text, str) or not user_text.strip():
         return _error(req.id, -32602, "Invalid params", {"text": "required"})
     
-    # Get session manager for metadata updates
+    if not _check_rate_limit(conn.session_id):
+        return _error(req.id, -32029, "Rate limit exceeded. Please slow down.", {
+            "error_type": "rate_limited",
+            "retry_after": RATE_LIMIT_WINDOW
+        })
+    
+    if connections.godot is None:
+        return _error(req.id, -32002, "No Godot project connected. Enable the Godoty plugin in Project > Project Settings > Plugins.", {
+            "error_type": "godot_not_connected",
+            "suggestion": "Connect Godot to start chatting"
+        })
+    
     session_manager = get_session_manager()
     
-    # Track if we're creating a new session (for UI notifications)
+    session_persisted = False
     is_new_session = False
+    pending_session_id = session_id
+    pending_title = session_manager.generate_title_from_message(user_text)
     
-    # Ensure we have a valid session ID
-    if not session_id:
-        # Create a new session with title from user message
-        title = session_manager.generate_title_from_message(user_text)
-        session = session_manager.create_session(title=title)
-        session_id = session.id
+    if not pending_session_id:
+        pending_session_id = str(uuid.uuid4())
         is_new_session = True
-        invalidate_context_cache()
     else:
-        # Check if session exists
-        session = session_manager.get_session(session_id)
-        if not session:
-            # Create session with title from user message
-            title = session_manager.generate_title_from_message(user_text)
-            session = session_manager.create_session(title=title, session_id=session_id)
+        existing_session = session_manager.get_session(pending_session_id)
+        if not existing_session:
             is_new_session = True
-            invalidate_context_cache()
     
-    # The authorization token is now a LiteLLM virtual key (from Supabase Edge Function)
-    # This key has:
-    # - Budget limits enforced by LiteLLM
-    # - Model restrictions
-    # - 30-day expiration
-    # The remote LiteLLM proxy validates the virtual key directly
+    session_id = pending_session_id
     
     try:
         from app.agents.agent import GodotySession
@@ -694,7 +733,6 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
             db=db,
         )
         
-        # Use streaming to send chunks in real-time
         full_content = ""
         final_metrics: dict[str, Any] = {}
         collected_tool_calls: list[dict[str, Any]] = []
@@ -704,6 +742,33 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
             logger.info(f"[MAIN] Received chunk type={chunk.get('type')}")
             
             if chunk["type"] == "chunk":
+                if not session_persisted and chunk.get("content"):
+                    if is_new_session:
+                        session = session_manager.create_session(
+                            title=pending_title, 
+                            session_id=session_id
+                        )
+                        invalidate_context_cache()
+                        
+                        await conn.ws.send_text(
+                            JsonRpcRequest(
+                                method="session_updated",
+                                params={
+                                    "session": {
+                                        "id": session.id,
+                                        "title": session.title,
+                                        "created_at": session.created_at.isoformat(),
+                                        "updated_at": session.updated_at.isoformat(),
+                                        "message_count": 0,
+                                        "total_tokens": 0,
+                                        "total_cost": 0,
+                                    },
+                                    "is_new": True,
+                                }
+                            ).model_dump_json()
+                        )
+                    session_persisted = True
+                
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_chunk",
@@ -771,7 +836,6 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                 })
 
             elif chunk["type"] == "reasoning_delta":
-                # Don't log every delta to avoid noise
                 await conn.ws.send_text(
                     JsonRpcRequest(
                         method="stream_reasoning",
@@ -784,11 +848,6 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                         }
                     ).model_dump_json()
                 )
-                # We optionally collect deltas or just wait for the full step
-                # For now, let's NOT add deltas to collected_reasoning to avoid massive duplication in the final history
-                # We assume a "reasoning" (step) event will eventually come or we reconstruct it.
-                # Actually, if we only get deltas, we might miss the final text in collected_reasoning.
-                # Let's accumulate deltas into the LAST item of collected_reasoning if it matches.
                 
                 if collected_reasoning and collected_reasoning[-1].get("agent_id") == chunk.get("agent_id"):
                      collected_reasoning[-1]["content"] += chunk["content"]
@@ -832,66 +891,59 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
                     })
                 return _error(req.id, -32000, error_msg)
         
-        # Check for budget exceeded error in metrics
         if final_metrics.get("error") and "budget" in str(final_metrics.get("error", "")).lower():
             return _error(req.id, -32001, "Insufficient credits. Please purchase more credits to continue.", {
                 "error_type": "budget_exceeded",
                 "suggestion": "Purchase credits to continue using Godoty"
             })
         
-        # Extract metrics for session storage
-        request_tokens = (final_metrics.get("input_tokens") or 0) + (final_metrics.get("output_tokens") or 0)
-        request_cost = final_metrics.get("request_cost") or 0.0
-        
-        # Update session metadata - increment message count and add metrics
-        # (title was already set on session creation)
-        session_manager.update_session(
-            session_id, 
-            increment_messages=True,
-            add_tokens=request_tokens,
-            add_cost=request_cost,
-        )
-        
-        # Get updated session for notification
-        updated_session = session_manager.get_session(session_id)
-        
-        # Update token count
-        conn.total_tokens = final_metrics.get("session_total_tokens", conn.total_tokens)
-        
-        await conn.ws.send_text(
-            JsonRpcRequest(
-                method="token_update",
-                params={"total": conn.total_tokens, "session_id": session_id}
-            ).model_dump_json()
-        )
-        
-        # Send session update notification to refresh sidebar
-        if updated_session:
+        if session_persisted:
+            request_tokens = (final_metrics.get("input_tokens") or 0) + (final_metrics.get("output_tokens") or 0)
+            request_cost = final_metrics.get("request_cost") or 0.0
+            
+            session_manager.update_session(
+                session_id, 
+                increment_messages=True,
+                add_tokens=request_tokens,
+                add_cost=request_cost,
+            )
+            
+            updated_session = session_manager.get_session(session_id)
+            
+            conn.total_tokens = final_metrics.get("session_total_tokens", conn.total_tokens)
+            
             await conn.ws.send_text(
                 JsonRpcRequest(
-                    method="session_updated",
-                    params={
-                        "session": {
-                            "id": updated_session.id,
-                            "title": updated_session.title,
-                            "created_at": updated_session.created_at.isoformat(),
-                            "updated_at": updated_session.updated_at.isoformat(),
-                            "message_count": updated_session.message_count,
-                            "total_tokens": updated_session.total_tokens,
-                            "total_cost": updated_session.total_cost,
-                        },
-                        "is_new": is_new_session,
-                    }
+                    method="token_update",
+                    params={"total": conn.total_tokens, "session_id": session_id}
                 ).model_dump_json()
             )
+            
+            if updated_session:
+                await conn.ws.send_text(
+                    JsonRpcRequest(
+                        method="session_updated",
+                        params={
+                            "session": {
+                                "id": updated_session.id,
+                                "title": updated_session.title,
+                                "created_at": updated_session.created_at.isoformat(),
+                                "updated_at": updated_session.updated_at.isoformat(),
+                                "message_count": updated_session.message_count,
+                                "total_tokens": updated_session.total_tokens,
+                                "total_cost": updated_session.total_cost,
+                            },
+                            "is_new": False,
+                        }
+                    ).model_dump_json()
+                )
         
-        # Send stream complete notification with final metrics and collected data
         await conn.ws.send_text(
             JsonRpcRequest(
                 method="stream_complete",
                 params={
                     "metrics": final_metrics,
-                    "session_id": session_id,
+                    "session_id": session_id if session_persisted else None,
                     "tool_calls": final_metrics.get("tool_calls", []),
                     "reasoning": final_metrics.get("reasoning", []),
                 }
@@ -901,12 +953,12 @@ async def _handle_user_message(conn: TauriConnection, req: JsonRpcRequest) -> st
         return _success(req.id, {
             "text": full_content,
             "metrics": final_metrics,
-            "session_id": session_id,
+            "session_id": session_id if session_persisted else None,
         })
         
     except asyncio.CancelledError:
         logger.info(f"Request cancelled for session {session_id}")
-        return _success(req.id, {"cancelled": True, "session_id": session_id})
+        return _success(req.id, {"cancelled": True, "session_id": session_id if session_persisted else None})
         
     except Exception as e:
         error_msg = str(e).lower()
