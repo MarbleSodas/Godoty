@@ -1,142 +1,401 @@
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "jsr:@supabase/supabase-js@2";
-import Stripe from "https://esm.sh/stripe@20.0.0?target=denonext";
+// Supabase Edge Function: stripe-webhook
+// Handles Stripe webhooks to process successful payments and credit user's LiteLLM budget
+//
+// SECURITY:
+// - Stripe signature verification (HMAC-SHA256)
+// - Idempotent webhook processing (prevents duplicate credits)
+// - Rate limiting for purchase events
+// - Atomic transaction recording via SECURITY DEFINER function
 
-/**
- * Stripe Webhook Handler - The "Dumb Pipe"
- * 
- * This function does ONLY two things:
- * 1. Verify the Stripe signature (security)
- * 2. Hand off data to the database RPC (logic lives in Postgres)
- * 
- * Credit amount comes from:
- * 1. Stripe Price metadata (credit_amount field) - preferred
- * 2. Fallback: hardcoded CREDIT_MAP based on amount
- * 
- * Idempotency is handled by the database via external_id (Stripe session ID).
- */
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// Fallback credit mapping for known packs (when metadata not set)
-const CREDIT_MAP: Record<number, number> = {
-    500: 5,    // $5.00 -> 5 credits
-    1000: 12,  // $10.00 -> 12 credits
-    2000: 25   // $20.00 -> 25 credits
-};
+// Allowed origins for CORS
+const ALLOWED_ORIGINS = [
+    'https://godoty.app',
+    'tauri://localhost',
+    'http://localhost:1420',  // Vite dev server
+    'http://localhost:5173',  // Vite alt port
+]
 
-Deno.serve(async (req: Request) => {
-    if (req.method !== "POST") {
-        return new Response("Method not allowed", { status: 405 });
+function getCorsHeaders(req: Request): Record<string, string> {
+    const origin = req.headers.get('Origin') ?? ''
+    const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]
+    return {
+        'Access-Control-Allow-Origin': allowedOrigin,
+        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, stripe-signature',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    }
+}
+
+// Credit package mapping: price_id -> credit amount (in USD)
+const CREDIT_PACKAGES: Record<string, number> = {
+    'price_1SeUdXExVVDh2wU3LoTcnc6A': 5,   // Starter Pack - $5 -> 5 credits
+    'price_1SeUduExVVDh2wU3h4yLDftJ': 11,  // Pro Pack - $10 -> 11 credits (10% bonus)
+    'price_1SeUeGExVVDh2wU3jdPd1Oil': 23,  // Premium Pack - $20 -> 23 credits (15% bonus)
+}
+
+interface IdempotencyResult {
+    already_processed: boolean
+    original_result?: unknown
+    processed_at?: string
+    webhook_id?: string
+}
+
+interface TransactionResult {
+    success: boolean
+    transaction_id?: string
+    duplicate?: boolean
+    error?: string
+    message?: string
+}
+
+// Helper to verify Stripe webhook signature manually
+async function verifyStripeSignature(
+    payload: string,
+    signature: string,
+    secret: string
+): Promise<boolean> {
+    const parts = signature.split(',')
+    let timestamp = ''
+    let sig = ''
+
+    for (const part of parts) {
+        const [key, value] = part.split('=')
+        if (key === 't') timestamp = value
+        if (key === 'v1') sig = value
     }
 
-    const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
-    const webhookSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
-
-    if (!stripeSecretKey || !webhookSecret) {
-        console.error("Stripe configuration missing");
-        return new Response("Server configuration error", { status: 500 });
+    if (!timestamp || !sig) {
+        console.error('Missing timestamp or signature in header')
+        return false
     }
 
-    const stripe = new Stripe(stripeSecretKey, { apiVersion: "2025-11-17.clover" });
-    const cryptoProvider = Stripe.createSubtleCryptoProvider();
+    // Check timestamp tolerance (5 min)
+    const now = Math.floor(Date.now() / 1000)
+    if (Math.abs(now - parseInt(timestamp)) > 300) {
+        console.error('Timestamp too old:', timestamp, 'now:', now)
+        return false
+    }
 
-    const signature = req.headers.get("Stripe-Signature")!;
-    const body = await req.text();
+    // Compute expected signature using Web Crypto API
+    const signedPayload = `${timestamp}.${payload}`
+    const encoder = new TextEncoder()
+    const keyData = encoder.encode(secret)
+    const msgData = encoder.encode(signedPayload)
+
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        keyData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    )
+
+    const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, msgData)
+    const computedSig = Array.from(new Uint8Array(signatureBuffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('')
+
+    const isValid = computedSig === sig
+    if (!isValid) {
+        console.error('Signature mismatch')
+    }
+    return isValid
+}
+
+serve(async (req) => {
+    // Get CORS headers for this request
+    const corsHeaders = getCorsHeaders(req)
+
+    // Handle CORS preflight
+    if (req.method === 'OPTIONS') {
+        return new Response('ok', { headers: corsHeaders })
+    }
+
+    console.log('Stripe webhook received')
 
     try {
-        // 1. Verify Signature (Security)
-        const event = await stripe.webhooks.constructEventAsync(
-            body,
-            signature,
-            webhookSecret,
-            undefined,
-            cryptoProvider
-        );
+        // Get Stripe secrets
+        const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')
+        const stripeSecretKey = Deno.env.get('STRIPE_SECRET_KEY')
 
-        console.log(`Received Stripe webhook: ${event.type}`);
+        if (!webhookSecret) {
+            console.error('Missing STRIPE_WEBHOOK_SECRET')
+            return new Response(
+                JSON.stringify({ error: 'Webhook secret not configured' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
 
-        // 2. Handle "Paid" Event
-        if (event.type === "checkout.session.completed") {
-            const session = event.data.object as Stripe.Checkout.Session;
-            const userId = session.client_reference_id; // The Supabase User UUID
+        if (!stripeSecretKey) {
+            console.error('Missing STRIPE_SECRET_KEY')
+            return new Response(
+                JSON.stringify({ error: 'Stripe secret key not configured' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
 
-            if (!userId) {
-                console.error("Missing client_reference_id for session:", session.id);
-                return new Response("Missing user ID", { status: 400 });
-            }
+        // Get raw body and signature
+        const body = await req.text()
+        const signature = req.headers.get('stripe-signature')
 
-            // Get credit amount - try metadata first, then fallback to CREDIT_MAP
-            let credits = 0;
-            const amountCents = session.amount_total || 0;
+        console.log('Signature present:', !!signature, 'Body length:', body.length)
 
-            // Try to get credits from line items metadata
-            try {
-                const lineItems = await stripe.checkout.sessions.listLineItems(session.id, {
-                    expand: ['data.price']
-                });
-                
-                if (lineItems.data.length > 0) {
-                    const price = lineItems.data[0].price;
-                    if (price?.metadata?.credit_amount) {
-                        credits = parseInt(price.metadata.credit_amount, 10);
-                        console.log(`Credits from metadata: ${credits}`);
-                    }
-                }
-            } catch (err) {
-                console.warn("Could not fetch line items metadata:", err);
-            }
+        if (!signature) {
+            return new Response(
+                JSON.stringify({ error: 'Missing stripe-signature header' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
 
-            // Fallback to CREDIT_MAP if metadata not available
-            if (credits <= 0) {
-                if (CREDIT_MAP[amountCents]) {
-                    credits = CREDIT_MAP[amountCents];
-                    console.log(`Credits from fallback map: ${credits} (for ${amountCents} cents)`);
-                } else {
-                    // Last resort: 1 credit per dollar
-                    credits = Math.floor(amountCents / 100);
-                    console.log(`Credits from amount fallback: ${credits}`);
-                }
-            }
+        // Verify signature
+        const isValid = await verifyStripeSignature(body, signature, webhookSecret)
+        if (!isValid) {
+            console.error('Invalid webhook signature')
+            return new Response(
+                JSON.stringify({ error: 'Invalid signature' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
 
-            if (credits <= 0) {
-                console.error("Invalid credit amount:", credits);
-                return new Response("Invalid amount", { status: 400 });
-            }
+        console.log('Signature verified')
 
-            // 3. Call Database RPC (Logic lives in Postgres)
-            // Idempotency is handled by external_id in the database
-            const supabase = createClient(
-                Deno.env.get("SUPABASE_URL")!,
-                Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-            );
+        // Parse the event
+        const event = JSON.parse(body)
+        console.log('Event type:', event.type, 'Event ID:', event.id)
 
-            const { data: wasAdded, error } = await supabase.rpc("add_credits", {
-                p_user_id: userId,
-                p_amount: credits,
-                p_description: `Stripe purchase: ${credits} credits`,
-                p_metadata: {
-                    stripe_session_id: session.id,
-                    stripe_payment_intent: session.payment_intent,
-                    amount_cents: amountCents,
-                },
-                p_external_id: session.id,  // Idempotency key
-            });
+        // Only handle checkout.session.completed events
+        if (event.type !== 'checkout.session.completed') {
+            return new Response(
+                JSON.stringify({ received: true, message: 'Event type not handled' }),
+                { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
 
-            if (error) {
-                console.error("Failed to add credits:", error);
-                return new Response("Database error", { status: 500 });
-            }
+        // Setup Supabase client with service role (for database operations)
+        const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+        const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-            if (wasAdded) {
-                console.log(`Added ${credits} credits to user ${userId} (session: ${session.id})`);
-            } else {
-                console.log(`Duplicate webhook ignored for session: ${session.id}`);
+        // Check idempotency - has this webhook already been processed?
+        const { data: idempotencyCheck, error: idempotencyError } = await supabase
+            .rpc('process_webhook_idempotent', {
+                p_webhook_id: event.id,
+                p_webhook_type: 'stripe'
+            })
+
+        if (idempotencyError) {
+            console.error('Idempotency check failed:', idempotencyError)
+            // Continue anyway - prefer to risk duplicate than miss payment
+        } else {
+            const idempotency = idempotencyCheck as IdempotencyResult
+            if (idempotency.already_processed) {
+                console.log(`Webhook ${event.id} already processed at ${idempotency.processed_at}`)
+                return new Response(
+                    JSON.stringify({
+                        received: true,
+                        message: 'Already processed',
+                        original_result: idempotency.original_result
+                    }),
+                    { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+                )
             }
         }
 
-        return new Response("OK", { status: 200 });
+        const session = event.data.object
+        console.log('Session ID:', session.id, 'User:', session.client_reference_id)
 
-    } catch (err) {
-        console.error("Webhook error:", err);
-        return new Response((err as Error).message, { status: 400 });
+        // Get user_id from client_reference_id or metadata
+        const userId = session.client_reference_id || session.metadata?.user_id
+        if (!userId) {
+            console.error('No user_id in session')
+            return new Response(
+                JSON.stringify({ error: 'No user_id in session' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
+
+        // Get the price_id by fetching line items from Stripe API
+        const lineItemsResponse = await fetch(
+            `https://api.stripe.com/v1/checkout/sessions/${session.id}/line_items`,
+            { headers: { 'Authorization': `Bearer ${stripeSecretKey}` } }
+        )
+
+        if (!lineItemsResponse.ok) {
+            console.error('Failed to fetch line items:', await lineItemsResponse.text())
+            return new Response(
+                JSON.stringify({ error: 'Failed to fetch line items' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
+
+        const lineItems = await lineItemsResponse.json()
+        const priceId = lineItems.data?.[0]?.price?.id
+        console.log('Price ID:', priceId)
+
+        if (!priceId) {
+            return new Response(
+                JSON.stringify({ error: 'No price_id in session' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
+
+        // Get credit amount from price mapping
+        const creditAmount = CREDIT_PACKAGES[priceId]
+        if (!creditAmount) {
+            console.error('Unknown price_id:', priceId)
+            return new Response(
+                JSON.stringify({ error: `Unknown price_id: ${priceId}` }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
+
+        console.log('Credit amount:', creditAmount)
+
+        // Get LiteLLM configuration
+        const litellmMasterKey = Deno.env.get('LITELLM_MASTER_KEY')
+        const litellmUrlRaw = Deno.env.get('LITELLM_URL')
+
+        if (!litellmMasterKey || !litellmUrlRaw) {
+            console.error('Missing LiteLLM configuration')
+            return new Response(
+                JSON.stringify({ error: 'LiteLLM not configured' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
+
+        const litellmUrl = litellmUrlRaw.replace(/\/+$/, '').replace(/\/v1\/?$/, '')
+
+        // Get current user budget from LiteLLM
+        let currentMaxBudget = 0
+        let currentSpend = 0
+
+        try {
+            const userInfoResponse = await fetch(`${litellmUrl}/user/info?user_id=${userId}`, {
+                headers: { 'Authorization': `Bearer ${litellmMasterKey}` }
+            })
+
+            if (userInfoResponse.ok) {
+                const userInfo = await userInfoResponse.json()
+                currentMaxBudget = userInfo.user_info?.max_budget ?? 0
+                currentSpend = userInfo.user_info?.spend ?? 0
+                console.log('Current budget:', currentMaxBudget, 'spend:', currentSpend)
+            }
+        } catch (err) {
+            console.warn('Failed to fetch user info:', err)
+        }
+
+        // Calculate new budget
+        const newMaxBudget = currentMaxBudget + creditAmount
+        console.log('Budget update:', currentMaxBudget, '->', newMaxBudget)
+
+        // Update or create user in LiteLLM
+        try {
+            // Try to update existing user
+            const updateResponse = await fetch(`${litellmUrl}/user/update`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${litellmMasterKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    user_id: userId,
+                    max_budget: newMaxBudget
+                })
+            })
+
+            if (!updateResponse.ok) {
+                console.log('Update failed, trying to create user')
+                // Try creating the user instead
+                const createResponse = await fetch(`${litellmUrl}/user/new`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${litellmMasterKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: userId,
+                        user_email: session.customer_email,
+                        max_budget: newMaxBudget
+                    })
+                })
+
+                if (!createResponse.ok) {
+                    const createError = await createResponse.text()
+                    console.error('Failed to create user:', createError)
+                    throw new Error(`LiteLLM error: ${createError}`)
+                }
+                console.log('Created new LiteLLM user')
+            } else {
+                console.log('Updated existing LiteLLM user')
+            }
+        } catch (err) {
+            console.error('LiteLLM error:', err)
+            return new Response(
+                JSON.stringify({ error: 'Failed to update user budget' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+        }
+
+        // Record transaction atomically using SECURITY DEFINER function
+        const { data: transactionResult, error: transactionError } = await supabase
+            .rpc('record_credit_transaction', {
+                p_user_id: userId,
+                p_amount: creditAmount,
+                p_type: 'purchase',
+                p_stripe_session_id: session.id,
+                p_stripe_payment_intent: session.payment_intent,
+                p_previous_budget: currentMaxBudget,
+                p_new_budget: newMaxBudget,
+                p_notes: `Stripe checkout: ${priceId}`
+            })
+
+        if (transactionError) {
+            console.error('Transaction recording error:', transactionError)
+            // Don't fail the webhook - budget was already updated in LiteLLM
+        } else {
+            const txResult = transactionResult as TransactionResult
+            if (txResult.duplicate) {
+                console.log('Transaction was duplicate, already recorded:', txResult.transaction_id)
+            } else if (txResult.success) {
+                console.log('Transaction recorded:', txResult.transaction_id)
+            } else {
+                console.error('Transaction recording failed:', txResult.error)
+            }
+        }
+
+        // Update the idempotency record with the result
+        const resultPayload = {
+            success: true,
+            user_id: userId,
+            credits_added: creditAmount,
+            new_budget: newMaxBudget,
+            transaction_id: (transactionResult as TransactionResult)?.transaction_id
+        }
+
+        // Update webhook record with result (best effort)
+        try {
+            await supabase
+                .from('processed_webhooks')
+                .update({ result: resultPayload })
+                .eq('webhook_id', event.id)
+        } catch (err) {
+            console.warn('Failed to update webhook result:', err)
+        }
+
+        console.log(`SUCCESS: +${creditAmount} credits for user ${userId}`)
+
+        return new Response(
+            JSON.stringify(resultPayload),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+
+    } catch (error) {
+        console.error('Webhook error:', error)
+        return new Response(
+            JSON.stringify({ error: error instanceof Error ? error.message : 'Internal server error' }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
     }
-});
+})
