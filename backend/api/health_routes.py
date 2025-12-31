@@ -10,13 +10,16 @@ from fastapi import APIRouter, HTTPException
 
 from agents.config import AgentConfig
 from agents.godoty_agent import get_godoty_agent
+from rate_limiter import get_limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/health", tags=["health"])
+limiter = get_limiter()
 
 
 @router.get("/", response_model=Dict[str, Any])
+@limiter.exempt
 async def health_check():
     """
     Comprehensive health check of all system components.
@@ -107,6 +110,7 @@ async def health_check():
 
 
 @router.get("/godot", response_model=Dict[str, Any])
+@limiter.exempt
 async def godot_health():
     """
     Detailed Godot integration health check.
@@ -155,6 +159,7 @@ async def godot_health():
 
 
 @router.get("/tools", response_model=Dict[str, Any])
+@limiter.exempt
 async def tools_health():
     """
     Health check for all available tools.

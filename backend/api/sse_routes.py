@@ -11,10 +11,12 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from services import get_connection_monitor
 from services.godot_connection_monitor import ConnectionEvent
+from rate_limiter import get_limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+limiter = get_limiter()
 
 
 class SSEManager:
@@ -242,6 +244,7 @@ async def event_generator(client_queue: asyncio.Queue) -> AsyncGenerator[str, No
 
 
 @router.get("/godot/status/stream")
+@limiter.exempt
 async def stream_godot_status():
     """
     Stream real-time Godot connection status updates via Server-Sent Events (SSE).
@@ -272,6 +275,7 @@ async def stream_godot_status():
 
 
 @router.get("/godot/status")
+@limiter.exempt
 async def get_godot_status():
     """
     Get current Godot connection status (one-time, not streaming).
@@ -284,10 +288,11 @@ async def get_godot_status():
 
 
 @router.get("/context/index/status")
+@limiter.exempt
 async def get_context_index_status():
     """
     Get current context engine index status.
-    
+
     Returns:
         Dictionary with index progress and metadata
     """
@@ -325,6 +330,7 @@ async def get_context_index_status():
 
 
 @router.get("/godoty/connection/status")
+@limiter.exempt
 async def get_godoty_connection_status():
     """
     Get current Godot Editor connection status (compatibility endpoint).
