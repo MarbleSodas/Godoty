@@ -1194,6 +1194,8 @@ async def _handle_get_session_history(req: JsonRpcRequest) -> str:
                         "role": msg_dict.get("role", "unknown"),
                         "content": msg_dict.get("content", ""),
                         "created_at": timestamp,
+                        "reasoning": msg_dict.get("reasoning", []),
+                        "tool_calls": msg_dict.get("tool_calls", []),
                     })
         except Exception as hist_error:
             logger.warning(f"Could not retrieve chat history: {hist_error}")

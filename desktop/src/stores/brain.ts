@@ -1011,6 +1011,8 @@ export const useBrainStore = defineStore('brain', () => {
         role: msg.role as 'user' | 'assistant' | 'system',
         content: msg.content,
         timestamp: msg.created_at ? new Date(msg.created_at) : new Date(),
+        reasoning: (msg.reasoning as ReasoningStep[]) || [],
+        toolCalls: (msg.tool_calls as ToolCall[]) || [],
       }))
 
       await sessionsStore.switchSession(sessionId)
