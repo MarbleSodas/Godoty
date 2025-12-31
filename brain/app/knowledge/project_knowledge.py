@@ -91,13 +91,16 @@ class ProjectKnowledge:
     def _hash_content(content: str) -> str:
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 
-    def _load_manifest(self) -> FileManifest:
+    async def _load_manifest(self) -> FileManifest:
+        import aiofiles
+
         if self._manifest:
             return self._manifest
 
         if self.manifest_path.exists():
             try:
-                data = json.loads(self.manifest_path.read_text())
+                async with aiofiles.open(self.manifest_path, encoding="utf-8") as f:
+                    data = json.loads(await f.read())
                 self._manifest = FileManifest.from_dict(data)
             except Exception as e:
                 logger.warning(f"Failed to load manifest: {e}")
@@ -107,9 +110,12 @@ class ProjectKnowledge:
 
         return self._manifest
 
-    def _save_manifest(self, manifest: FileManifest) -> None:
+    async def _save_manifest(self, manifest: FileManifest) -> None:
+        import aiofiles
+
         manifest.indexed_at = datetime.now().isoformat()
-        self.manifest_path.write_text(json.dumps(manifest.to_dict(), indent=2))
+        async with aiofiles.open(self.manifest_path, "w", encoding="utf-8") as f:
+            await f.write(json.dumps(manifest.to_dict(), indent=2))
         self._manifest = manifest
 
     def _should_skip(self, path: Path) -> bool:
@@ -118,8 +124,10 @@ class ProjectKnowledge:
                 return True
         return False
 
-    def _get_changed_files(self) -> tuple[list[Path], list[str], list[Path]]:
-        manifest = self._load_manifest()
+    async def _get_changed_files(self) -> tuple[list[Path], list[str], list[Path]]:
+        import aiofiles
+
+        manifest = await self._load_manifest()
         current_files: dict[str, tuple[Path, str]] = {}
 
         for pattern in self.SCRIPT_PATTERNS + self.SCENE_PATTERNS:
@@ -128,7 +136,8 @@ class ProjectKnowledge:
                     continue
 
                 try:
-                    content = file_path.read_text(encoding="utf-8")
+                    async with aiofiles.open(file_path, encoding="utf-8") as f:
+                        content = await f.read()
                     rel_path = str(file_path.relative_to(self.project_path))
                     content_hash = self._hash_content(content)
                     current_files[rel_path] = (file_path, content_hash)
@@ -153,6 +162,8 @@ class ProjectKnowledge:
         return new_files, deleted_paths, modified_files
 
     async def index_project(self, force: bool = False) -> dict[str, Any]:
+        import aiofiles
+
         if self._indexing:
             logger.warning("Indexing already in progress")
             return {"status": "already_indexing"}
@@ -161,7 +172,7 @@ class ProjectKnowledge:
         stats = {"new": 0, "modified": 0, "deleted": 0, "unchanged": 0}
 
         try:
-            manifest = self._load_manifest()
+            manifest = await self._load_manifest()
 
             if force:
                 await self._clear_index()
@@ -169,7 +180,7 @@ class ProjectKnowledge:
                 files_to_index = list(self._get_all_files())
                 files_to_delete: list[str] = []
             else:
-                new_files, deleted_paths, modified_files = self._get_changed_files()
+                new_files, deleted_paths, modified_files = await self._get_changed_files()
                 files_to_index = new_files + modified_files
                 files_to_delete = deleted_paths
                 stats["new"] = len(new_files)
@@ -189,7 +200,8 @@ class ProjectKnowledge:
                         if doc:
                             documents.append(doc)
                             rel_path = str(file_path.relative_to(self.project_path))
-                            content = file_path.read_text(encoding="utf-8")
+                            async with aiofiles.open(file_path, encoding="utf-8") as f:
+                                content = await f.read()
                             new_hashes[rel_path] = self._hash_content(content)
                     except Exception as e:
                         logger.warning(f"Failed to index {file_path}: {e}")
@@ -212,7 +224,7 @@ class ProjectKnowledge:
             total_files = len(manifest.files)
             stats["unchanged"] = total_files - stats["new"] - stats["modified"]
 
-            self._save_manifest(manifest)
+            await self._save_manifest(manifest)
 
             logger.info(
                 f"Project indexed: {stats['new']} new, {stats['modified']} modified, "

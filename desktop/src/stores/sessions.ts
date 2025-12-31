@@ -20,9 +20,18 @@ export const useSessionsStore = defineStore('sessions', () => {
     const isLoading = ref(false)
     const error = ref<string | null>(null)
 
-    // Computed property for active session
+    // Computed property: Map for O(1) session lookups
+    const sessionMap = computed(() => {
+        const map = new Map<string, ChatSession>()
+        for (const session of sessions.value) {
+            map.set(session.id, session)
+        }
+        return map
+    })
+
+    // Computed property for active session (O(1) lookup via Map)
     const activeSession = computed(() =>
-        sessions.value.find(s => s.id === activeSessionId.value)
+        activeSessionId.value ? sessionMap.value.get(activeSessionId.value) : undefined
     )
 
     // WebSocket request helper - uses the brain store's sendRequest
@@ -162,7 +171,7 @@ export const useSessionsStore = defineStore('sessions', () => {
      * Switch to a different session
      */
     async function switchSession(sessionId: string): Promise<boolean> {
-        const session = sessions.value.find(s => s.id === sessionId)
+        const session = sessionMap.value.get(sessionId)
         if (!session) {
             error.value = 'Session not found'
             return false
@@ -231,8 +240,8 @@ export const useSessionsStore = defineStore('sessions', () => {
                 }
             }
 
-            // Update local state
-            const session = sessions.value.find(s => s.id === sessionId)
+            // Update local state using Map for O(1) lookup
+            const session = sessionMap.value.get(sessionId)
             if (session) {
                 session.title = response.session.title
                 session.updatedAt = new Date(response.session.updated_at)
@@ -269,7 +278,7 @@ export const useSessionsStore = defineStore('sessions', () => {
      * Update session in local state (e.g., after receiving a message)
      */
     function updateSessionLocally(sessionId: string, updates: { title?: string; messageCount?: number }) {
-        const session = sessions.value.find(s => s.id === sessionId)
+        const session = sessionMap.value.get(sessionId)
         if (session) {
             if (updates.title !== undefined) {
                 session.title = updates.title

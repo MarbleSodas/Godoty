@@ -9,9 +9,11 @@ Tools are categorized into:
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -27,21 +29,42 @@ if TYPE_CHECKING:
 
 def _normalize_godot_path(path: str) -> str:
     """Normalize Godot res:// paths to relative paths for file tools.
-    
+
     Handles:
     - res://Player.gd → Player.gd
     - res://scripts/player.gd → scripts/player.gd
     - Player.gd → Player.gd (unchanged)
-    
+
     Args:
         path: A file path, optionally with res:// prefix
-        
+
     Returns:
         The path with res:// prefix stripped if present
     """
     if path.startswith("res://"):
         return path[6:]
     return path
+
+
+# ============================================================================
+# Regex Caching
+# ============================================================================
+
+
+@lru_cache(maxsize=128)
+def _compile_search_pattern(query: str) -> re.Pattern:
+    """Compile and cache search regex patterns.
+
+    Args:
+        query: The search query string
+
+    Returns:
+        Compiled regex pattern with IGNORECASE flag
+    """
+    try:
+        return re.compile(query, re.IGNORECASE)
+    except re.error:
+        return re.compile(re.escape(query), re.IGNORECASE)
 
 
 # ============================================================================
@@ -1001,35 +1024,32 @@ async def search_project_files(
     context_lines: int = 1,
 ) -> list[dict]:
     """Search project files for content matching a text pattern.
-    
+
     Use this tool to find code by content (like grep). Useful for finding
     where a function is defined, where a signal is emitted, etc.
-    
+
     Args:
         query: Text to search for in file contents (case-insensitive)
         file_pattern: Glob pattern to filter which files to search (e.g., '*.gd', '*.tscn')
                       Also accepts Godot res:// prefixed patterns.
         max_results: Maximum number of matching lines to return (default: 20)
         context_lines: Number of lines of context around each match (default: 1)
-        
+
     Returns:
         List of matches with file path, line number, and matching content
     """
-    import re
     from pathlib import Path
-    
+
     file_pattern = _normalize_godot_path(file_pattern)
-    
+
     if _project_path is None:
         return [{"error": "No Godot project connected"}]
-    
+
     project_root = Path(_project_path).resolve()
     results: list[dict] = []
-    
-    try:
-        regex = re.compile(query, re.IGNORECASE)
-    except re.error:
-        regex = re.compile(re.escape(query), re.IGNORECASE)
+
+    # Use cached regex compilation
+    regex = _compile_search_pattern(query)
     
     try:
         files = list(project_root.rglob(file_pattern))

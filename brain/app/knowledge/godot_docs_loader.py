@@ -223,32 +223,36 @@ class GodotDocsLoader:
     
     async def _fetch_class_xml(self, class_name: str) -> str | None:
         """Fetch XML content for a specific class.
-        
+
         Args:
             class_name: Name of the class (e.g., "CharacterBody2D")
-            
+
         Returns:
             XML content as string, or None if fetch failed
         """
+        import aiofiles
+
         # Check cache first
         cache_path = self.cache_dir / f"{class_name}.xml"
         if cache_path.exists():
-            return cache_path.read_text(encoding="utf-8")
-        
+            async with aiofiles.open(cache_path, encoding="utf-8") as f:
+                return await f.read()
+
         # Fetch from GitHub
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 url = self._get_class_url(class_name)
                 response = await client.get(url)
                 response.raise_for_status()
-                
+
                 content = response.text
-                
+
                 # Cache for future use
-                cache_path.write_text(content, encoding="utf-8")
-                
+                async with aiofiles.open(cache_path, "w", encoding="utf-8") as f:
+                    await f.write(content)
+
                 return content
-                
+
             except Exception as e:
                 logger.debug(f"Failed to fetch {class_name}: {e}")
                 return None
@@ -425,46 +429,59 @@ class GodotDocsLoader:
             List of Agno Document objects ready for indexing
         """
         from agno.knowledge.document import Document
-        
+
         # Determine which classes to fetch
         if classes is None:
             # Start with priority classes, optionally expand
             classes = PRIORITY_CLASSES.copy()
-        
+
         if max_classes:
             classes = classes[:max_classes]
-        
-        logger.info(f"Loading documentation for {len(classes)} Godot classes")
-        
-        # Process classes ONE AT A TIME to reduce memory and CPU pressure
-        total_classes = len(classes)
+
+        # Use semaphore to limit concurrent requests
+        concurrency = 5
+        semaphore = asyncio.Semaphore(concurrency)
+        logger.info(f"Loading documentation for {len(classes)} Godot classes with concurrency={concurrency}")
+
+        # Process classes in parallel batches
+        async def fetch_and_parse(class_name: str, index: int) -> list[Document]:
+            async with semaphore:
+                # Fetch XML
+                xml_content = await self._fetch_class_xml(class_name)
+
+                # Update progress
+                if progress_callback:
+                    try:
+                        progress_callback(index + 1, len(classes))
+                    except Exception as e:
+                        logger.warning(f"Progress callback failed: {e}")
+
+                # Parse and create documents
+                if xml_content:
+                    chunks = self._parse_class_xml(class_name, xml_content)
+                    docs = []
+                    for chunk in chunks:
+                        doc = Document(
+                            content=chunk["content"],
+                            name=chunk["name"],
+                            meta_data=chunk["metadata"],
+                        )
+                        docs.append(doc)
+                    return docs
+                return []
+
+        # Create tasks for all classes
+        tasks = [fetch_and_parse(class_name, i) for i, class_name in enumerate(classes)]
+
+        # Process in parallel, collecting results as they complete
         documents = []
-        
-        for i, class_name in enumerate(classes):
-            # Fetch XML
-            xml_content = await self._fetch_class_xml(class_name)
-            
-            # Update progress
-            if progress_callback:
-                try:
-                    progress_callback(i + 1, total_classes)
-                except Exception as e:
-                    logger.warning(f"Progress callback failed: {e}")
-            
-            # Parse and create documents
-            if xml_content:
-                chunks = self._parse_class_xml(class_name, xml_content)
-                for chunk in chunks:
-                    doc = Document(
-                        content=chunk["content"],
-                        name=chunk["name"],
-                        meta_data=chunk["metadata"],
-                    )
-                    documents.append(doc)
-            
-            # Small delay to avoid overwhelming resources
-            await asyncio.sleep(0.05)
-        
+        for completed in asyncio.as_completed(tasks):
+            try:
+                docs = await completed
+                documents.extend(docs)
+            except Exception as e:
+                logger.warning(f"Failed to load class documentation: {e}")
+
         logger.info(f"Loaded {len(documents)} document chunks from Godot {self.version} docs")
         return documents
 

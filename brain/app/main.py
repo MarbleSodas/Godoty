@@ -53,12 +53,25 @@ ALLOWED_WS_ORIGINS = {
 }
 
 
-def _validate_ws_origin(origin: str | None) -> bool:
-    """Validate WebSocket connection origin. Returns True if origin is allowed."""
+def _validate_ws_origin(origin: str | None, client_type: str | None = None) -> bool:
+    """Validate WebSocket connection origin.
+
+    Args:
+        origin: The Origin header from the WebSocket request
+        client_type: Optional client type hint ('godot' or 'tauri')
+
+    Returns:
+        True if the connection should be allowed
+    """
+    # Godot plugin connections have no Origin header but are locally bound
+    # They must connect via /ws/godot endpoint which we verify separately
     if origin is None:
-        # Allow None origin only in development mode (Godot plugin has no origin)
-        # Godot plugin runs locally and doesn't send Origin header
-        return os.getenv("GODOTY_DEV_MODE", "true").lower() == "true"
+        if client_type == "godot":
+            # Allow local Godot plugin connections (they bind to localhost)
+            return True
+        return False  # Reject anonymous connections
+
+    # Tauri/desktop app connections must have valid origin
     return origin in ALLOWED_WS_ORIGINS
 
 # Remote LiteLLM proxy URL (where API keys are securely stored)
@@ -397,7 +410,7 @@ def _success(id_: int | str | None, result: Any) -> str:
 async def godot_ws_endpoint(ws: WebSocket) -> None:
     """WebSocket endpoint for Godot Editor plugin."""
     origin = ws.headers.get("origin")
-    if not _validate_ws_origin(origin):
+    if not _validate_ws_origin(origin, client_type="godot"):
         logger.warning(f"Rejected Godot connection from invalid origin: {origin}")
         await ws.close(code=4003, reason="Origin not allowed")
         return
@@ -438,7 +451,7 @@ async def godot_ws_endpoint(ws: WebSocket) -> None:
 async def tauri_ws_endpoint(ws: WebSocket) -> None:
     """WebSocket endpoint for Tauri desktop app."""
     origin = ws.headers.get("origin")
-    if not _validate_ws_origin(origin):
+    if not _validate_ws_origin(origin, client_type="tauri"):
         logger.warning(f"Rejected Tauri connection from invalid origin: {origin}")
         await ws.close(code=4003, reason="Origin not allowed")
         return

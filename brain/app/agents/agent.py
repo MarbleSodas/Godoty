@@ -104,7 +104,12 @@ def _get_model(jwt_token: str | None = None, model_id: str | None = None) -> Lit
         "https://litellm-production-150c.up.railway.app"
     )
     raw_model = model_id or os.getenv("GODOTY_MODEL", "GPT-OSS 120b")
-    api_key = jwt_token if jwt_token else os.getenv("GODOTY_API_KEY", "sk-godoty")
+    api_key = jwt_token or os.getenv("GODOTY_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "API key is required. Set GODOTY_API_KEY environment variable "
+            "or provide jwt_token parameter."
+        )
 
     return LiteLLMOpenAI(
         id=raw_model,

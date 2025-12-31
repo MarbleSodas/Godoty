@@ -16,6 +16,7 @@ from typing import Optional
 
 # Import the shared database path from agent module
 from app.agents.agent import DB_DIR, DB_PATH
+from app.db_pool import get_pool, ConnectionPool
 
 
 @dataclass
@@ -32,21 +33,20 @@ class Session:
 
 class SessionManager:
     """Manages chat sessions in SQLite.
-    
+
     This class handles session metadata (title, timestamps, message counts, metrics)
     while Agno's SqliteDb handles the actual conversation storage.
     """
-    
+
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._pool: ConnectionPool = get_pool(db_path)
         self._init_db()
-    
+
     def _get_conn(self) -> sqlite3.Connection:
-        """Get a database connection with row factory for dict-like access."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        """Get a database connection from the pool with row factory for dict-like access."""
+        return self._pool.get_connection()
     
     def _init_db(self) -> None:
         """Initialize the sessions metadata table."""
@@ -271,10 +271,10 @@ class SessionManager:
 
     def cleanup_empty_sessions(self) -> int:
         """Remove sessions that have no messages.
-        
+
         Cleans up sessions created but never received a successful message
         (e.g., due to errors, cancellation, or crashes).
-        
+
         Returns:
             Number of sessions deleted
         """
@@ -282,33 +282,41 @@ class SessionManager:
         deleted_count = 0
         try:
             cursor = conn.execute("""
-                SELECT id FROM godoty_sessions 
+                SELECT id FROM godoty_sessions
                 WHERE message_count = 0
             """)
             empty_session_ids = [row["id"] for row in cursor.fetchall()]
-            
+
             if not empty_session_ids:
                 return 0
-            
-            for session_id in empty_session_ids:
-                has_agno_messages = False
-                try:
-                    agno_cursor = conn.execute(
-                        "SELECT COUNT(*) as cnt FROM agno_sessions WHERE session_id = ?",
-                        (session_id,)
-                    )
-                    row = agno_cursor.fetchone()
-                    has_agno_messages = row is not None and row["cnt"] > 0
-                except sqlite3.OperationalError:
-                    pass
-                
-                if not has_agno_messages:
-                    conn.execute(
-                        "DELETE FROM godoty_sessions WHERE id = ?",
-                        (session_id,)
-                    )
-                    deleted_count += 1
-            
+
+            # Batch query all agno_sessions at once (fixes N+1 query pattern)
+            placeholders = ",".join(["?" for _ in empty_session_ids])
+            agno_message_counts = {}
+            try:
+                agno_cursor = conn.execute(
+                    f"SELECT session_id, COUNT(*) as cnt FROM agno_sessions WHERE session_id IN ({placeholders}) GROUP BY session_id",
+                    empty_session_ids
+                )
+                agno_message_counts = {row["session_id"]: row["cnt"] for row in agno_cursor.fetchall()}
+            except sqlite3.OperationalError:
+                # Table might not exist, treat as no messages
+                pass
+
+            # Delete sessions without messages in either table
+            sessions_to_delete = [
+                sid for sid in empty_session_ids
+                if agno_message_counts.get(sid, 0) == 0
+            ]
+
+            if sessions_to_delete:
+                placeholders = ",".join(["?" for _ in sessions_to_delete])
+                conn.execute(
+                    f"DELETE FROM godoty_sessions WHERE id IN ({placeholders})",
+                    sessions_to_delete
+                )
+                deleted_count = len(sessions_to_delete)
+
             conn.commit()
             return deleted_count
         finally:
