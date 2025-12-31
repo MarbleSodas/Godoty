@@ -121,7 +121,7 @@ onUnmounted(() => {
       class="flex-1 overflow-y-auto p-4 scroll-smooth"
       @scroll="checkIfNearBottom"
     >
-      <div class="max-w-3xl mx-auto space-y-6 pb-20">
+      <div class="max-w-3xl mx-auto space-y-6 pb-4">
           <!-- Empty State -->
           <div v-if="!brainStore.isProcessing && !brainStore.isLoadingHistory && brainStore.messages.length === 0" class="flex flex-col items-center justify-center h-full py-20 opacity-50 select-none">
             <div class="w-16 h-16 bg-[#2d3546] rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-[#478cbf]/10">
