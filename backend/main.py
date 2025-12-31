@@ -221,6 +221,10 @@ def create_app():
     logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
     from fastapi.middleware.cors import CORSMiddleware
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    from rate_limiter import set_limiter
     from api import agent_router
     from api.health_routes import router as health_router
     from api.metrics_routes import router as metrics_router
@@ -231,13 +235,30 @@ def create_app():
 
     app = FastAPI(title="Godoty Desktop App", version="0.1.0-beta")
 
+    # Initialize rate limiter for security (prevents DoS/abuse)
+    limiter = Limiter(
+        key_func=get_remote_address,
+        default_limits=["100/minute"],
+        storage_uri="memory://"
+    )
+    app.state.limiter = limiter
+    set_limiter(limiter)  # Share with route modules
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # Add CORS middleware - restricted to localhost for security
+    # Explicitly allow only necessary methods and headers
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Requested-With",
+            "Accept",
+            "Origin"
+        ],
     )
 
     # Include agent routes

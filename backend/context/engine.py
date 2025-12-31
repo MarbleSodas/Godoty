@@ -13,7 +13,7 @@ the structure and semantics of Godot projects.
 import json
 import logging
 import os
-import hashlib
+import xxhash
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -297,7 +297,7 @@ class GodotContextEngine:
     def __init__(self, project_path: str):
         """
         Initialize the context engine.
-        
+
         Args:
             project_path: Path to the Godot project root (containing project.godot)
         """
@@ -305,12 +305,16 @@ class GodotContextEngine:
         self.graph = GodotKnowledgeGraph()
         self.vector_store = GodotVectorStore(project_path)
         self._indexed = False
-        
+
         # Index status tracking
         self._progress = IndexProgress()
         self._metadata: Optional[IndexMetadata] = None
         self._status_callbacks: List[Callable[[IndexProgress], None]] = []
-        
+
+        # Query cache for improved performance
+        self._query_cache: Dict[str, ContextBundle] = {}
+        self._query_cache_max_size = 100
+
         logger.info(f"Context engine initialized for: {project_path}")
     
     def add_status_callback(self, callback: Callable[[IndexProgress], None]) -> None:
@@ -344,19 +348,19 @@ class GodotContextEngine:
         return os.path.join(godoty_dir, self.INDEX_METADATA_FILE)
     
     def _compute_project_hash(self) -> str:
-        """Compute a hash of project files for cache invalidation."""
+        """Compute a hash of project files for cache invalidation using xxHash (faster than MD5)."""
         file_list = []
         for root, dirs, files in os.walk(self.project_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in 
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in
                       {'__pycache__', 'addons', '.godot', '.import'}]
             for f in files:
                 if f.endswith(('.gd', '.tscn', '.tres')):
                     filepath = os.path.join(root, f)
                     mtime = os.path.getmtime(filepath)
                     file_list.append(f"{filepath}:{mtime}")
-        
+
         content = "\n".join(sorted(file_list))
-        return hashlib.md5(content.encode()).hexdigest()
+        return xxhash.xxh64(content.encode()).hexdigest()
     
     def _load_metadata(self) -> Optional[IndexMetadata]:
         """Load index metadata from disk."""
@@ -553,11 +557,16 @@ class GodotContextEngine:
             return QueryIntent.SEMANTIC
         else:
             return QueryIntent.API
-    
+
     # =========================================================================
     # Retrieval Methods
     # =========================================================================
-    
+
+    def _get_cache_key(self, query: str, intent: str, limit: int) -> str:
+        """Generate cache key for query results."""
+        key_str = f"{query}:{intent}:{limit}"
+        return xxhash.xxh64(key_str.encode()).hexdigest()
+
     def retrieve_context(
         self,
         query: str,
@@ -565,38 +574,50 @@ class GodotContextEngine:
         limit: int = 10
     ) -> ContextBundle:
         """
-        Main retrieval method implementing hybrid RAG.
-        
+        Main retrieval method implementing hybrid RAG with query caching.
+
         Args:
             query: The search query
             intent: "structural", "semantic", "api", "hybrid", or "auto"
             limit: Maximum results per source
-            
+
         Returns:
             ContextBundle with all retrieved context
         """
+        # Check cache first
+        cache_key = self._get_cache_key(query, intent, limit)
+        if cache_key in self._query_cache:
+            return self._query_cache[cache_key]
+
         # Determine intent
         if intent == "auto":
             detected_intent = self.classify_intent(query)
         else:
             detected_intent = QueryIntent(intent)
-        
+
         bundle = ContextBundle(query=query, intent=detected_intent)
-        
+
         # Route based on intent
         if detected_intent in (QueryIntent.STRUCTURAL, QueryIntent.HYBRID):
             bundle.graph_results = self._retrieve_structural(query, limit)
-        
+
         if detected_intent in (QueryIntent.SEMANTIC, QueryIntent.HYBRID):
             bundle.code_results = self.vector_store.search_code(query, limit)
-        
+
         if detected_intent in (QueryIntent.API, QueryIntent.HYBRID):
             bundle.doc_results = self.vector_store.search_docs(query, limit)
-        
+
         # Always include some scene context for complex queries
         if detected_intent == QueryIntent.HYBRID:
             bundle.scene_results = self.vector_store.search_scenes(query, limit // 2)
-        
+
+        # Store in cache with LRU eviction
+        if len(self._query_cache) >= self._query_cache_max_size:
+            # Remove oldest entry (simple FIFO)
+            oldest_key = next(iter(self._query_cache))
+            del self._query_cache[oldest_key]
+
+        self._query_cache[cache_key] = bundle
         return bundle
     
     def _retrieve_structural(self, query: str, limit: int) -> List[Dict[str, Any]]:

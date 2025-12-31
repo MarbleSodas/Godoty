@@ -12,10 +12,13 @@ from pydantic import BaseModel, Field
 from typing import Optional, AsyncGenerator
 
 from services.supabase_auth import get_supabase_auth
+from rate_limiter import get_limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+limiter = get_limiter()
 
 
 class LoginRequest(BaseModel):
@@ -31,19 +34,20 @@ class ConfigureRequest(BaseModel):
 
 
 @router.post("/login")
-async def login(request: LoginRequest):
+@limiter.limit("5/minute")
+async def login(http_request: Request, request: LoginRequest):
     """
     Login with email/password.
-    
+
     Returns:
         User info and authentication status.
     """
     auth = get_supabase_auth()
     result = auth.login(request.email, request.password)
-    
+
     if not result["success"]:
         raise HTTPException(status_code=401, detail=result.get("error", "Login failed"))
-    
+
     # Include balance in response
     balance = auth.get_balance()
     result["balance"] = balance
@@ -51,19 +55,20 @@ async def login(request: LoginRequest):
 
 
 @router.post("/signup")
-async def signup(request: LoginRequest):
+@limiter.limit("3/minute")
+async def signup(http_request: Request, request: LoginRequest):
     """
     Register new account.
-    
+
     Returns:
         Registration status and any confirmation requirements.
     """
     auth = get_supabase_auth()
     result = auth.signup(request.email, request.password)
-    
+
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result.get("error", "Signup failed"))
-    
+
     return result
 
 

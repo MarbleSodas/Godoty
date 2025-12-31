@@ -12,7 +12,7 @@ Features:
 
 import logging
 import os
-import hashlib
+import xxhash
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
@@ -56,8 +56,8 @@ class CodeChunk:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def get_id(self) -> str:
-        """Generate unique ID for this chunk."""
-        content_hash = hashlib.md5(self.content.encode()).hexdigest()[:8]
+        """Generate unique ID for this chunk using xxHash (faster than MD5)."""
+        content_hash = xxhash.xxh64(self.content.encode()).hexdigest()[:8]
         return f"{self.file_path}:{self.chunk_type}:{self.name or 'anon'}:{content_hash}"
 
 

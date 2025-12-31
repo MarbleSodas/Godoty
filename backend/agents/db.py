@@ -162,38 +162,37 @@ class MetricsDB:
     def get_all_sessions(self) -> List[Dict[str, Any]]:
         """
         List all sessions with their live aggregated metrics.
+        Uses a single LEFT JOIN query to avoid N+1 query problem.
         """
         conn = self._get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # Get sessions
-        cursor.execute("SELECT * FROM sessions ORDER BY updated_at DESC")
-        sessions_rows = cursor.fetchall()
-        
-        results = []
-        for row in sessions_rows:
-            s_id = row['session_id']
-            
-            # Get metrics for each
-            cursor.execute("""
-                SELECT SUM(total_tokens), SUM(cost) 
-                FROM api_calls 
-                WHERE session_id = ?
-            """, (s_id,))
-            metrics_row = cursor.fetchone()
-            
-            total_tokens = metrics_row[0] if metrics_row[0] else 0
-            total_cost = metrics_row[1] if metrics_row[1] else 0.0
+        # Single query with LEFT JOIN to get sessions and their metrics
+        cursor.execute("""
+            SELECT
+                s.session_id as id,
+                s.title,
+                s.created_at,
+                s.updated_at as last_updated,
+                COALESCE(SUM(a.total_tokens), 0) as total_tokens,
+                COALESCE(SUM(a.cost), 0) as total_estimated_cost
+            FROM sessions s
+            LEFT JOIN api_calls a ON s.session_id = a.session_id
+            GROUP BY s.session_id
+            ORDER BY s.updated_at DESC
+        """)
 
+        results = []
+        for row in cursor.fetchall():
             results.append({
-                "id": s_id,
+                "id": row['id'],
                 "title": row['title'],
                 "created_at": row['created_at'],
-                "last_updated": row['updated_at'],
+                "last_updated": row['last_updated'],
                 "metrics": {
-                    "total_tokens": total_tokens,
-                    "total_estimated_cost": total_cost
+                    "total_tokens": row['total_tokens'],
+                    "total_estimated_cost": row['total_estimated_cost']
                 }
             })
 

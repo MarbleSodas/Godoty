@@ -23,8 +23,11 @@ from agents.config import AgentConfig
 from agents.db import get_metrics_db
 from agents.event_utils import sanitize_event_data
 from services.supabase_auth import get_supabase_auth
+from rate_limiter import get_limiter
 
 logger = logging.getLogger(__name__)
+
+limiter = get_limiter()
 
 
 def require_auth():
@@ -133,6 +136,7 @@ class HealthResponse(BaseModel):
 
 # Routes
 @router.get("/health", response_model=HealthResponse)
+@limiter.exempt
 async def agent_health():
     """
     Check agent health and readiness.
@@ -750,27 +754,24 @@ async def list_sessions(path: Optional[str] = Query(None)):
         try:
             db = get_metrics_db()
             metrics_db_sessions = db.get_all_sessions()
-            
-            # Map DB metrics to session IDs
-            db_metrics_map = {s["id"]: s["metrics"] for s in metrics_db_sessions}
 
+            # Map DB metrics to session IDs
+            db_metrics_map = {
+                s["id"]: s["metrics"]
+                for s in metrics_db_sessions
+            }
+
+            # Batch assign metrics using dict.get() for cleaner code
+            default_metrics = {"total_tokens": 0, "total_estimated_cost": 0.0}
             for session_id, session_data in sessions_dict.items():
-                if session_id in db_metrics_map:
-                    session_data["metrics"] = db_metrics_map[session_id]
-                else:
-                    session_data["metrics"] = {
-                        "total_tokens": 0,
-                        "total_estimated_cost": 0.0
-                    }
+                session_data["metrics"] = db_metrics_map.get(session_id, default_metrics)
         except Exception as e:
             logger.error(f"Error fetching metrics from MetricsDB: {e}")
             # Initialize default metrics
+            default_metrics = {"total_tokens": 0, "total_estimated_cost": 0.0}
             for session_id, session_data in sessions_dict.items():
                 if "metrics" not in session_data:
-                    session_data["metrics"] = {
-                        "total_tokens": 0,
-                        "total_estimated_cost": 0.0
-                    }
+                    session_data["metrics"] = default_metrics
 
         logger.info(f"Successfully returning {len(sessions_dict)} sessions for project: {path}")
         return {"status": "success", "sessions": sessions_dict}
