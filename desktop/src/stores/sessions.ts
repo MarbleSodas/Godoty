@@ -67,7 +67,8 @@ export const useSessionsStore = defineStore('sessions', () => {
             }))
         }
 
-        activeSessionId.value = null
+        // Use the active_session_id from backend if provided
+        activeSessionId.value = data.active_session_id || null
     }
 
     /**
@@ -162,15 +163,21 @@ export const useSessionsStore = defineStore('sessions', () => {
      * Switch to a different session
      */
     async function switchSession(sessionId: string): Promise<boolean> {
-        const session = sessions.value.find(s => s.id === sessionId)
-        if (!session) {
-            error.value = 'Session not found'
+        try {
+            const session = sessions.value.find(s => s.id === sessionId)
+            if (!session) {
+                error.value = 'Session not found'
+                return false
+            }
+
+            activeSessionId.value = sessionId
+            persistActiveSession()
+            return true
+        } catch (e) {
+            error.value = `Failed to switch session: ${(e as Error).message}`
+            console.error('[Sessions] Switch error:', e)
             return false
         }
-
-        activeSessionId.value = sessionId
-        persistActiveSession()
-        return true
     }
 
     /**
@@ -246,7 +253,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         }
     }
 
-    async function getSessionHistory(sessionId: string): Promise<Array<{ role: string; content: string; created_at?: string }>> {
+    async function getSessionHistory(sessionId: string): Promise<Array<{ role: string; content: string; created_at?: string; reasoning?: unknown; tool_calls?: unknown }>> {
         if (!_sendRequest) return []
 
         try {
@@ -255,7 +262,7 @@ export const useSessionsStore = defineStore('sessions', () => {
             }) as {
                 session_id: string
                 title: string
-                messages: Array<{ role: string; content: string; created_at?: string }>
+                messages: Array<{ role: string; content: string; created_at?: string; reasoning?: unknown; tool_calls?: unknown }>
             }
 
             return response.messages

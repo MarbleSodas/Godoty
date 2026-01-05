@@ -10,10 +10,14 @@ const props = defineProps<{
 const thoughtsContainer = ref<HTMLElement | null>(null)
 const isExpanded = ref(props.isActive || false)
 
-watch(() => props.isActive, (newVal) => {
+watch(() => props.isActive, (newVal, oldVal) => {
   if (newVal) {
+    // Reasoning started - expand the panel
     isExpanded.value = true
     scrollToBottom()
+  } else if (oldVal && !newVal) {
+    // Reasoning completed - collapse the panel
+    isExpanded.value = false
   }
 })
 

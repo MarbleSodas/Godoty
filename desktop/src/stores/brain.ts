@@ -100,6 +100,13 @@ export const useBrainStore = defineStore('brain', () => {
   const processingSessionId = ref<string | null>(null)
   const streamingSessionMessageId = ref<Map<string, string>>(new Map())
 
+  // Helper function to validate if streaming chunks are for the active session
+  function isStreamingValidForSession(sessionId: string | undefined): boolean {
+    if (!sessionId) return true  // Backward compatibility for non-session messages
+    const currentSession = sessionsStore.activeSessionId
+    return sessionId === currentSession
+  }
+
   // Session metrics (per chat session)
   const sessionMetrics = ref<SessionMetrics>(loadSessionMetrics())
 
@@ -425,10 +432,17 @@ export const useBrainStore = defineStore('brain', () => {
           {
             const params = data.params as { content: string; session_id?: string }
             const sessionId = params.session_id
-            const targetMsgId = sessionId 
+
+            // Validate session to prevent race conditions
+            if (sessionId && !isStreamingValidForSession(sessionId)) {
+              console.log('[Brain] Ignoring chunk for inactive session:', sessionId)
+              break
+            }
+
+            const targetMsgId = sessionId
               ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
-            
+
             if (targetMsgId) {
               // Always check messages.value first since that's where the streaming message was added
               // This handles the case where a new session was created and activeSessionId hasn't updated yet
@@ -442,10 +456,11 @@ export const useBrainStore = defineStore('brain', () => {
               }
               
               if (msgIndex >= 0 && targetMessages) {
-                targetMessages[msgIndex] = {
+                const updatedMsg = {
                   ...targetMessages[msgIndex],
                   content: targetMessages[msgIndex].content + params.content
                 }
+                targetMessages.splice(msgIndex, 1, updatedMsg)
               }
             }
           }
@@ -454,10 +469,17 @@ export const useBrainStore = defineStore('brain', () => {
           {
             const params = data.params as { status: string; tool: ToolCall; session_id?: string }
             const sessionId = params.session_id
-            const targetMsgId = sessionId 
+
+            // Validate session to prevent race conditions
+            if (sessionId && !isStreamingValidForSession(sessionId)) {
+              console.log('[Brain] Ignoring tool call for inactive session:', sessionId)
+              break
+            }
+
+            const targetMsgId = sessionId
               ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
-            
+
             if (targetMsgId) {
               let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
               let targetMessages: Message[] | undefined = messages.value
@@ -488,30 +510,38 @@ export const useBrainStore = defineStore('brain', () => {
                     }
                   }
                 }
-                
-                targetMessages[msgIndex] = {
+
+                const updatedMsg = {
                   ...currentMsg,
                   toolCalls
                 }
+                targetMessages.splice(msgIndex, 1, updatedMsg)
               }
             }
           }
           break
         case 'stream_reasoning':
           {
-            const params = data.params as { 
+            const params = data.params as {
               status: string
               content?: string
               session_id?: string
               agent_id?: string
-              agent_name?: string 
+              agent_name?: string
             }
-            
+
             const sessionId = params.session_id
-            const targetMsgId = sessionId 
+
+            // Validate session to prevent race conditions
+            if (sessionId && !isStreamingValidForSession(sessionId)) {
+              console.log('[Brain] Ignoring reasoning for inactive session:', sessionId)
+              break
+            }
+
+            const targetMsgId = sessionId
               ? (streamingSessionMessageId.value.get(sessionId) || streamingMessageId.value)
               : streamingMessageId.value
-            
+
             if (targetMsgId) {
               let msgIndex = messages.value.findIndex(m => m.id === targetMsgId)
               let targetMessages: Message[] | undefined = messages.value
@@ -531,12 +561,13 @@ export const useBrainStore = defineStore('brain', () => {
                     agentId: params.agent_id,
                     agentName: params.agent_name,
                   })
-                  targetMessages[msgIndex] = {
+                  const updatedMsg = {
                     ...currentMsg,
                     isReasoningActive: true,
                     activeAgentName: params.agent_name || params.agent_id || 'Agent',
                     reasoning
                   }
+                  targetMessages.splice(msgIndex, 1, updatedMsg)
                 } else if (params.status === 'step' && params.content) {
                   const lastStep = reasoning[reasoning.length - 1]
                   const isSameAgentEmptyStep = lastStep && lastStep.agentId === params.agent_id && lastStep.content === ''
@@ -555,11 +586,12 @@ export const useBrainStore = defineStore('brain', () => {
                       agentName: params.agent_name,
                     })
                   }
-                  targetMessages[msgIndex] = {
+                  const updatedMsg = {
                     ...currentMsg,
                     isReasoningActive: true,
                     reasoning
                   }
+                  targetMessages.splice(msgIndex, 1, updatedMsg)
                 } else if (params.status === 'delta' && params.content) {
                   const lastStep = reasoning[reasoning.length - 1]
                   const isSameAgent = lastStep && lastStep.agentId === params.agent_id
@@ -576,17 +608,19 @@ export const useBrainStore = defineStore('brain', () => {
                       agentName: params.agent_name,
                     })
                   }
-                  targetMessages[msgIndex] = {
+                  const updatedMsg = {
                     ...currentMsg,
                     isReasoningActive: true,
                     reasoning
                   }
+                  targetMessages.splice(msgIndex, 1, updatedMsg)
                 } else if (params.status === 'completed' || params.status === 'error') {
-                  targetMessages[msgIndex] = {
+                  const updatedMsg = {
                     ...currentMsg,
                     isReasoningActive: false,
                     activeAgentName: undefined
                   }
+                  targetMessages.splice(msgIndex, 1, updatedMsg)
                 }
               }
             }
@@ -601,7 +635,13 @@ export const useBrainStore = defineStore('brain', () => {
               reasoning?: (string | ReasoningStep)[]
             }
             const sessionId = params.session_id
-            
+
+            // Validate session to prevent race conditions
+            if (sessionId && !isStreamingValidForSession(sessionId)) {
+              console.log('[Brain] Ignoring completion for inactive session:', sessionId)
+              break
+            }
+
             if (!sessionId) {
               streamingMessageId.value = null
               isProcessing.value = false
@@ -658,8 +698,8 @@ export const useBrainStore = defineStore('brain', () => {
                   lifetimeMetrics.value.totalMessages++
                   saveLifetimeMetrics()
                 }
-                
-                targetMessages[msgIndex] = updatedMsg
+
+                targetMessages.splice(msgIndex, 1, updatedMsg)
 
                 if (sessionId && sessionsStore.activeSessionId !== sessionId) {
                   sessionsStore.activeSessionId = sessionId
@@ -874,20 +914,31 @@ export const useBrainStore = defineStore('brain', () => {
 
     const STREAMING_TIMEOUT_MS = 300000
     const streamingTimeoutId = setTimeout(() => {
-      const msg = messages.value.find(m => m.id === assistantMsgId)
-      if (msg && msg.isStreaming) {
-        msg.isStreaming = false
-        msg.isReasoningActive = false
-        if (!msg.content) {
-          msg.content = '⚠️ Response timed out. Please try again.'
+      // Check both messages.value and sessionMessagesCache
+      const targetMessages = targetSessionId === sessionsStore.activeSessionId
+        ? messages.value
+        : sessionMessagesCache.value.get(targetSessionId || '')
+
+      if (targetMessages) {
+        const msgIndex = targetMessages.findIndex(m => m.id === assistantMsgId)
+        if (msgIndex >= 0 && targetMessages[msgIndex].isStreaming) {
+          // Use splice for proper reactivity
+          targetMessages.splice(msgIndex, 1, {
+            ...targetMessages[msgIndex],
+            isStreaming: false,
+            isReasoningActive: false,
+            content: targetMessages[msgIndex].content || '⚠️ Response timed out. Please try again.'
+          })
         }
-        streamingMessageId.value = null
-        if (targetSessionId) {
-          streamingSessionMessageId.value.delete(targetSessionId)
-        }
-        isProcessing.value = false
-        processingSessionId.value = null
       }
+
+      // Clear streaming state
+      streamingMessageId.value = null
+      if (targetSessionId) {
+        streamingSessionMessageId.value.delete(targetSessionId)
+      }
+      isProcessing.value = false
+      processingSessionId.value = null
     }, STREAMING_TIMEOUT_MS)
 
     try {
@@ -916,23 +967,19 @@ export const useBrainStore = defineStore('brain', () => {
       const err = e as Error
       error.value = err.message
 
-      const targetMessages = targetSessionId === sessionsStore.activeSessionId 
-        ? messages.value 
+      const targetMessages = targetSessionId === sessionsStore.activeSessionId
+        ? messages.value
         : sessionMessagesCache.value.get(targetSessionId || '')
-      
+
       if (targetMessages) {
-        const msg = targetMessages.find(m => m.id === assistantMsgId)
-        if (msg) {
-          msg.isStreaming = false
-          msg.isReasoningActive = false
-        }
-        
         const msgIndex = targetMessages.findIndex(m => m.id === assistantMsgId)
         if (msgIndex >= 0) {
+          // Use splice for proper reactivity when removing message
           targetMessages.splice(msgIndex, 1)
         }
       }
-      
+
+      // Clear all streaming state
       streamingMessageId.value = null
       if (targetSessionId) {
         streamingSessionMessageId.value.delete(targetSessionId)
@@ -949,10 +996,6 @@ export const useBrainStore = defineStore('brain', () => {
       clearTimeout(streamingTimeoutId)
       isProcessing.value = false
       processingSessionId.value = null
-      streamingMessageId.value = null
-      if (targetSessionId) {
-        streamingSessionMessageId.value.delete(targetSessionId)
-      }
     }
   }
 
@@ -975,6 +1018,22 @@ export const useBrainStore = defineStore('brain', () => {
     resetSessionMetrics()
   }
 
+  function clearSessionCache(exceptSessionId?: string) {
+    // Clear all cached session messages except the specified one
+    // This prevents memory leaks from unbounded cache growth
+    if (exceptSessionId) {
+      const toDelete: string[] = []
+      sessionMessagesCache.value.forEach((_, sessionId) => {
+        if (sessionId !== exceptSessionId) {
+          toDelete.push(sessionId)
+        }
+      })
+      toDelete.forEach(id => sessionMessagesCache.value.delete(id))
+    } else {
+      sessionMessagesCache.value.clear()
+    }
+  }
+
   async function loadSessionMessages(sessionId: string): Promise<void> {
     error.value = null
 
@@ -982,6 +1041,9 @@ export const useBrainStore = defineStore('brain', () => {
     if (currentSessionId && currentSessionId !== sessionId && messages.value.length > 0) {
       sessionMessagesCache.value.set(currentSessionId, [...messages.value])
     }
+
+    // Clear cache when switching sessions to prevent memory leaks
+    clearSessionCache(sessionId)
 
     const cachedMessages = sessionMessagesCache.value.get(sessionId)
     if (cachedMessages) {

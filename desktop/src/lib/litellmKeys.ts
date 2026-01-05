@@ -18,6 +18,20 @@ export interface ModelInfo {
 
 export const PRICING_URL = 'https://godoty.app/pricing'
 
+// Error type guard for budget exceeded errors
+export function isBudgetExceededError(error: Error | { message?: string }): boolean {
+  const message = error instanceof Error ? error.message : (error.message || '')
+  const lowerMessage = message.toLowerCase()
+
+  return (
+    lowerMessage.includes('budget') ||
+    lowerMessage.includes('insufficient') ||
+    lowerMessage.includes('credits') ||
+    lowerMessage.includes('403') ||
+    lowerMessage.includes('exceeded')
+  )
+}
+
 // Credit formatting - show up to 2 decimal places, remove trailing zeros
 export function formatCredits(credits: string | number): string {
   const num = typeof credits === 'string' ? parseFloat(credits) : credits
