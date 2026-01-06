@@ -120,7 +120,7 @@ function openInPanel(wrapper: HTMLElement) {
 <template>
     <div>
         <!-- User Message -->
-        <div v-if="isUser" class="flex justify-end animate-fade-in-up mb-6">
+        <div v-if="isUser" class="flex justify-end animate-fade-in-up">
             <div class="bg-[#2d3546] text-gray-100 px-4 py-3 rounded-2xl rounded-tr-sm max-w-[85%] shadow-sm border border-[#3b4458]">
                 <div class="text-sm whitespace-pre-wrap leading-relaxed" v-html="formattedContent"></div>
                 <div class="text-[10px] text-gray-500 mt-1 text-right">{{ message.timestamp.toLocaleTimeString() }}</div>
@@ -128,14 +128,14 @@ function openInPanel(wrapper: HTMLElement) {
         </div>
 
         <!-- System Message -->
-        <div v-else-if="isSystem" class="flex justify-center mb-4">
+        <div v-else-if="isSystem" class="flex justify-center">
             <div class="bg-[#1a1e29] text-yellow-400 px-4 py-2 rounded-lg text-sm border border-yellow-500/20">
                 {{ message.content }}
             </div>
         </div>
 
         <!-- Assistant Message - only show if streaming OR has content -->
-        <div v-else-if="isStreaming || hasContent" class="flex gap-4 pr-4 mb-6" :class="isStreaming ? 'animate-pulse-subtle' : 'animate-fade-in-up'">
+        <div v-else-if="isStreaming || hasContent" class="flex gap-4 pr-4" :class="isStreaming ? 'animate-pulse-subtle' : 'animate-fade-in-up'">
             <div class="flex-shrink-0 mt-1">
                 <div class="w-8 h-8 rounded-lg bg-[#478cbf] flex items-center justify-center shadow-lg shadow-blue-500/20">
                     <img :src="iconUrl" class="w-5 h-5 text-white" style="filter: brightness(0) invert(1);" alt="Godoty" />

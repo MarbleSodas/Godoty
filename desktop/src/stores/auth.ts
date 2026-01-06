@@ -100,44 +100,44 @@ export const useAuthStore = defineStore('auth', () => {
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          event: '*', // Listen to INSERT and UPDATE (and DELETE, though we ignore it)
           schema: 'public',
-          table: 'LiteLLM_UserTable',
+          table: 'user_credits',
           filter: `user_id=eq.${userId}`,
         },
         (payload) => {
-          const newData = payload.new as { max_budget?: number; spend?: number } | undefined
-          const oldData = payload.old as { max_budget?: number; spend?: number } | undefined
+          const newData = payload.new as { balance?: number; max_budget?: number; total_spent?: number } | undefined
+          const oldData = payload.old as { balance?: number; max_budget?: number; total_spent?: number } | undefined
           
           if (!newData) return
           
+          const newBalance = newData.balance ?? 0
           const newMaxBudget = newData.max_budget ?? 0
-          const newSpend = newData.spend ?? 0
-          const oldMaxBudget = oldData?.max_budget ?? 0
-          const oldSpend = oldData?.spend ?? 0
+          const newSpend = newData.total_spent ?? 0
+          
+          const oldBalance = oldData?.balance ?? 0
           
           const EPSILON = 0.0001
-          const budgetChanged = Math.abs(newMaxBudget - oldMaxBudget) > EPSILON
-          const spendChanged = Math.abs(newSpend - oldSpend) > EPSILON
+          const balanceChanged = Math.abs(newBalance - oldBalance) > EPSILON
           
-          if (!budgetChanged && !spendChanged) {
+          if (!balanceChanged) {
             return
           }
           
           if (virtualKeyInfo.value) {
-            const remainingBudget = Math.max(0, newMaxBudget - newSpend).toFixed(4)
+            const formattedRemaining = newBalance.toFixed(4)
             
             virtualKeyInfo.value = {
               ...virtualKeyInfo.value,
               maxBudget: newMaxBudget.toFixed(4),
               spend: newSpend.toFixed(4),
-              remainingBudget,
+              remainingBudget: formattedRemaining,
             }
             
             updateCachedCreditBalance({
               totalCredits: newMaxBudget.toFixed(4),
               usedCredits: newSpend.toFixed(4),
-              remainingCredits: remainingBudget,
+              remainingCredits: formattedRemaining,
             })
           }
         }

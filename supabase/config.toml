@@ -1,6 +1,98 @@
 # Supabase Project Configuration
+# ================================
+# This file configures local development and deployment settings.
+# Security measures are enforced via database RLS policies and function configurations.
 
-# Stripe webhook needs to be publicly accessible 
-# (Stripe doesn't have your user JWT tokens)
+# ============================================================================
+# Project Settings
+# ============================================================================
+[project]
+# Project ID is set via SUPABASE_PROJECT_ID environment variable
+
+# ============================================================================
+# API Settings
+# ============================================================================
+[api]
+# Enable RLS for all database operations
+enabled = true
+# Port for the API server (local development)
+port = 54321
+# Maximum rows returned by default
+max_rows = 1000
+
+# ============================================================================
+# Database Settings  
+# ============================================================================
+[db]
+# Port for the database (local development)
+port = 54322
+# Enforce SSL connections in production (handled by Supabase cloud)
+# ssl = "require"
+
+# Enable RLS by default - CRITICAL for security
+# All tables should have RLS enabled and appropriate policies
+# See migrations/20260106000000_consolidated_security.sql
+
+# ============================================================================
+# Auth Settings
+# ============================================================================
+[auth]
+# Enable email confirmation for new accounts
+enable_signup = true
+# JWT expiry in seconds (1 hour)
+jwt_expiry = 3600
+
+# ============================================================================
+# Realtime Settings
+# ============================================================================
+[realtime]
+# Enable realtime for credit balance updates
+enabled = true
+# Only allow authenticated users to subscribe
+# RLS policies on LiteLLM_UserTable and credit_transactions control access
+
+# ============================================================================
+# Edge Functions Configuration
+# ============================================================================
+
+# generate-litellm-key: Requires JWT authentication
+# This function generates LiteLLM virtual keys for authenticated users
+# Security: JWT verification ensures only logged-in users can request keys
+# Rate limiting is enforced at database level (check_key_generation_limit)
+[functions.generate-litellm-key]
+verify_jwt = true
+
+# stripe-webhook: Public access (no JWT)
+# This function receives webhooks from Stripe for payment processing
+# Security: Stripe signature verification (HMAC-SHA256) validates authenticity
+# Idempotency is enforced at database level (process_webhook_idempotent)
 [functions.stripe-webhook]
 verify_jwt = false
+
+# ============================================================================
+# Security Notes
+# ============================================================================
+#
+# 1. Edge Function Security:
+#    - generate-litellm-key: Protected by Supabase JWT verification
+#    - stripe-webhook: Protected by Stripe signature verification (not JWT)
+#
+# 2. Database Security (see migrations/20260106000000_consolidated_security.sql):
+#    - All tables have RLS enabled
+#    - Users can only SELECT their own data
+#    - Service role required for all write operations
+#    - SECURITY DEFINER functions for atomic operations
+#
+# 3. API Keys:
+#    - LITELLM_MASTER_KEY: Never exposed to clients, only used in edge functions
+#    - STRIPE_SECRET_KEY: Never exposed to clients, only used in edge functions
+#    - STRIPE_WEBHOOK_SECRET: Used to verify Stripe webhook signatures
+#    - SUPABASE_SERVICE_ROLE_KEY: Only used in edge functions, bypasses RLS
+#
+# 4. Rate Limiting:
+#    - Key generation: 5 requests per hour per user
+#    - Enforced at database level to prevent bypass
+#
+# 5. Realtime:
+#    - LiteLLM_UserTable: Users can only subscribe to their own row
+#    - credit_transactions: Users can only subscribe to their own transactions

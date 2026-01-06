@@ -88,7 +88,7 @@ body {
 }
 
 .prose pre {
-    @apply bg-[#1a1e29] border border-[#3b4458] rounded-lg p-3 my-2 overflow-x-auto;
+    @apply overflow-x-auto;
 }
 
 .prose code {
