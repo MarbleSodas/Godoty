@@ -1,6 +1,0 @@
-# Supabase Project Configuration
-
-# Stripe webhook needs to be publicly accessible 
-# (Stripe doesn't have your user JWT tokens)
-[functions.stripe-webhook]
-verify_jwt = false

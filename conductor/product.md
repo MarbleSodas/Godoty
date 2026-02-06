@@ -1,2 +1,0 @@
-# Initial Concept
-Godoty is a local-first AI assistant for the Godot Engine that brings agentic AI assistance directly into the game development workflow. It features a multi-agent team (Lead, Coder, Architect, Observer) that works together to help Godot developers, technical artists, and indie developers code, debug, and optimize their games. The system integrates deeply with the Godot editor via a custom plugin and provides a secure desktop interface where all file modifications require human-in-the-loop (HITL) approval.
