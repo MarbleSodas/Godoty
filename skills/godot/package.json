@@ -2,6 +2,7 @@
   "name": "@godoty/skill-godot",
   "version": "0.1.0",
   "description": "Godot game engine automation and documentation skill",
+  "type": "module",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
@@ -9,7 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.18.0"
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "fast-xml-parser": "^4.5.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
