@@ -3,9 +3,13 @@
   "version": "0.0.0",
   "description": "",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "start": "vite",
     "dev": "vite",
+    "dev:all": "(trap 'kill 0' SIGINT; opencode serve --port 4096 & vite)",
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri",
@@ -14,23 +18,28 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@opencode-ai/app": "*",
-    "@opencode-ai/ui": "*",
-    "solid-js": "^1.9.3",
+    "@opencode-ai/app": "workspace:*",
+    "@opencode-ai/ui": "workspace:*",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.0",
+    "solid-js": "^1.9.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@tailwindcss/vite": "^4.1.18",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6.9.1",
-    "autoprefixer": "^10.4.24",
     "jsdom": "^28.0.0",
-    "postcss": "^8.5.6",
-    "tailwindcss": "3",
+    "tailwindcss": "^4.1.18",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vite-plugin-solid": "^2.11.0",
     "vitest": "^4.0.18"
-  }
+  },
+  "trustedDependencies": [
+    "@tailwindcss/oxide"
+  ]
 }

@@ -1,19 +1,20 @@
 import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
+import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [solid()],
+  plugins: [solid(), tailwindcss()],
 
   resolve: {
     alias: {
-      "@tauri-apps/plugin-updater": path.resolve(__dirname, "./src/mocks/tauri-plugin-updater.ts"),
-      "@tauri-apps/plugin-process": path.resolve(__dirname, "./src/mocks/tauri-plugin-process.ts"),
-      "@tauri-apps/plugin-shell": path.resolve(__dirname, "./src/mocks/tauri-plugin-shell.ts"),
+      "@opencode-ai/ui": path.resolve(__dirname, "packages/ui/src"),
+      "@opencode-ai/app": path.resolve(__dirname, "packages/app/src"),
+      "@opencode-ai/sdk": path.resolve(__dirname, "packages/sdk/src"),
+      "@opencode-ai/util": path.resolve(__dirname, "packages/util/src"),
     },
   },
 
