@@ -663,6 +663,7 @@ Parallel Speedup: ~35% faster than sequential
   - Generate latest.json manifest for auto-updater
   - Upload artifacts to GitHub releases
   - Setup code signing (optional, can be deferred)
+  - **Mock Step**: Create dummy sidecars if not available.
 
   **Must NOT do**:
   - Build on every push (only on tags/releases)
@@ -709,7 +710,7 @@ Parallel Speedup: ~35% faster than sequential
 
 ### Task 10: E2E Testing and Polish
 
-- [ ] **10. Comprehensive end-to-end testing and final integration verification**
+- [x] **10. Comprehensive end-to-end testing and final integration verification**
 
   **What to do**:
   - Write Playwright e2e tests for complete user flows
