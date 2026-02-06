@@ -533,7 +533,7 @@ Parallel Speedup: ~35% faster than sequential
 
 ### Task 7: Bundle Plugin Configuration
 
-- [ ] **7. Pre-configure oh-my-opencode and opencode-antigravity-auth plugins**
+- [x] **7. Pre-configure oh-my-opencode and opencode-antigravity-auth plugins**
 
   **What to do**:
   - Create default opencode.json with both plugins at @latest
@@ -588,7 +588,7 @@ Parallel Speedup: ~35% faster than sequential
 
 ### Task 8: Implement Auto-Updater
 
-- [ ] **8. Configure tauri-plugin-updater with GitHub releases**
+- [x] **8. Configure tauri-plugin-updater with GitHub releases**
 
   **What to do**:
   - Add tauri-plugin-updater to Cargo.toml and initialize in main.rs
@@ -654,7 +654,7 @@ Parallel Speedup: ~35% faster than sequential
 
 ### Task 9: Setup CI/CD for Multi-Platform Builds
 
-- [ ] **9. Configure GitHub Actions for macOS, Windows, and Linux builds with releases**
+- [x] **9. Configure GitHub Actions for macOS, Windows, and Linux builds with releases**
 
   **What to do**:
   - Create `.github/workflows/release.yml` for tagged releases
