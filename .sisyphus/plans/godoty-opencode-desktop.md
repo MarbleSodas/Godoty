@@ -346,7 +346,7 @@ Parallel Speedup: ~35% faster than sequential
 
 ### Task 4: Integrate Sidecar Management
 
-- [ ] **4. Bundle and manage opencode-cli sidecar with lifecycle controls**
+- [x] **4. Bundle and manage opencode-cli sidecar with lifecycle controls**
 
   **What to do**:
   - Create sidecar download/bundle script for multi-platform binaries
@@ -409,7 +409,7 @@ Parallel Speedup: ~35% faster than sequential
 
 ### Task 5: Integrate @opencode-ai/app UI
 
-- [ ] **5. Wire up @opencode-ai/app SolidJS components as the main interface**
+- [x] **5. Wire up @opencode-ai/app SolidJS components as the main interface**
 
   **What to do**:
   - Import and render @opencode-ai/app main component
@@ -480,7 +480,7 @@ Parallel Speedup: ~35% faster than sequential
 
 ### Task 6: Configure Isolated Config Path
 
-- [ ] **6. Set up ~/.config/godoty/ as the isolated configuration directory**
+- [x] **6. Set up ~/.config/godoty/ as the isolated configuration directory**
 
   **What to do**:
   - Configure OpenCode to use ~/.config/godoty/ instead of ~/.config/opencode/
