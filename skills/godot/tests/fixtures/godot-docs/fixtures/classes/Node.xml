@@ -1,0 +1,34 @@
+<class name="Node">
+  <brief_description>Base building block for scenes.</brief_description>
+  <description><![CDATA[
+Called when added to the scene tree. Use for initialization.
+]]></description>
+  <methods>
+    <method name="_ready">
+      <return type="void" />
+      <description>called when added to scene tree</description>
+      <arguments>
+        <argument name="delta" type="float" default="0" />
+      </arguments>
+      <qualifiers>
+        <qualifier>virtual</qualifier>
+      </qualifiers>
+    </method>
+  </methods>
+  <members>
+    <member name="process_mode" type="int" default="0">
+      <description>controls process mode</description>
+    </member>
+  </members>
+  <signals>
+    <signal name="ready">
+      <description>emitted when ready</description>
+    </signal>
+  </signals>
+  <constants>
+    <constant name="SOME_CONST" value="1">
+      <description>just a const</description>
+    </constant>
+  </constants>
+</class>
+

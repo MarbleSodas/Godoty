@@ -1,0 +1,13 @@
+<class name="Button">
+  <brief_description>Clickable UI element</brief_description>
+  <description>Button control</description>
+  <signals>
+    <signal name="pressed">
+      <description>emitted when the button is pressed</description>
+    </signal>
+  </signals>
+  <methods></methods>
+  <members></members>
+  <constants></constants>
+</class>
+

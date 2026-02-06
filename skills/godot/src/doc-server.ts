@@ -1,39 +1,9 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { start } from "./doc/index.js";
 
-const server = new Server(
-  {
-    name: "godot-documentation",
-    version: "0.1.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
+// Ensure the server runs on stdio
+process.env.MCP_STDIO = "1";
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [],
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  throw new Error(`Tool not found: ${request.params.name}`);
-});
-
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Godot documentation MCP server running on stdio");
-}
-
-main().catch((error) => {
-  console.error("Fatal error in main():", error);
+start().catch((err) => {
+  console.error(err);
   process.exit(1);
 });

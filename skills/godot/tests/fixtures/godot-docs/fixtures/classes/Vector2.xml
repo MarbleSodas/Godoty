@@ -1,0 +1,15 @@
+<class name="Vector2">
+  <brief_description>2D vector</brief_description>
+  <description>Represents a vector with &lt;x,y&gt; components.</description>
+  <members>
+    <member name="x" type="float" default="0">
+      <description>x component</description>
+    </member>
+    <member name="y" type="float" default="0">
+      <description>y component</description>
+    </member>
+  </members>
+  <methods></methods>
+  <signals></signals>
+</class>
+
