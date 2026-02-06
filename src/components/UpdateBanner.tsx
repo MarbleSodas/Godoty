@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount } from "solid-js";
+import { Component, createSignal, onMount, Show } from "solid-js";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Command } from "@tauri-apps/plugin-shell";
@@ -47,21 +47,21 @@ const UpdateBanner: Component = () => {
     }
   };
 
-  if (!updateAvailable()) return null;
-
   return (
-    <div class="bg-blue-600 text-white px-4 py-2 flex items-center justify-between" data-testid="update-banner">
-      <div>
-        <span class="font-bold">Update Available:</span> v{version()}
-        {error() && <span class="ml-2 text-red-200">({error()})</span>}
+    <Show when={updateAvailable()}>
+      <div class="bg-blue-600 text-white px-4 py-2 flex items-center justify-between" data-testid="update-banner">
+        <div>
+          <span class="font-bold">Update Available:</span> v{version()}
+          {error() && <span class="ml-2 text-red-200">({error()})</span>}
+        </div>
+        <button 
+          onClick={installUpdate}
+          class="bg-white text-blue-600 px-3 py-1 rounded font-medium text-sm hover:bg-blue-50 transition-colors"
+        >
+          Install & Restart
+        </button>
       </div>
-      <button 
-        onClick={installUpdate}
-        class="bg-white text-blue-600 px-3 py-1 rounded font-medium text-sm hover:bg-blue-50 transition-colors"
-      >
-        Install & Restart
-      </button>
-    </div>
+    </Show>
   );
 };
 
