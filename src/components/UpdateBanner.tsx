@@ -9,6 +9,10 @@ const UpdateBanner: Component = () => {
   const [error, setError] = createSignal<string>("");
 
   onMount(async () => {
+    // @ts-ignore
+    if (!window.__TAURI_INTERNALS__) {
+        return;
+    }
     try {
       const update = await check();
       if (update?.available) {
