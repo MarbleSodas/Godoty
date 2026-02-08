@@ -1,3 +1,14 @@
 {
-  "plugin": ["oh-my-opencode@latest", "opencode-antigravity-auth@latest"]
+  "plugin": [
+    "oh-my-opencode@latest",
+    "opencode-antigravity-auth@latest"
+  ],
+  "godoty": {
+    "enabled": true
+  },
+  "antigravity": {
+    "client_id": "com.godoty.app",
+    "issuer": "https://auth.opencode.ai",
+    "disable_builtin_auth": true
+  }
 }

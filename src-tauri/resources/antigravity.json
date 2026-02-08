@@ -1,3 +1,5 @@
 {
+  "client_id": "com.godoty.app",
+  "issuer": "https://auth.opencode.ai",
   "disable_builtin_auth": true
 }

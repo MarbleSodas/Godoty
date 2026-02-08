@@ -17,6 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             setup::init_config(app.handle())?;
+            sidecar::SidecarManager::start_sidecar(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![greet])

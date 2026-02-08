@@ -1,2 +1,4 @@
 node_modules
-dist
+
+src-tauri/bin/
+src-tauri/binaries/

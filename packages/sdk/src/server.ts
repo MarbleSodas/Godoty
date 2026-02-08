@@ -7,6 +7,7 @@ export type ServerOptions = {
   signal?: AbortSignal
   timeout?: number
   config?: Config
+  command?: string
 }
 
 export type TuiOptions = {
@@ -31,7 +32,7 @@ export async function createOpencodeServer(options?: ServerOptions) {
   const args = [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`]
   if (options.config?.logLevel) args.push(`--log-level=${options.config.logLevel}`)
 
-  const proc = spawn(`opencode`, args, {
+  const proc = spawn(options.command ?? `opencode`, args, {
     signal: options.signal,
     env: {
       ...process.env,
