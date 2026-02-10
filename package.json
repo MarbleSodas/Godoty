@@ -16,6 +16,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "build:mcp": "bun scripts/build-mcp.ts",
+    "build:mcp:fast": "bun scripts/build-mcp.ts --skip-docs",
     "postinstall": "bun scripts/setup-sidecar.ts"
   },
   "license": "MIT",

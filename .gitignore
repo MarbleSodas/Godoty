@@ -3,3 +3,10 @@ node_modules
 src-tauri/bin/
 src-tauri/binaries/
 dist
+
+# Bundled MCP resources (generated from skills/godot during build)
+src-tauri/resources/mcp-servers/
+src-tauri/resources/godot_docs/
+
+# Skill build output
+skills/godot/dist/
