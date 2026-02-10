@@ -86,9 +86,18 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
 
     createEffect(() => {
       if (!ready()) return
-      if (state.active) return
+
       const url = normalizeServerUrl(props.defaultUrl)
       if (!url) return
+
+      if (import.meta.env.DEV && state.active !== url) {
+        if (state.active?.includes("localhost") && url.includes("localhost")) {
+          setState("active", url)
+          return
+        }
+      }
+
+      if (state.active) return
       setState("active", url)
     })
 

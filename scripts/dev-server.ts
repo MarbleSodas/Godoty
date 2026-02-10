@@ -26,10 +26,21 @@ const main = async () => {
   const binaryPath = join(process.cwd(), "src-tauri", "bin", binaryName);
   
   // Isolate dev server configuration
-  process.env.XDG_CONFIG_HOME = join(process.cwd(), "src-tauri", "target", "dev-config");
-  process.env.OPENCODE_CONFIG_DIR = process.env.XDG_CONFIG_HOME;
-  // Ensure the directory exists
-  await import("node:fs/promises").then(fs => fs.mkdir(process.env.XDG_CONFIG_HOME!, { recursive: true }));
+  const devConfigDir = join(process.cwd(), "src-tauri", "target", "dev-config");
+  const devDataDir = join(devConfigDir, "data");
+  const devCacheDir = join(devConfigDir, "cache");
+
+  process.env.XDG_CONFIG_HOME = devConfigDir;
+  process.env.XDG_DATA_HOME = devDataDir;
+  process.env.XDG_CACHE_HOME = devCacheDir;
+  process.env.OPENCODE_CONFIG_DIR = devConfigDir;
+  process.env.OPENCODE_DATA_DIR = devDataDir;
+
+  await import("node:fs/promises").then(async fs => {
+    await fs.mkdir(devConfigDir, { recursive: true });
+    await fs.mkdir(devDataDir, { recursive: true });
+    await fs.mkdir(devCacheDir, { recursive: true });
+  });
 
   console.log(`Starting OpenCode server from: ${binaryPath}`);
 

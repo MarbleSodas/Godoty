@@ -9,6 +9,10 @@ const UpdateBanner: Component = () => {
   const [error, setError] = createSignal<string>("");
 
   onMount(async () => {
+    if (import.meta.env.DEV) {
+      console.log("Update check skipped in development mode");
+      return;
+    }
     // @ts-ignore
     if (!window.__TAURI_INTERNALS__) {
         return;
@@ -20,6 +24,11 @@ const UpdateBanner: Component = () => {
         setUpdateAvailable(true);
       }
     } catch (e) {
+      const errorMessage = String(e);
+      if (errorMessage.includes("Could not fetch a valid release JSON")) {
+        console.warn("Update check failed (expected in dev):", errorMessage);
+        return;
+      }
       console.error("Failed to check for updates", e);
       setError("Update check failed");
     }

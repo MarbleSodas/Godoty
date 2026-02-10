@@ -42,7 +42,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/user/repo/releases/latest/download/latest.json"
+        "https://github.com/MarbleSodas/Godoty/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY1NjkwOENENDg1QzA2MzUKUldTSzF5L2h5K3RjY3V6K0c5R3p4a2tjcW55b1l1aGk1N1F3QnNua2Z2VjV2a1hTMVlXNw=="
     }

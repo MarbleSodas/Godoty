@@ -33,10 +33,22 @@ export async function bootstrapGlobal(input: {
   requestFailedTitle: string
   setGlobalStore: SetStoreFunction<GlobalStore>
 }) {
-  const health = await input.globalSDK.global
-    .health()
-    .then((x) => x.data)
-    .catch(() => undefined)
+  let health: { healthy: boolean } | undefined
+  let attempts = 0
+  const maxAttempts = 50
+
+  while (attempts < maxAttempts) {
+    health = await input.globalSDK.global
+      .health()
+      .then((x) => x.data)
+      .catch(() => undefined)
+
+    if (health?.healthy) break
+    
+    attempts++
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
   if (!health?.healthy) {
     showToast({
       variant: "error",

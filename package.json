@@ -9,12 +9,14 @@
   "scripts": {
     "start": "vite",
     "dev": "vite",
+    "dev:isolated": "lsof -ti:4098 | xargs kill -9 || true && mkdir -p src-tauri/target/dev-config && GODOTY_PORT=4098 VITE_OPENCODE_SERVER_PORT=4098 GODOTY_CONFIG_DIR=\"$(pwd)/src-tauri/target/dev-config\" bun run tauri dev",
     "dev:all": "(trap 'kill 0' SIGINT; bun run scripts/dev-server.ts & vite)",
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "postinstall": "bun scripts/setup-sidecar.ts"
   },
   "license": "MIT",
   "dependencies": {
