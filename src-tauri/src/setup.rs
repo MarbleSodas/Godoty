@@ -180,10 +180,11 @@ fn copy_godot_docs(
         println!("[Setup] Copied {} Godot doc XML files", count);
         fs::write(&marker, current_version)?;
     } else {
-        println!(
-            "[Setup] Godot docs resource dir not found at: {:?}",
+        return Err(format!(
+            "Godot docs resource dir not found at: {:?}",
             resource_dir_path
-        );
+        )
+        .into());
     }
 
     Ok(())
