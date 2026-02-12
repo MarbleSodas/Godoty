@@ -89,10 +89,11 @@ fn copy_resource(
         fs::copy(&resource_full_path, target_path)?;
         println!("[Setup] Copied {} successfully", resource_path);
     } else {
-        println!(
-            "[Setup] Resource not found at resolved path: {:?}",
+        return Err(format!(
+            "Resource not found at resolved path: {:?}",
             resource_full_path
-        );
+        )
+        .into());
     }
 
     Ok(())
@@ -122,27 +123,46 @@ fn copy_opencode_config(
             config_dir_str
         );
     } else {
-        println!(
-            "[Setup] opencode.json resource not found at: {:?}",
+        return Err(format!(
+            "opencode.json resource not found at: {:?}",
             resource_full_path
-        );
+        )
+        .into());
     }
 
     Ok(())
 }
 
-/// Copy Godot documentation XML class files from bundled resources to the config directory.
 fn copy_godot_docs(
     app_handle: &AppHandle,
     config_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resource_dir_path = app_handle.path().resolve(
-        "resources/godot_docs/classes",
+    let resource_file_path = app_handle.path().resolve(
+        "resources/godot_docs/classes/@GlobalScope.xml",
         tauri::path::BaseDirectory::Resource,
     )?;
 
+    let resource_dir_path = resource_file_path
+        .parent()
+        .ok_or("Could not find parent directory of @GlobalScope.xml")?;
+
     let target_dir = config_dir.join("godot_docs/classes");
     fs::create_dir_all(&target_dir)?;
+
+    let marker = target_dir.join(".version");
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    if marker.exists() {
+        if let Ok(stamped) = fs::read_to_string(&marker) {
+            if stamped.trim() == current_version {
+                println!(
+                    "[Setup] Godot docs already up-to-date (v{}), skipping copy",
+                    current_version
+                );
+                return Ok(());
+            }
+        }
+    }
 
     if resource_dir_path.exists() && resource_dir_path.is_dir() {
         let mut count = 0u32;
@@ -158,6 +178,7 @@ fn copy_godot_docs(
             }
         }
         println!("[Setup] Copied {} Godot doc XML files", count);
+        fs::write(&marker, current_version)?;
     } else {
         println!(
             "[Setup] Godot docs resource dir not found at: {:?}",
