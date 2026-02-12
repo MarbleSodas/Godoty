@@ -1,4 +1,5 @@
 import type { Ghostty, Terminal as Term, FitAddon } from "ghostty-web"
+import wasmUrl from "ghostty-web/ghostty-vt.wasm?url"
 import { ComponentProps, createEffect, createSignal, onCleanup, onMount, splitProps } from "solid-js"
 import { usePlatform } from "@opencode-ai/app/context/platform"
 import { useSDK } from "@opencode-ai/app/context/sdk"
@@ -23,7 +24,7 @@ let shared: Promise<{ mod: typeof import("ghostty-web"); ghostty: Ghostty }> | u
 const loadGhostty = () => {
   if (shared) return shared
   shared = import("ghostty-web")
-    .then(async (mod) => ({ mod, ghostty: await mod.Ghostty.load() }))
+    .then(async (mod) => ({ mod, ghostty: await mod.Ghostty.load(wasmUrl) }))
     .catch((err) => {
       shared = undefined
       throw err

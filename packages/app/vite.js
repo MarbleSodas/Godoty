@@ -11,6 +11,7 @@ export default [
     config() {
       return {
         resolve: {
+          dedupe: ["solid-js", "@solidjs/meta", "@solidjs/router"],
           alias: {
             "@": fileURLToPath(new URL("./src", import.meta.url)),
             "@opencode-ai/app": fileURLToPath(new URL("./src", import.meta.url)),
