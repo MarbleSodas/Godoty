@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' http://localhost:4096 ws://localhost:4096; img-src 'self' data: https:; font-src 'self' data:;"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' http://localhost:4096 ws://localhost:4096 ipc: http://ipc.localhost tauri://localhost; img-src 'self' data: https:; font-src 'self' data:;"
     }
   },
   "bundle": {

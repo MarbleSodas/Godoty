@@ -146,6 +146,70 @@ impl SidecarManager {
             }
             println!("[Sidecar] Event loop finished");
         });
+
+        let port_clone = port.clone();
+        tauri::async_runtime::spawn(async move {
+            Self::wait_for_healthy(&port_clone);
+        });
+    }
+
+    /// Block until the sidecar's HTTP health endpoint responds, or timeout.
+    /// This prevents the webview from loading before the sidecar is ready to
+    /// serve requests — the root cause of the "dark screen" in production builds.
+    fn wait_for_healthy(port: &str) {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::{Duration, Instant};
+
+        let addr = format!("127.0.0.1:{}", port);
+        let sock_addr: std::net::SocketAddr = match addr.parse() {
+            Ok(a) => a,
+            Err(_) => {
+                eprintln!("[Sidecar] Invalid address {}, skipping health wait", addr);
+                return;
+            }
+        };
+
+        let timeout = Duration::from_secs(30);
+        let interval = Duration::from_millis(200);
+        let start = Instant::now();
+
+        println!("[Sidecar] Waiting for health on {}...", addr);
+
+        while start.elapsed() < timeout {
+            if let Ok(mut stream) = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(500)) {
+                stream.set_read_timeout(Some(Duration::from_millis(1000))).ok();
+                stream.set_write_timeout(Some(Duration::from_millis(1000))).ok();
+
+                let request = format!(
+                    "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                    port
+                );
+
+                if stream.write_all(request.as_bytes()).is_ok() {
+                    let mut buf = [0u8; 1024];
+                    if let Ok(n) = stream.read(&mut buf) {
+                        if n > 0 {
+                            let response = String::from_utf8_lossy(&buf[..n]);
+                            if response.contains("HTTP/1.1 200") || response.contains("HTTP/1.0 200") {
+                                println!(
+                                    "[Sidecar] Health check passed after {:.1}s",
+                                    start.elapsed().as_secs_f64()
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+
+            std::thread::sleep(interval);
+        }
+
+        eprintln!(
+            "[Sidecar] WARNING: Sidecar not healthy after {}s, proceeding anyway",
+            timeout.as_secs()
+        );
     }
 
     pub fn shutdown<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {

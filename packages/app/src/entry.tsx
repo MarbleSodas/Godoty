@@ -26,8 +26,16 @@ if (import.meta.env.DEV && !(root instanceof HTMLElement)) {
 }
 
 const platform: Platform = {
-  platform: "web",
+  platform: "desktop",
   version: pkg.version,
+  storage: (name?: string) => {
+    const prefix = name ? `${name}:` : ""
+    return {
+      getItem: (key) => localStorage.getItem(prefix + key),
+      setItem: (key, value) => localStorage.setItem(prefix + key, value),
+      removeItem: (key) => localStorage.removeItem(prefix + key),
+    }
+  },
   openLink(url: string) {
     window.open(url, "_blank")
   },
@@ -92,13 +100,17 @@ const platform: Platform = {
   },
 }
 
-render(
-  () => (
-    <PlatformProvider value={platform}>
-      <AppBaseProviders>
-        <AppInterface />
-      </AppBaseProviders>
-    </PlatformProvider>
-  ),
-  root!,
-)
+try {
+  render(
+    () => (
+      <PlatformProvider value={platform}>
+        <AppBaseProviders>
+          <AppInterface />
+        </AppBaseProviders>
+      </PlatformProvider>
+    ),
+    root!,
+  )
+} catch (e) {
+  console.error(e)
+}

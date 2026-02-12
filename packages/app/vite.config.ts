@@ -10,7 +10,7 @@ export default defineConfig({
     port: 3000,
   },
   build: {
-    target: "esnext",
+    target: "es2021",
     // sourcemap: true,
   },
 })
