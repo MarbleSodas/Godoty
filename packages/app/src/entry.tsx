@@ -1,5 +1,6 @@
 // @refresh reload
 import { render } from "solid-js/web"
+import { openUrl } from "@tauri-apps/plugin-opener"
 import { AppBaseProviders, AppInterface } from "@opencode-ai/app/app"
 import { Platform, PlatformProvider } from "@opencode-ai/app/context/platform"
 import { dict as en } from "@opencode-ai/app/i18n/en"
@@ -37,7 +38,7 @@ const platform: Platform = {
     }
   },
   openLink(url: string) {
-    window.open(url, "_blank")
+    openUrl(url)
   },
   back() {
     window.history.back()
