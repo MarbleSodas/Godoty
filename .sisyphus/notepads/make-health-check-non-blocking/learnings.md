@@ -1,0 +1,2 @@
+- Blocking health checks in Tauri's setup or main thread can delay window appearance. Moving them to an async task allows the UI to initialize faster.
+- Blocking health checks in Tauri's setup or main thread can delay window appearance. Moving them to an async task allows the UI to initialize faster.

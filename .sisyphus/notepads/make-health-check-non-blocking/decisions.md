@@ -1,0 +1,2 @@
+- Decided to use  to wrap the synchronous health check. While the health check itself is blocking ( and ), moving it to the async runtime's worker pool prevents it from blocking the main thread.
+- Decided to use tauri::async_runtime::spawn to wrap the synchronous health check. While the health check itself is blocking (TcpStream and sleep), moving it to the async runtime's worker pool prevents it from blocking the main thread.

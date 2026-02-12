@@ -122,7 +122,7 @@ export default function Layout(props: ParentProps) {
   const currentDir = createMemo(() => decode64(params.dir) ?? "")
 
   const [state, setState] = createStore({
-    autoselect: !initialDirectory,
+    autoselect: false, // FORCE DISABLED to prevent blank screen hang
     busyWorkspaces: new Set<string>(),
     hoverSession: undefined as string | undefined,
     hoverProject: undefined as string | undefined,
@@ -201,11 +201,13 @@ export default function Layout(props: ParentProps) {
     if (!pageReady()) return true
     if (!layoutReady()) return true
     const list = layout.projects.list()
+    // console.log('[LAYOUT] Autoselect check. List:', list.length)
     if (list.length > 0) return true
     return !!server.projects.last()
   })
 
   createEffect(() => {
+    // console.log('[LAYOUT] Autoselect effect running. State:', state.autoselect, 'Ready:', pageReady())
     if (!state.autoselect) return
     const dir = params.dir
     if (!dir) return
@@ -213,6 +215,34 @@ export default function Layout(props: ParentProps) {
     if (!directory) return
     setState("autoselect", false)
   })
+
+  createEffect(
+    on(
+      () => ({ ready: pageReady(), layoutReady: layoutReady(), dir: params.dir, list: layout.projects.list() }),
+      (value) => {
+        if (!value.ready) return
+        if (!value.layoutReady) return
+        if (!state.autoselect) return
+        if (value.dir) return
+
+        const last = server.projects.last()
+
+        if (value.list.length === 0) {
+          if (!last) return
+          setState("autoselect", false)
+          openProject(last, false)
+          navigateToProject(last)
+          return
+        }
+
+        const next = value.list.find((project) => project.worktree === last) ?? value.list[0]
+        if (!next) return
+        setState("autoselect", false)
+        openProject(next.worktree, false)
+        navigateToProject(next.worktree)
+      },
+    ),
+  )
 
   const editorOpen = editor.editorOpen
   const openEditor = editor.openEditor
@@ -893,10 +923,11 @@ export default function Layout(props: ParentProps) {
       }),
     )
     if (session.id === params.id) {
+      const prefix = params.dir ? `/${params.dir}` : ""
       if (nextSession) {
-        navigate(`/${params.dir}/session/${nextSession.id}`)
+        navigate(`${prefix}/session/${nextSession.id}`)
       } else {
-        navigate(`/${params.dir}/session`)
+        navigate(`${prefix}/session`)
       }
     }
   }
@@ -1092,7 +1123,8 @@ export default function Layout(props: ParentProps) {
     }
     server.projects.touch(directory)
     const lastSession = store.lastSession[directory]
-    navigate(`/${base64Encode(directory)}${lastSession ? `/session/${lastSession}` : ""}`)
+    const slug = base64Encode(directory)
+    navigate(`/${slug}${lastSession ? `/session/${lastSession}` : ""}`)
     layout.mobileSidebar.hide()
   }
 
@@ -1283,11 +1315,12 @@ export default function Layout(props: ParentProps) {
       actions: [
         {
           label: language.t("command.session.new"),
-          onClick: () => {
-            const href = `/${base64Encode(directory)}/session`
-            navigate(href)
-            layout.mobileSidebar.hide()
-          },
+              onClick: () => {
+                const href = `/${base64Encode(directory)}/session`
+                navigate(href)
+                layout.mobileSidebar.hide()
+              },
+
         },
         {
           label: language.t("common.dismiss"),
@@ -1997,7 +2030,7 @@ export default function Layout(props: ParentProps) {
             "xl:border-l xl:rounded-tl-sm": !layout.sidebar.opened(),
           }}
         >
-          <Show when={!autoselecting()} fallback={<div class="size-full" />}>
+          <Show when={!autoselecting()} fallback={<div class="size-full bg-green-500" data-debug="autoselect" />}>
             {props.children}
           </Show>
         </main>

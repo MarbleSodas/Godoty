@@ -45,6 +45,11 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       healthy: undefined as boolean | undefined,
     })
 
+    const defaultUrl = normalizeServerUrl(props.defaultUrl)
+    if (defaultUrl && !state.active) {
+      setState("active", defaultUrl)
+    }
+
     const healthy = () => state.healthy
 
     function setActive(input: string) {
@@ -85,10 +90,14 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     }
 
     createEffect(() => {
-      if (!ready()) return
+      if (!ready()) {
+        return
+      }
 
       const url = normalizeServerUrl(props.defaultUrl)
-      if (!url) return
+      if (!url) {
+        return
+      }
 
       if (import.meta.env.DEV && state.active !== url) {
         if (state.active?.includes("localhost") && url.includes("localhost")) {
@@ -97,11 +106,17 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         }
       }
 
-      if (state.active) return
+      if (state.active) {
+        return
+      }
       setState("active", url)
     })
 
-    const isReady = createMemo(() => ready() && !!state.active)
+    const isReady = createMemo(() => {
+      const r = ready()
+      const a = !!state.active
+      return r && a
+    })
 
     const fetcher = platform.fetch ?? globalThis.fetch
     const check = (url: string) => checkServerHealth(url, fetcher).then((x) => x.healthy)

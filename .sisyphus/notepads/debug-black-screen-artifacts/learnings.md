@@ -1,0 +1,1 @@
+- Explicitly using relative paths (e.g., `./src/entry.tsx`) in `index.html` for Vite projects ensures correct asset resolution when `base` is set to `./`, preventing issues where assets are looked for at the root of the filesystem.

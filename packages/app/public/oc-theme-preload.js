@@ -1,5 +1,5 @@
 ;(function () {
-  var themeId = localStorage.getItem("opencode-theme-id")
+  var themeId = localStorage.getItem("opencode-theme-id") || "godot"
   if (!themeId) return
 
   var scheme = localStorage.getItem("opencode-color-scheme") || "system"

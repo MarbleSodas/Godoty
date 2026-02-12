@@ -1,9 +1,6 @@
 {
-  "active_plan": ".sisyphus/plans/fix-tauri-sidecar.md",
-  "started_at": "2026-02-07T20:10:11.104Z",
-  "session_ids": [
-    "ses_3c65150b4ffeuCQkhnXHSiEhUn",
-    "ses_3b6c90b19ffeeWZQljP8Xsu4EL"
-  ],
-  "plan_name": "fix-tauri-sidecar"
+  "active_plan": ".sisyphus/plans/suppress-resize-observer-error.md",
+  "started_at": "2026-02-12T17:32:53.863Z",
+  "session_ids": ["ses_3b0b40f98ffeYhmvC61PNo40fb"],
+  "plan_name": "suppress-resize-observer-error"
 }

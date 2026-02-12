@@ -1,0 +1,1 @@
+- In Tauri v2 production bundles, resolving a directory directly in resources can fail if resources are included via glob patterns. It is more reliable to resolve a known file within that directory and then use `.parent()` to get the directory path.

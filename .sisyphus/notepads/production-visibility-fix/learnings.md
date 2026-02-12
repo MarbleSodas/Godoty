@@ -1,0 +1,2 @@
+- Tauri 2 capabilities often target the 'main' window label by default. Omitting it can lead to permission issues if not auto-assigned.
+- Rust Result should be used for setup errors to prevent partial initialization.

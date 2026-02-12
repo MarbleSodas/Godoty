@@ -9,6 +9,7 @@ import {
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useGlobalSDK } from "./global-sdk"
 import type { InitError } from "../pages/error"
+import { ErrorPage } from "../pages/error"
 import {
   createContext,
   createEffect,
@@ -18,12 +19,14 @@ import {
   onCleanup,
   onMount,
   type ParentProps,
+  Show,
   Switch,
   Match,
 } from "solid-js"
 import { showToast } from "@opencode-ai/ui/components/toast"
 import { getFilename } from "@opencode-ai/util/path"
 import { usePlatform } from "./platform"
+import { useServer } from "./server"
 import { useLanguage } from "@opencode-ai/app/context/language"
 import { Persist, persisted } from "@opencode-ai/app/utils/persist"
 import { createRefreshQueue } from "./global-sync/queue"
@@ -50,6 +53,7 @@ type GlobalStore = {
 function createGlobalSync() {
   const globalSDK = useGlobalSDK()
   const platform = usePlatform()
+  const server = useServer()
   const language = useLanguage()
   const owner = getOwner()
   if (!owner) throw new Error("GlobalSync must be created within owner")
@@ -106,6 +110,7 @@ function createGlobalSync() {
 
   const children = createChildStoreManager({
     owner,
+    platform,
     markStats: updateStats,
     incrementEvictions: () => {
       stats.evictions += 1
@@ -303,8 +308,16 @@ function createGlobalSync() {
     })
   }
 
-  onMount(() => {
-    void bootstrap()
+  // onMount(() => {
+  //   void bootstrap()
+  // })
+
+  createEffect(() => {
+    const healthy = server.healthy()
+    if (!healthy) return
+    if (untrack(() => globalStore.path.state === "" && globalStore.ready)) {
+      void bootstrap()
+    }
   })
 
   function projectMeta(directory: string, patch: ProjectMeta) {
@@ -346,9 +359,35 @@ const GlobalSyncContext = createContext<ReturnType<typeof createGlobalSync>>()
 
 export function GlobalSyncProvider(props: ParentProps) {
   const value = createGlobalSync()
+
+  // Use createEffect as a reliable mount hook since onMount is failing
+  createEffect(() => {
+    // This effect runs once on mount because it has no dependencies
+    try {
+      void value.bootstrap()
+    } catch (e) {
+      console.error('[GLOBALSYNC] Error in bootstrap effect:', e)
+    }
+  })
+
+  // Nuclear backup: Try strictly after render
+  setTimeout(() => {
+    void value.bootstrap()
+  }, 500)
+
   return (
-    <Switch>
-      <Match when={value.ready}>
+    <Switch
+      fallback={
+        <Show when={value.error} fallback={
+          <div class="flex items-center justify-center size-full bg-background-base">
+            <span class="text-text-secondary text-12-regular">Connecting to server…</span>
+          </div>
+        }>
+          {(err) => <ErrorPage error={err()} />}
+        </Show>
+      }
+    >
+      <Match when={() => value.ready}>
         <GlobalSyncContext.Provider value={value}>{props.children}</GlobalSyncContext.Provider>
       </Match>
     </Switch>

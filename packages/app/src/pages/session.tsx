@@ -399,15 +399,16 @@ export default function Page() {
         )
 
         if (params.id !== sessionID) return
+        const prefix = params.dir ? `/${params.dir}` : ""
         if (session.parentID) {
-          navigate(`/${params.dir}/session/${session.parentID}`)
+          navigate(`${prefix}/session/${session.parentID}`)
           return
         }
         if (nextSession) {
-          navigate(`/${params.dir}/session/${nextSession.id}`)
+          navigate(`${prefix}/session/${nextSession.id}`)
           return
         }
-        navigate(`/${params.dir}/session`)
+        navigate(`${prefix}/session`)
       })
       .catch((err) => {
         showToast({
@@ -474,15 +475,16 @@ export default function Page() {
     )
 
     if (params.id !== sessionID) return true
+    const prefix = params.dir ? `/${params.dir}` : ""
     if (session.parentID) {
-      navigate(`/${params.dir}/session/${session.parentID}`)
+      navigate(`${prefix}/session/${session.parentID}`)
       return true
     }
     if (nextSession) {
-      navigate(`/${params.dir}/session/${nextSession.id}`)
+      navigate(`${prefix}/session/${nextSession.id}`)
       return true
     }
-    navigate(`/${params.dir}/session`)
+    navigate(`${prefix}/session`)
     return true
   }
 
@@ -1581,7 +1583,8 @@ export default function Page() {
                     onTitleMenuOpen={(open) => setTitle("menuOpen", open)}
                     onTitlePendingRename={(value) => setTitle("pendingRename", value)}
                     onNavigateParent={() => {
-                      navigate(`/${params.dir}/session/${info()?.parentID}`)
+                      const prefix = params.dir ? `/${params.dir}` : ""
+                      navigate(`${prefix}/session/${info()?.parentID}`)
                     }}
                     sessionID={params.id!}
                     onArchiveSession={(sessionID) => void archiveSession(sessionID)}
@@ -1634,7 +1637,9 @@ export default function Page() {
                     if (!target) return
                     if (target === sync.data.path.directory) return
                     layout.projects.open(target)
-                    navigate(`/${base64Encode(target)}/session`)
+                    const slug = base64Encode(target)
+                    const path = slug ? `/${slug}/session` : "/session"
+                    navigate(path)
                   }}
                 />
               </Match>

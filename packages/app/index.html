@@ -4,30 +4,17 @@
     <script>
       (function() {
         function showError(message, stack) {
-          var div = document.createElement('div');
-          div.style.position = 'fixed';
-          div.style.top = '0';
-          div.style.left = '0';
-          div.style.width = '100%';
-          div.style.height = '100%';
-          div.style.backgroundColor = '#ff0000';
-          div.style.color = '#ffffff';
-          div.style.zIndex = '999999';
-          div.style.padding = '20px';
-          div.style.boxSizing = 'border-box';
-          div.style.overflow = 'auto';
-          div.style.fontFamily = 'monospace';
-          div.style.whiteSpace = 'pre-wrap';
-          div.innerHTML = '<h1>Error Detected</h1><p><strong>Message:</strong> ' + message + '</p><p><strong>Stack:</strong> ' + (stack || 'N/A') + '</p>';
-          document.body ? document.body.appendChild(div) : document.documentElement.appendChild(div);
-          alert('Error: ' + message);
+          console.error('Fatal Error:', message, stack);
         }
         window.onerror = function(msg, url, line, col, error) {
+          if (msg && msg.includes && msg.includes("ResizeObserver loop")) return;
           showError(msg, error ? error.stack : 'at ' + url + ':' + line + ':' + col);
           return false;
         };
         window.onunhandledrejection = function(event) {
-          showError(event.reason ? (event.reason.message || event.reason) : 'Unhandled Rejection', event.reason ? event.reason.stack : null);
+          var message = event.reason ? (event.reason.message || event.reason) : 'Unhandled Rejection';
+          if (message && message.includes && message.includes("ResizeObserver loop")) return;
+          showError(message, event.reason ? event.reason.stack : null);
         };
       })();
     </script>

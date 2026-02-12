@@ -56,7 +56,10 @@ export const useSessionCommands = (input: {
       category: input.language.t("command.category.session"),
       keybind: "mod+shift+s",
       slash: "new",
-      onSelect: () => input.navigate(`/${input.params.dir}/session`),
+      onSelect: () => {
+        const prefix = input.params.dir ? `/${input.params.dir}` : ""
+        input.navigate(`${prefix}/session`)
+      },
     },
   ])
 

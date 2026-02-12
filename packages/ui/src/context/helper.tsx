@@ -20,7 +20,8 @@ export function createSimpleContext<T, Props extends Record<string, any>>(input:
       const isReady = createMemo(() => {
         // @ts-expect-error
         const ready = init.ready as Accessor<boolean> | boolean | undefined
-        return ready === undefined || (typeof ready === "function" ? ready() : ready)
+        const result = ready === undefined || (typeof ready === "function" ? ready() : ready)
+        return result
       })
       return (
         <Show when={isReady()}>

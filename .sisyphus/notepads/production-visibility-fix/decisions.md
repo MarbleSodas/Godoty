@@ -1,0 +1,2 @@
+- Decided to fail loudly on missing Godot docs to avoid silent 'zombie' app states.
+- Explicitly labeled window as 'main' to align with Tauri 2 capability defaults.

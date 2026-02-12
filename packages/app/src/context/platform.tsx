@@ -69,6 +69,7 @@ export type Platform = {
 
 export const { use: usePlatform, provider: PlatformProvider } = createSimpleContext({
   name: "Platform",
+  gate: false,
   init: (props: { value: Platform }) => {
     return props.value
   },

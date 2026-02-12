@@ -48,7 +48,8 @@ export default function Layout(props: ParentProps) {
             const rejectQuestion = (input: { requestID: string }) => sdk.client.question.reject(input)
 
             const navigateToSession = (sessionID: string) => {
-              navigate(`/${params.dir}/session/${sessionID}`)
+              const prefix = params.dir ? `/${params.dir}` : ""
+              navigate(`${prefix}/session/${sessionID}`)
             }
 
             return (

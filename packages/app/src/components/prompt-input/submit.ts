@@ -196,8 +196,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           return undefined
         })
       if (session) {
-        layout.handoff.setTabs(base64Encode(sessionDirectory), session.id)
-        navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}`)
+        const slug = base64Encode(sessionDirectory)
+        layout.handoff.setTabs(slug, session.id)
+        navigate(`/${slug}/session/${session.id}`)
       }
     }
     if (!session) return

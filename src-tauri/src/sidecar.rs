@@ -1,11 +1,14 @@
 use crate::config::get_config_dir;
+use crate::updater::Updater;
 use tauri::Manager;
-use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::{CommandEvent, CommandChild};
 use std::sync::{Arc, Mutex};
+use std::process::{Command, Stdio, Child};
+use std::time::Duration;
+use std::io::{BufRead, BufReader};
+use std::thread;
 
 pub struct SidecarState {
-    pub child: Arc<Mutex<Option<CommandChild>>>,
+    pub child: Arc<Mutex<Option<Child>>>,
 }
 
 impl Default for SidecarState {
@@ -19,12 +22,9 @@ impl Default for SidecarState {
 pub struct SidecarManager;
 
 impl SidecarManager {
-    /// Kill any orphaned opencode-cli processes listening on the target port.
-    /// This handles the case where a previous Tauri session crashed without
-    /// properly shutting down the sidecar.
+    #[allow(dead_code)]
     fn cleanup_stale_sidecar(port: &str) {
         use std::net::TcpStream;
-        use std::time::Duration;
 
         println!("[Sidecar] Cleaning up stale sidecar instances...");
 
@@ -32,7 +32,7 @@ impl SidecarManager {
 
         #[cfg(unix)]
         {
-            if let Ok(output) = std::process::Command::new("ps")
+            if let Ok(output) = Command::new("ps")
                 .args(["-A", "-o", "pid,comm"])
                 .output()
             {
@@ -47,25 +47,25 @@ impl SidecarManager {
                             if let Ok(pid) = pid_str.parse::<u32>() {
                                 if pid != current_pid {
                                     println!("[Sidecar] Found stale process '{}' (PID {}), killing...", comm, pid);
-                                    let _ = std::process::Command::new("kill").arg(pid.to_string()).output();
+                                    let _ = Command::new("kill").arg(pid.to_string()).output();
                                 }
                             }
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_millis(500));
             }
         }
 
         #[cfg(windows)]
         {
-             let _ = std::process::Command::new("taskkill")
+             let _ = Command::new("taskkill")
                 .args(["/F", "/IM", "opencode-cli*", "/T"])
                 .output();
-             let _ = std::process::Command::new("taskkill")
+             let _ = Command::new("taskkill")
                 .args(["/F", "/IM", "opencode*", "/T"])
                 .output();
-             std::thread::sleep(Duration::from_millis(500));
+             thread::sleep(Duration::from_millis(500));
         }
 
         let addr = format!("127.0.0.1:{}", port);
@@ -82,7 +82,7 @@ impl SidecarManager {
 
         #[cfg(unix)]
         {
-            let output = match std::process::Command::new("lsof")
+            let output = match Command::new("lsof")
                 .args(["-t", "-i", &format!(":{}", port), "-sTCP:LISTEN"])
                 .output()
             {
@@ -101,15 +101,14 @@ impl SidecarManager {
                     continue;
                 }
 
-                // Verify this is actually an opencode process before killing
-                if let Ok(ps_output) = std::process::Command::new("ps")
+                if let Ok(ps_output) = Command::new("ps")
                     .args(["-p", pid, "-o", "comm="])
                     .output()
                 {
                     let comm = String::from_utf8_lossy(&ps_output.stdout);
                     if comm.contains("opencode") {
                         println!("[Sidecar] Killing orphaned sidecar (PID {})", pid);
-                        let _ = std::process::Command::new("kill").arg(pid).output();
+                        let _ = Command::new("kill").arg(pid).output();
                         killed = true;
                     } else {
                         eprintln!(
@@ -122,8 +121,7 @@ impl SidecarManager {
             }
 
             if killed {
-                // Give killed processes time to exit
-                std::thread::sleep(Duration::from_millis(1000));
+                thread::sleep(Duration::from_millis(1000));
             }
         }
 
@@ -133,8 +131,59 @@ impl SidecarManager {
         }
     }
 
+    fn is_sidecar_running(port: &str) -> bool {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let addr = format!("127.0.0.1:{}", port);
+        let sock_addr: std::net::SocketAddr = match addr.parse() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+
+        if let Ok(mut stream) = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(100)) {
+            stream.set_read_timeout(Some(Duration::from_millis(500))).ok();
+            stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
+
+            let request = format!(
+                "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                port
+            );
+
+            if stream.write_all(request.as_bytes()).is_ok() {
+                let mut buf = [0u8; 1024];
+                if let Ok(n) = stream.read(&mut buf) {
+                    if n > 0 {
+                        let response = String::from_utf8_lossy(&buf[..n]);
+                        if response.contains("HTTP/1.1 200") || response.contains("HTTP/1.0 200") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub fn start_sidecar<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         let port = std::env::var("GODOTY_PORT").unwrap_or_else(|_| "4096".to_string());
+
+        if Self::is_sidecar_running(&port) {
+            println!("[Sidecar] Found existing healthy instance on port {}, reusing it.", port);
+            
+            let port_clone = port.clone();
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                Self::wait_for_healthy(&port_clone);
+                if let Some(main_window) = app_clone.get_webview_window("main") {
+                    println!("[Sidecar] Showing main window");
+                    let _ = main_window.show();
+                }
+            });
+            return;
+        }
+        
+        #[cfg(not(debug_assertions))]
         Self::cleanup_stale_sidecar(&port);
 
         let config_dir = get_config_dir(app).expect("Failed to get config dir");
@@ -142,9 +191,19 @@ impl SidecarManager {
         let opencode_config_path = config_dir.join("opencode.json");
         let godot_doc_dir = config_dir.join("godot_docs");
 
-        let sidecar_command = app.shell()
-            .sidecar("opencode-cli")
-            .unwrap()
+        let updater = Updater::new(app);
+        let sidecar_path = match updater.ensure_installed() {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("[Sidecar] Failed to ensure sidecar installation: {}", e);
+                return;
+            }
+        };
+
+        println!("[Sidecar] Spawning sidecar from {:?}", sidecar_path);
+
+        let mut command = Command::new(sidecar_path);
+        command
             .args(["serve", "--port", &port])
             .env("OPENCODE_CONFIG_FILE", opencode_config_path.to_string_lossy().to_string())
             .env("OPENCODE_CONFIG_DIR", config_dir.to_string_lossy().to_string())
@@ -152,42 +211,55 @@ impl SidecarManager {
             .env("XDG_CONFIG_HOME", config_dir.to_string_lossy().to_string())
             .env("XDG_DATA_HOME", config_dir.join("data").to_string_lossy().to_string())
             .env("XDG_CACHE_HOME", config_dir.join("cache").to_string_lossy().to_string())
-            .env("GODOT_DOC_DIR", godot_doc_dir.to_string_lossy().to_string());
+            .env("GODOT_DOC_DIR", godot_doc_dir.to_string_lossy().to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        let sidecar_command = if let Ok(godot_path) = std::env::var("GODOT_PATH") {
+        if let Ok(godot_path) = std::env::var("GODOT_PATH") {
             println!("[Sidecar] Forwarding GODOT_PATH: {}", godot_path);
-            sidecar_command.env("GODOT_PATH", godot_path)
-        } else {
-            sidecar_command
-        };
-
-        let (mut _rx, child) = sidecar_command
-            .spawn()
-            .expect("Failed to spawn sidecar");
-
-        if let Some(state) = app.try_state::<SidecarState>() {
-            let mut child_lock = state.child.lock().unwrap();
-            *child_lock = Some(child);
-            println!("[Sidecar] Process spawned and stored in state");
-        } else {
-            eprintln!("[Sidecar] Failed to get SidecarState - process will be orphaned!");
+            command.env("GODOT_PATH", godot_path);
         }
 
-        tauri::async_runtime::spawn(async move {
-            // read events such as stdout
-            while let Some(event) = _rx.recv().await {
-                match event {
-                    CommandEvent::Stdout(line) => {
-                        println!("[Sidecar Output]: {}", String::from_utf8_lossy(&line));
-                    }
-                    CommandEvent::Stderr(line) => {
-                        eprintln!("[Sidecar Error]: {}", String::from_utf8_lossy(&line));
-                    }
-                    _ => {}
+        match command.spawn() {
+            Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+
+                if let Some(stdout) = stdout {
+                    thread::spawn(move || {
+                        let reader = BufReader::new(stdout);
+                        for line in reader.lines() {
+                            if let Ok(l) = line {
+                                println!("[Sidecar Output]: {}", l);
+                            }
+                        }
+                    });
+                }
+
+                if let Some(stderr) = stderr {
+                    thread::spawn(move || {
+                        let reader = BufReader::new(stderr);
+                        for line in reader.lines() {
+                            if let Ok(l) = line {
+                                eprintln!("[Sidecar Error]: {}", l);
+                            }
+                        }
+                    });
+                }
+
+                if let Some(state) = app.try_state::<SidecarState>() {
+                    let mut child_lock = state.child.lock().unwrap();
+                    *child_lock = Some(child);
+                    println!("[Sidecar] Process spawned and stored in state");
+                } else {
+                    eprintln!("[Sidecar] Failed to get SidecarState - process will be orphaned!");
                 }
             }
-            println!("[Sidecar] Event loop finished");
-        });
+            Err(e) => {
+                eprintln!("[Sidecar] Failed to spawn sidecar: {}", e);
+                return;
+            }
+        }
 
         let port_clone = port.clone();
         let app_clone = app.clone();
@@ -200,82 +272,36 @@ impl SidecarManager {
         });
     }
 
-    /// Block until the sidecar's HTTP health endpoint responds, or timeout.
-    /// This prevents the webview from loading before the sidecar is ready to
-    /// serve requests — the root cause of the "dark screen" in production builds.
     fn wait_for_healthy(port: &str) {
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-        use std::time::{Duration, Instant};
-
-        let addr = format!("127.0.0.1:{}", port);
-        let sock_addr: std::net::SocketAddr = match addr.parse() {
-            Ok(a) => a,
-            Err(_) => {
-                eprintln!("[Sidecar] Invalid address {}, skipping health wait", addr);
-                return;
+        let mut attempts = 0;
+        loop {
+            if Self::is_sidecar_running(port) {
+                println!("[Sidecar] Health check passed on port {}", port);
+                break;
             }
-        };
-
-        let timeout = Duration::from_secs(30);
-        let interval = Duration::from_millis(200);
-        let start = Instant::now();
-
-        println!("[Sidecar] Waiting for health on {}...", addr);
-
-        while start.elapsed() < timeout {
-            if let Ok(mut stream) = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(500)) {
-                stream.set_read_timeout(Some(Duration::from_millis(1000))).ok();
-                stream.set_write_timeout(Some(Duration::from_millis(1000))).ok();
-
-                let request = format!(
-                    "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-                    port
-                );
-
-                if stream.write_all(request.as_bytes()).is_ok() {
-                    let mut buf = [0u8; 1024];
-                    if let Ok(n) = stream.read(&mut buf) {
-                        if n > 0 {
-                            let response = String::from_utf8_lossy(&buf[..n]);
-                            if response.contains("HTTP/1.1 200") || response.contains("HTTP/1.0 200") {
-                                println!(
-                                    "[Sidecar] Health check passed after {:.1}s",
-                                    start.elapsed().as_secs_f64()
-                                );
-                                return;
-                            }
-                        }
-                    }
-                }
+            attempts += 1;
+            if attempts > 30 {
+                eprintln!("[Sidecar] Timed out waiting for sidecar health check");
+                break;
             }
-
-            std::thread::sleep(interval);
+            thread::sleep(Duration::from_millis(500));
         }
-
-        eprintln!(
-            "[Sidecar] WARNING: Sidecar not healthy after {}s, proceeding anyway",
-            timeout.as_secs()
-        );
     }
 
     pub fn shutdown<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         if let Some(state) = app.try_state::<SidecarState>() {
             let mut child_lock = state.child.lock().unwrap();
-            if let Some(child) = child_lock.take() {
+            if let Some(mut child) = child_lock.take() {
                 println!("[Sidecar] Shutting down process...");
-                if let Err(e) = child.kill() {
-                    eprintln!("[Sidecar] Failed to kill process: {}", e);
-                } else {
-                    println!("[Sidecar] Process killed successfully");
-                }
+                let _ = child.kill();
             }
         }
     }
 
-    #[allow(dead_code)]
-    pub fn health_check() -> bool {
-        // Stub returning true
-        true
+    pub fn restart_sidecar<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+        println!("[Sidecar] Restarting...");
+        Self::shutdown(app);
+        thread::sleep(Duration::from_millis(500));
+        Self::start_sidecar(app);
     }
 }

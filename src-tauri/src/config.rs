@@ -19,3 +19,18 @@ pub fn get_config_dir<R: Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, 
 
     app_handle.path().resolve("godoty", BaseDirectory::Config)
 }
+
+pub fn get_sidecar_path<R: Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, tauri::Error> {
+    let config_dir = get_config_dir(app_handle)?;
+    let bin_dir = config_dir.join("bin");
+    // Ensure bin directory exists not here but where it is used (sidecar/updater) or lazily.
+    // But strictly speaking, a "get path" shouldn't create dirs.
+    // However, for convenience, we return the expected path.
+
+    let ext = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    Ok(bin_dir.join(format!("opencode-cli{}", ext)))
+}

@@ -33,23 +33,39 @@ export async function bootstrapGlobal(input: {
   requestFailedTitle: string
   setGlobalStore: SetStoreFunction<GlobalStore>
 }) {
+  console.log('[BOOTSTRAP] Starting bootstrapGlobal...')
   let health: { healthy: boolean } | undefined
   let attempts = 0
   const maxAttempts = 50
 
   while (attempts < maxAttempts) {
-    health = await input.globalSDK.global
-      .health()
-      .then((x) => x.data)
-      .catch(() => undefined)
+    try {
+      health = await input.globalSDK.global
+        .health()
+        .then((x) => {
+          console.log('[BOOTSTRAP] Health check attempt', attempts, 'result:', x.data)
+          return x.data
+        })
+        .catch((e) => {
+          console.log('[BOOTSTRAP] Health check attempt', attempts, 'error:', e.message)
+          return undefined
+        })
+    } catch (e) {
+      console.log('[BOOTSTRAP] Health check outer error:', e)
+      health = undefined
+    }
 
-    if (health?.healthy) break
-    
+    if (health?.healthy) {
+      console.log('[BOOTSTRAP] Health passed after', attempts, 'attempts')
+      break
+    }
+
     attempts++
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
   if (!health?.healthy) {
+    console.log('[BOOTSTRAP] Health never passed, showing error toast')
     showToast({
       variant: "error",
       title: input.connectErrorTitle,
@@ -59,19 +75,23 @@ export async function bootstrapGlobal(input: {
     return
   }
 
+  console.log('[BOOTSTRAP] Health passed, fetching data...')
   const tasks = [
     retry(() =>
       input.globalSDK.path.get().then((x) => {
+        console.log('[BOOTSTRAP] path.get() succeeded')
         input.setGlobalStore("path", x.data!)
       }),
     ),
     retry(() =>
       input.globalSDK.global.config.get().then((x) => {
+        console.log('[BOOTSTRAP] global.config.get() succeeded')
         input.setGlobalStore("config", x.data!)
       }),
     ),
     retry(() =>
       input.globalSDK.project.list().then((x) => {
+        console.log('[BOOTSTRAP] project.list() succeeded, count:', x.data?.length)
         const projects = (x.data ?? [])
           .filter((p) => !!p?.id)
           .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
@@ -82,19 +102,24 @@ export async function bootstrapGlobal(input: {
     ),
     retry(() =>
       input.globalSDK.provider.list().then((x) => {
+        console.log('[BOOTSTRAP] provider.list() succeeded')
         input.setGlobalStore("provider", normalizeProviderList(x.data!))
       }),
     ),
     retry(() =>
       input.globalSDK.provider.auth().then((x) => {
+        console.log('[BOOTSTRAP] provider.auth() succeeded')
         input.setGlobalStore("provider_auth", x.data ?? {})
       }),
     ),
   ]
 
+  console.log('[BOOTSTRAP] Waiting for all tasks...')
   const results = await Promise.allSettled(tasks)
+  console.log('[BOOTSTRAP] All tasks settled, results:', results.map(r => r.status))
   const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason)
   if (errors.length) {
+    console.log('[BOOTSTRAP] Task errors:', errors.map(e => e.message || String(e)))
     const message = errors[0] instanceof Error ? errors[0].message : String(errors[0])
     const more = errors.length > 1 ? ` (+${errors.length - 1} more)` : ""
     showToast({
@@ -103,6 +128,7 @@ export async function bootstrapGlobal(input: {
       description: message + more,
     })
   }
+  console.log('[BOOTSTRAP] Setting ready=true')
   input.setGlobalStore("ready", true)
 }
 

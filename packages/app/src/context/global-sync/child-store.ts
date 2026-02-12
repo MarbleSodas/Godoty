@@ -2,6 +2,7 @@ import { createRoot, createEffect, getOwner, onCleanup, runWithOwner, type Acces
 import { createStore, type SetStoreFunction, type Store } from "solid-js/store"
 import { Persist, persisted } from "@opencode-ai/app/utils/persist"
 import type { VcsInfo } from "@opencode-ai/sdk/v2/client"
+import type { Platform } from "@opencode-ai/app/context/platform"
 import {
   DIR_IDLE_TTL_MS,
   MAX_DIR_STORES,
@@ -17,6 +18,7 @@ import { canDisposeDirectory, pickDirectoriesToEvict } from "./eviction"
 
 export function createChildStoreManager(input: {
   owner: Owner
+  platform: Platform
   markStats: (activeDirectoryStores: number) => void
   incrementEvictions: () => void
   isBooting: (directory: string) => boolean
@@ -131,6 +133,7 @@ export function createChildStoreManager(input: {
         persisted(
           Persist.workspace(directory, "vcs", ["vcs.v1"]),
           createStore({ value: undefined as VcsInfo | undefined }),
+          input.platform,
         ),
       )
       if (!vcs) throw new Error("Failed to create persisted cache")
@@ -142,6 +145,7 @@ export function createChildStoreManager(input: {
         persisted(
           Persist.workspace(directory, "project", ["project.v1"]),
           createStore({ value: undefined as ProjectMeta | undefined }),
+          input.platform,
         ),
       )
       if (!meta) throw new Error("Failed to create persisted project metadata")
@@ -151,6 +155,7 @@ export function createChildStoreManager(input: {
         persisted(
           Persist.workspace(directory, "icon", ["icon.v1"]),
           createStore({ value: undefined as string | undefined }),
+          input.platform,
         ),
       )
       if (!icon) throw new Error("Failed to create persisted project icon")

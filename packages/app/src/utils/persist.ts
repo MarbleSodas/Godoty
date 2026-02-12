@@ -1,4 +1,4 @@
-import { usePlatform } from "@opencode-ai/app/context/platform"
+import { usePlatform, type Platform } from "@opencode-ai/app/context/platform"
 import { makePersisted, type AsyncStorage, type SyncStorage } from "@solid-primitives/storage"
 import { checksum } from "@opencode-ai/util/encode"
 import { createResource, type Accessor } from "solid-js"
@@ -297,8 +297,8 @@ export const Persist = {
   },
 }
 
-export function removePersisted(target: { storage?: string; key: string }) {
-  const platform = usePlatform()
+export function removePersisted(target: { storage?: string; key: string }, platformOverride?: Platform) {
+  const platform = platformOverride ?? usePlatform()
   const isDesktop = platform.platform === "desktop" && !!platform.storage
 
   if (isDesktop) {
@@ -316,8 +316,9 @@ export function removePersisted(target: { storage?: string; key: string }) {
 export function persisted<T>(
   target: string | PersistTarget,
   store: [Store<T>, SetStoreFunction<T>],
+  platformOverride?: Platform,
 ): PersistedWithReady<T> {
-  const platform = usePlatform()
+  const platform = platformOverride ?? usePlatform()
   const config: PersistTarget = typeof target === "string" ? { key: target } : target
 
   const defaults = snapshot(store[0])

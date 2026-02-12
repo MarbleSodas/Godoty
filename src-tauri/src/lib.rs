@@ -1,6 +1,8 @@
 mod config;
 mod setup;
 mod sidecar;
+mod updater;
+mod commands;
 
 use tauri::Manager;
 
@@ -23,7 +25,13 @@ pub fn run() {
             sidecar::SidecarManager::start_sidecar(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            commands::get_sidecar_version,
+            commands::check_sidecar_update,
+            commands::perform_sidecar_update,
+            commands::restart_sidecar
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {

@@ -7,10 +7,18 @@ import { existsSync } from "node:fs";
 
 const execAsync = promisify(exec);
 
-const VERSION = "v1.1.53";
 const REPO = "anomalyco/opencode";
-const BASE_URL = `https://github.com/${REPO}/releases/download/${VERSION}/`;
 const BINARIES_DIR = join(process.cwd(), "src-tauri", "bin");
+
+async function getLatestVersion(): Promise<string> {
+  console.log("Fetching latest OpenCode version...");
+  const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch latest release: ${res.statusText}`);
+  }
+  const data = await res.json();
+  return data.tag_name;
+}
 
 interface Target {
   triple: string;
@@ -62,17 +70,48 @@ const getTarget = (): Target => {
 };
 
 const setup = async () => {
+  const version = await getLatestVersion();
+  const baseUrl = `https://github.com/${REPO}/releases/download/${version}/`;
   const { triple, ext, assetName, binaryNameInArchive } = getTarget();
   const targetBinaryName = `opencode-cli-${triple}${ext}`;
-  const url = `${BASE_URL}${assetName}`;
+  const url = `${baseUrl}${assetName}`;
   const outputPath = join(BINARIES_DIR, targetBinaryName);
   
+  if (existsSync(outputPath)) {
+    try {
+      const { stdout } = await execAsync(`"${outputPath}" --version`);
+      const currentVersion = stdout.trim();
+      
+      const normalizedTag = version.startsWith('v') ? version.slice(1) : version;
+      const normalizedCurrent = currentVersion.startsWith('v') ? currentVersion.slice(1) : currentVersion;
+
+      if (normalizedCurrent === normalizedTag) {
+        console.log(`OpenCode sidecar is already up to date (${version}). Skipping download.`);
+        return;
+      }
+      console.log(`Found version ${currentVersion}, updating to ${version}...`);
+      
+      try {
+        if (platform() === "win32") {
+          await execAsync('taskkill /F /IM opencode-cli* /T');
+        } else {
+          await execAsync('pkill -f opencode-cli || true');
+        }
+        console.log("Stopped running opencode-cli instances for update.");
+      } catch (e) {
+        
+      }
+    } catch (e) {
+      console.warn("Could not determine current version, forcing update.");
+    }
+  }
+
   // Create temp directory for extraction
   const tempDir = join(tmpdir(), `opencode-setup-${Date.now()}`);
   await mkdir(tempDir, { recursive: true });
   const downloadPath = join(tempDir, assetName);
 
-  console.log(`Downloading OpenCode ${VERSION} for ${triple}...`);
+  console.log(`Downloading OpenCode ${version} for ${triple}...`);
   console.log(`URL: ${url}`);
   
   try {

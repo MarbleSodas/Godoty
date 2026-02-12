@@ -16,12 +16,14 @@ func _init():
 
 	var viewport = root.get_viewport()
 	if not viewport:
-		printerr("[ERROR] Could not get viewport")
+		if debug_mode:
+			printerr("[ERROR] Could not get viewport")
 		quit(1)
 
 	var img = viewport.get_texture().get_image()
 	if not img:
-		printerr("[ERROR] Could not capture viewport image")
+		if debug_mode:
+			printerr("[ERROR] Could not capture viewport image")
 		quit(1)
 
 	if debug_mode:
@@ -32,7 +34,8 @@ func _init():
 
 	var error = img.save_png(path)
 	if error != OK:
-		printerr("[ERROR] Failed to save screenshot: " + str(error))
+		if debug_mode:
+			printerr("[ERROR] Failed to save screenshot: " + str(error))
 		quit(1)
 
 	print("SCREENSHOT_PATH:" + abs_path)
