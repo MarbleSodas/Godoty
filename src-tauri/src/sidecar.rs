@@ -26,6 +26,48 @@ impl SidecarManager {
         use std::net::TcpStream;
         use std::time::Duration;
 
+        println!("[Sidecar] Cleaning up stale sidecar instances...");
+
+        let current_pid = std::process::id();
+
+        #[cfg(unix)]
+        {
+            if let Ok(output) = std::process::Command::new("ps")
+                .args(["-A", "-o", "pid,comm"])
+                .output()
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let pid_str = parts[0];
+                        let comm = parts[1..].join(" ");
+                        
+                        if comm.contains("opencode") {
+                            if let Ok(pid) = pid_str.parse::<u32>() {
+                                if pid != current_pid {
+                                    println!("[Sidecar] Found stale process '{}' (PID {}), killing...", comm, pid);
+                                    let _ = std::process::Command::new("kill").arg(pid.to_string()).output();
+                                }
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+
+        #[cfg(windows)]
+        {
+             let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "opencode-cli*", "/T"])
+                .output();
+             let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "opencode*", "/T"])
+                .output();
+             std::thread::sleep(Duration::from_millis(500));
+        }
+
         let addr = format!("127.0.0.1:{}", port);
         let sock_addr: std::net::SocketAddr = match addr.parse() {
             Ok(a) => a,
@@ -36,7 +78,7 @@ impl SidecarManager {
             return;
         }
 
-        println!("[Sidecar] Port {} is occupied, checking for orphaned sidecar...", port);
+        println!("[Sidecar] Port {} is still occupied, checking for orphaned sidecar...", port);
 
         #[cfg(unix)]
         {
@@ -148,8 +190,13 @@ impl SidecarManager {
         });
 
         let port_clone = port.clone();
+        let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
             Self::wait_for_healthy(&port_clone);
+            if let Some(main_window) = app_clone.get_webview_window("main") {
+                println!("[Sidecar] Showing main window");
+                let _ = main_window.show();
+            }
         });
     }
 
