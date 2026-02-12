@@ -31,6 +31,11 @@
     "@tauri-apps/plugin-updater": "^2.10.0",
     "solid-js": "1.9.10"
   },
+  "resolutions": {
+    "solid-js": "1.9.11",
+    "solid-js/web": "1.9.11",
+    "solid-js/store": "1.9.11"
+  },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@tailwindcss/vite": "4.1.18",
