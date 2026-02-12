@@ -1,6 +1,6 @@
 import "@opencode-ai/app/index.css"
 import { ErrorBoundary, Show, lazy, type ParentProps } from "solid-js"
-import { Router, Route, Navigate } from "@solidjs/router"
+import { Router, Route, Navigate, HashRouter } from "@solidjs/router"
 import { MetaProvider } from "@solidjs/meta"
 import { Font } from "@opencode-ai/ui/components/font"
 import { MarkedProvider } from "@opencode-ai/ui/context/marked"
@@ -34,7 +34,7 @@ import { Suspense, JSX } from "solid-js"
 
 const Home = lazy(() => import("@opencode-ai/app/pages/home"))
 const Session = lazy(() => import("@opencode-ai/app/pages/session"))
-const Loading = () => <div class="size-full" />
+const Loading = () => <div class="size-full bg-white text-black flex items-center justify-center">Loading App...</div>
 
 function UiI18nBridge(props: ParentProps) {
   const language = useLanguage()
@@ -77,8 +77,13 @@ export function AppBaseProviders(props: ParentProps) {
 
 function ServerKey(props: ParentProps) {
   const server = useServer()
+
   return (
-    <Show when={server.url} keyed>
+    <Show when={server.url} fallback={
+      <div class="flex items-center justify-center size-full bg-background-base">
+        <span class="text-text-secondary">Loading...</span>
+      </div>
+    }>
       {props.children}
     </Show>
   )
@@ -102,7 +107,9 @@ export function AppInterface(props: { defaultUrl?: string; children?: JSX.Elemen
     if (import.meta.env.DEV)
       return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? "localhost"}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
 
-    return window.location.origin
+    // In production Tauri builds, the sidecar runs on localhost:4096
+    // window.location.origin would be tauri://localhost which is wrong
+    return "http://localhost:4096"
   }
 
   return (
@@ -110,7 +117,7 @@ export function AppInterface(props: { defaultUrl?: string; children?: JSX.Elemen
       <ServerKey>
         <GlobalSDKProvider>
           <GlobalSyncProvider>
-            <Router
+            <HashRouter
               root={(routerProps) => (
                 <SettingsProvider>
                   <PermissionProvider>
@@ -140,6 +147,7 @@ export function AppInterface(props: { defaultUrl?: string; children?: JSX.Elemen
                   </Suspense>
                 )}
               />
+              <Route path="*" component={() => <div class="p-10 text-red-500 font-bold">404: {location.href}</div>} />
               <Route path="/:dir" component={DirectoryLayout}>
                 <Route path="/" component={() => <Navigate href="session" />} />
                 <Route
@@ -161,7 +169,7 @@ export function AppInterface(props: { defaultUrl?: string; children?: JSX.Elemen
                   )}
                 />
               </Route>
-            </Router>
+            </HashRouter>
           </GlobalSyncProvider>
         </GlobalSDKProvider>
       </ServerKey>
