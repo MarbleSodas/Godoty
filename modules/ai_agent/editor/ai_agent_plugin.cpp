@@ -8,6 +8,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_agent_plugin.h"
+#include "../ai_agent_config.h"
 #include "ai_chat_panel.h"
 #include "ai_settings_panel.h"
 
@@ -24,10 +25,13 @@ AIAgentPlugin::AIAgentPlugin() {
 	// Create the chat panel and add it as a bottom panel.
 	chat_panel = memnew(AIChatPanel);
 	chat_panel->set_custom_minimum_size(Size2(0, 250));
-	add_control_to_bottom_panel(chat_panel, "AI Agent");
+	add_control_to_dock(DOCK_SLOT_RIGHT_UL, chat_panel);
 
 	// Create settings panel (accessible via chat panel's settings button).
 	settings_panel = memnew(AISettingsPanel);
+	settings_panel->set_visible(false);
+	settings_panel->connect("config_changed", callable_mp(this, &AIAgentPlugin::_on_config_changed));
+	chat_panel->add_child(settings_panel);
 	chat_panel->set_settings_panel(settings_panel);
 
 	// Status bar button.
@@ -46,10 +50,15 @@ AIAgentPlugin::AIAgentPlugin() {
 	key->set_keycode(Key::A);
 	key->set_ctrl_pressed(true);
 	key->set_shift_pressed(true);
-	shortcut->set_events(Array::make(key));
+	Array events;
+	events.push_back(key);
+	shortcut->set_events(events);
 	status_button->set_shortcut(shortcut);
 
 	_update_status_indicator(false);
+	if (settings_panel) {
+		_on_config_changed(settings_panel->get_config());
+	}
 }
 
 AIAgentPlugin::~AIAgentPlugin() {
@@ -61,7 +70,7 @@ void AIAgentPlugin::_notification(int p_what) {
 		// Plugin is now in the editor tree.
 	} else if (p_what == NOTIFICATION_EXIT_TREE) {
 		if (chat_panel) {
-			remove_control_from_bottom_panel(chat_panel);
+			remove_control_from_docks(chat_panel);
 			memdelete(chat_panel);
 			chat_panel = nullptr;
 		}
@@ -79,9 +88,17 @@ void AIAgentPlugin::_make_visible(bool p_visible) {
 	}
 }
 
+void AIAgentPlugin::_on_config_changed(const Ref<AIAgentConfig> &p_config) {
+	bool configured = false;
+	if (p_config.is_valid()) {
+		configured = p_config->get_provider_type() == AIAgentConfig::PROVIDER_LOCAL || !p_config->get_api_key().is_empty();
+	}
+	_update_status_indicator(configured);
+}
+
 void AIAgentPlugin::_toggle_ai_panel() {
 	if (chat_panel) {
-		make_bottom_panel_item_visible(chat_panel);
+		chat_panel->set_visible(!chat_panel->is_visible());
 	}
 }
 

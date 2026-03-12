@@ -71,10 +71,34 @@ bool AIContextManager::_is_cache_valid() const {
 void AIContextManager::_invalidate_cache() {
 	cached_context.clear();
 	cache_timestamp = 0;
+	cache_flags = 0;
 	emit_signal("context_invalidated");
 }
 
 Dictionary AIContextManager::collect_context(int p_flags) {
+	if (_is_cache_valid() && (p_flags & ~cache_flags) == 0) {
+		Dictionary context;
+		if ((p_flags & CONTEXT_SCENE) && cached_context.has("scene")) {
+			context["scene"] = cached_context["scene"];
+		}
+		if ((p_flags & CONTEXT_SCRIPTS) && cached_context.has("scripts")) {
+			context["scripts"] = cached_context["scripts"];
+		}
+		if ((p_flags & CONTEXT_ASSETS) && cached_context.has("assets")) {
+			context["assets"] = cached_context["assets"];
+		}
+		if ((p_flags & CONTEXT_EDITOR_STATE) && cached_context.has("editor")) {
+			context["editor"] = cached_context["editor"];
+		}
+		if ((p_flags & CONTEXT_RUNTIME) && cached_context.has("runtime")) {
+			context["runtime"] = cached_context["runtime"];
+		}
+		if ((p_flags & CONTEXT_PROJECT) && cached_context.has("project")) {
+			context["project"] = cached_context["project"];
+		}
+		return context;
+	}
+
 	Dictionary context;
 
 	if (p_flags & CONTEXT_SCENE) {
@@ -97,6 +121,7 @@ Dictionary AIContextManager::collect_context(int p_flags) {
 	}
 
 	cached_context = context;
+	cache_flags = p_flags;
 	cache_timestamp = OS::get_singleton()->get_ticks_msec();
 	return context;
 }
@@ -110,18 +135,26 @@ Dictionary AIContextManager::collect_context_budgeted(int p_flags, int p_max_tok
 		return full_context;
 	}
 
-	// Priority order for trimming: runtime > assets > editor > scripts > scene > project.
-	// Remove lowest-priority sections until within budget.
+	// Trim lowest-priority sections until the estimate fits the requested budget.
 	Dictionary trimmed = full_context.duplicate(true);
 	PackedStringArray trim_order;
 	trim_order.push_back("runtime");
 	trim_order.push_back("assets");
 	trim_order.push_back("editor");
+	trim_order.push_back("scripts");
+	trim_order.push_back("scene");
+	trim_order.push_back("project");
 
 	for (int i = 0; i < trim_order.size() && estimate_tokens(trimmed) > p_max_tokens; i++) {
 		if (trimmed.has(trim_order[i])) {
 			trimmed.erase(trim_order[i]);
 		}
+	}
+
+	if (estimate_tokens(trimmed) > p_max_tokens) {
+		Dictionary minimal_context;
+		minimal_context["note"] = "Editor context was trimmed to fit the token budget.";
+		return minimal_context;
 	}
 
 	return trimmed;

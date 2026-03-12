@@ -10,6 +10,10 @@
 #include "core/config/project_settings.h"
 #include "core/input/input_map.h"
 #include "core/os/os.h"
+#include "core/string/string_name.h"
+#include "core/variant/dictionary.h"
+#include "core/variant/typed_array.h"
+#include "core/variant/variant.h"
 
 Dictionary ProjectContext::collect() {
 	Dictionary context;
@@ -41,17 +45,19 @@ Dictionary ProjectContext::collect() {
 	InputMap *input_map = InputMap::get_singleton();
 	if (input_map) {
 		Dictionary inputs;
-		List<StringName> actions;
-		input_map->get_actions(&actions);
-		for (const StringName &action : actions) {
+		TypedArray<StringName> actions = input_map->get_actions();
+		for (int i = 0; i < actions.size(); i++) {
+			StringName action = actions[i];
 			// Skip built-in UI actions.
 			if (String(action).begins_with("ui_")) {
 				continue;
 			}
 			Array events;
-			List<Ref<InputEvent>> action_events = input_map->action_get_events(action);
-			for (const Ref<InputEvent> &event : action_events) {
-				events.push_back(event->as_text());
+			const List<Ref<InputEvent>> *action_events = input_map->action_get_events(action);
+			if (action_events) {
+				for (const Ref<InputEvent> &event : *action_events) {
+					events.push_back(event->as_text());
+				}
 			}
 			inputs[action] = events;
 		}
@@ -78,6 +84,14 @@ Dictionary ProjectContext::collect() {
 	physics["3d_physics_engine"] = ps->get_setting("physics/3d/physics_engine", "");
 	physics["default_gravity"] = ps->get_setting("physics/2d/default_gravity", 980.0);
 	context["physics"] = physics;
+
+	// Display settings.
+	Dictionary display;
+	display["window_width"] = ps->get_setting("display/window/size/viewport_width", 1152);
+	display["window_height"] = ps->get_setting("display/window/size/viewport_height", 648);
+	display["fullscreen"] = ps->get_setting("display/window/size/fullscreen", false);
+	display["vsync"] = ps->get_setting("display/window/vsync/vsync_mode", 1);
+	context["display"] = display;
 
 	return context;
 }

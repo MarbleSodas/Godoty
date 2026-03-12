@@ -11,6 +11,8 @@
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/inspector/editor_inspector.h"
+#include "scene/gui/box_container.h"
 #endif
 
 Dictionary EditorContext::collect() {

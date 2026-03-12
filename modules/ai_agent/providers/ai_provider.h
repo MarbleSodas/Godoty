@@ -21,6 +21,8 @@ protected:
 	String api_key;
 	String base_url;
 	String model_name;
+	float temperature = 0.7f;
+	int max_tokens = 4096;
 	bool is_busy = false;
 
 public:
@@ -48,6 +50,12 @@ public:
 
 	void set_model_name(const String &p_name);
 	String get_model_name() const;
+
+	void set_temperature(float p_temp);
+	float get_temperature() const;
+
+	void set_max_tokens(int p_max);
+	int get_max_tokens() const;
 
 	bool get_is_busy() const;
 

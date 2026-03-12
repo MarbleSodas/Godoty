@@ -11,8 +11,7 @@
 #include "core/object/script_language.h"
 
 #ifdef TOOLS_ENABLED
-#include "editor/editor_interface.h"
-#include "editor/plugins/script_editor_plugin.h"
+#include "editor/script/script_editor_plugin.h"
 #endif
 
 Dictionary ScriptContext::collect() {
@@ -24,7 +23,7 @@ Dictionary ScriptContext::collect() {
 	// Get the currently active script in the editor.
 	ScriptEditor *script_editor = ScriptEditor::get_singleton();
 	if (script_editor) {
-		Ref<Script> current = script_editor->get_current_script();
+		Ref<Script> current = script_editor->call("get_current_script");
 		if (current.is_valid()) {
 			context["current_script"] = current->get_path();
 			context["current_script_content"] = current->get_source_code();
@@ -35,7 +34,7 @@ Dictionary ScriptContext::collect() {
 	// Collect script errors from all script languages.
 	TypedArray<Dictionary> errors;
 	for (int i = 0; i < ScriptServer::get_language_count(); i++) {
-		ScriptLanguage *lang = ScriptServer::get_language(i);
+		// ScriptLanguage *lang = ScriptServer::get_language(i);
 		// Errors are typically surfaced through the editor's error reporting.
 		// We capture them here as part of the context.
 	}
@@ -122,7 +121,7 @@ TypedArray<Dictionary> ScriptContext::get_open_scripts() {
 		return scripts;
 	}
 
-	Array open = script_editor->get_open_scripts();
+	Vector<Ref<Script>> open = script_editor->get_open_scripts();
 	for (int i = 0; i < open.size(); i++) {
 		Ref<Script> s = open[i];
 		if (s.is_valid()) {

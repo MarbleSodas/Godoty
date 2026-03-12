@@ -8,12 +8,14 @@
 #include "editor_tools.h"
 
 #include "core/config/project_settings.h"
+#include "core/input/shortcut.h"
 #include "modules/ai_agent/ai_tool_registry.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/gui/editor_toaster.h"
 #endif
 
 void EditorTools::_bind_methods() {
@@ -176,7 +178,7 @@ Variant EditorTools::tool_redo(const Dictionary &p_args) {
 
 Variant EditorTools::tool_run_project(const Dictionary &p_args) {
 #ifdef TOOLS_ENABLED
-	EditorNode::get_singleton()->run_play();
+	EditorInterface::get_singleton()->play_main_scene();
 	return "Project started.";
 #else
 	return "Error: only available in editor builds.";
@@ -185,7 +187,7 @@ Variant EditorTools::tool_run_project(const Dictionary &p_args) {
 
 Variant EditorTools::tool_stop_project(const Dictionary &p_args) {
 #ifdef TOOLS_ENABLED
-	EditorNode::get_singleton()->run_stop();
+	EditorInterface::get_singleton()->stop_playing_scene();
 	return "Project stopped.";
 #else
 	return "Error: only available in editor builds.";
@@ -195,7 +197,7 @@ Variant EditorTools::tool_stop_project(const Dictionary &p_args) {
 Variant EditorTools::tool_show_notification(const Dictionary &p_args) {
 #ifdef TOOLS_ENABLED
 	String message = p_args.get("message", "");
-	EditorNode::get_singleton()->show_accept(message, "AI Agent");
+	EditorToaster::get_singleton()->popup_str(message);
 	return "Notification shown.";
 #else
 	return "Error: only available in editor builds.";

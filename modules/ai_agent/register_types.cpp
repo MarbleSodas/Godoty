@@ -102,14 +102,15 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 		// Register session management.
 		GDREGISTER_CLASS(AIAgentSession);
 
+	}
 #ifdef TOOLS_ENABLED
-		// Register editor UI classes (only in editor builds).
+	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(AIAgentPlugin);
 		GDREGISTER_CLASS(AIChatPanel);
 		GDREGISTER_CLASS(AISettingsPanel);
 		EditorPlugins::add_by_type<AIAgentPlugin>();
-#endif
 	}
+#endif
 }
 
 void uninitialize_ai_agent_module(ModuleInitializationLevel p_level) {

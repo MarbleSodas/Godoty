@@ -12,7 +12,7 @@
 #include "modules/ai_agent/ai_tool_registry.h"
 
 #ifdef TOOLS_ENABLED
-#include "editor/editor_file_system.h"
+#include "editor/file_system/editor_file_system.h"
 #endif
 
 void ResourceTools::_bind_methods() {
@@ -57,7 +57,7 @@ void ResourceTools::register_tools() {
 		required.push_back("path");
 		required.push_back("content");
 		params["required"] = required;
-		reg->register_tool("write_file", "Write content to a project file", params, callable_mp_static(&ResourceTools::tool_write_file));
+		reg->register_tool("write_file", "Write content to a project file", params, callable_mp_static(&ResourceTools::tool_write_file), true);
 	}
 
 	// delete_file
@@ -131,7 +131,7 @@ void ResourceTools::register_tools() {
 		required.push_back("from");
 		required.push_back("to");
 		params["required"] = required;
-		reg->register_tool("move_file", "Move or rename a project file", params, callable_mp_static(&ResourceTools::tool_move_file));
+		reg->register_tool("move_file", "Move or rename a project file", params, callable_mp_static(&ResourceTools::tool_move_file), true);
 	}
 }
 

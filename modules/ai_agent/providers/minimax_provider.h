@@ -8,6 +8,10 @@
 #pragma once
 
 #include "ai_provider.h"
+#include "core/os/thread.h"
+#include "core/templates/safe_refcount.h"
+
+class HTTPRequest;
 
 // MiniMax AI provider — OpenAI-compatible Chat Completions API
 // with native function calling and interleaved thinking support.
@@ -42,8 +46,24 @@ private:
 	TypedArray<Dictionary> _format_messages(const TypedArray<Ref<AIMessage>> &p_messages) const;
 	Ref<AIMessage> _parse_stream_chunk(const String &p_chunk) const;
 
-	bool cancel_requested = false;
+	void _on_request_completed(int p_result, int p_code,
+			const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _dispatch_stream_chunk(const String &p_text);
+	void _dispatch_stream_complete(const String &p_content, const TypedArray<Dictionary> &p_tool_calls);
+	void _dispatch_stream_error(const String &p_error);
+	static void _stream_request_thread(void *p_userdata);
+	void _wait_for_thread();
+	void _cleanup_request();
+
+	HTTPRequest *http_request = nullptr;
+	Callable pending_callback;
+	Callable pending_stream_callback;
+	Callable pending_complete_callback;
+	SafeFlag cancel_requested;
+	bool is_streaming = false;
+	Thread request_thread;
 
 public:
 	MiniMaxProvider();
+	~MiniMaxProvider();
 };

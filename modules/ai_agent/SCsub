@@ -10,10 +10,7 @@ env_ai_agent.add_source_files(env.modules_sources, "*.cpp")
 env_ai_agent.add_source_files(env.modules_sources, "providers/*.cpp")
 env_ai_agent.add_source_files(env.modules_sources, "context/*.cpp")
 env_ai_agent.add_source_files(env.modules_sources, "tools/*.cpp")
-env_ai_agent.add_source_files(env.modules_sources, "mcp/*.cpp")
-env_ai_agent.add_source_files(env.modules_sources, "orchestration/*.cpp")
-env_ai_agent.add_source_files(env.modules_sources, "security/*.cpp")
 
 # Editor-only files (only compiled for editor builds)
 if env.editor_build:
-    env_ai_agent.add_source_files(env.modules_sources, "editor/*.cpp")
+    env.add_source_files(env.modules_sources, "editor/*.cpp")

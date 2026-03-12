@@ -8,7 +8,10 @@
 #pragma once
 
 #include "ai_provider.h"
-#include "core/io/http_client.h"
+#include "core/os/thread.h"
+#include "core/templates/safe_refcount.h"
+
+class HTTPRequest;
 
 class OpenAIProvider : public AIProvider {
 	GDCLASS(OpenAIProvider, AIProvider);
@@ -44,9 +47,27 @@ private:
 	// Parse a streaming SSE chunk.
 	Ref<AIMessage> _parse_stream_chunk(const String &p_chunk) const;
 
-	Ref<HTTPClient> http_client;
-	bool cancel_requested = false;
+	// HTTP request completion handler.
+	void _on_request_completed(int p_result, int p_code,
+			const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _dispatch_stream_chunk(const String &p_text);
+	void _dispatch_stream_complete(const String &p_content, const TypedArray<Dictionary> &p_tool_calls);
+	void _dispatch_stream_error(const String &p_error);
+	static void _stream_request_thread(void *p_userdata);
+	void _wait_for_thread();
+
+	// Clean up the HTTPRequest node.
+	void _cleanup_request();
+
+	HTTPRequest *http_request = nullptr;
+	Callable pending_callback;
+	Callable pending_stream_callback;
+	Callable pending_complete_callback;
+	SafeFlag cancel_requested;
+	bool is_streaming = false;
+	Thread request_thread;
 
 public:
 	OpenAIProvider();
+	~OpenAIProvider();
 };

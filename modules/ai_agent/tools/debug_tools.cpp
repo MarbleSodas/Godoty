@@ -7,11 +7,15 @@
 
 #include "debug_tools.h"
 
+#include "core/input/shortcut.h"
+#include "main/performance.h"
+
 #include "main/performance.h"
 #include "modules/ai_agent/ai_tool_registry.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_editor_debugger.h"
 #include "editor/editor_node.h"
 #endif
 
@@ -69,12 +73,16 @@ Variant DebugTools::tool_get_console_output(const Dictionary &p_args) {
 
 Variant DebugTools::tool_pause_game(const Dictionary &p_args) {
 #ifdef TOOLS_ENABLED
-	EditorDebuggerNode *debugger = EditorDebuggerNode::get_singleton();
+	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+	if (!debugger_node) {
+		return "Error: No debug session available.";
+	}
+	ScriptEditorDebugger *debugger = debugger_node->get_default_debugger();
 	if (!debugger || !debugger->is_session_active()) {
 		return "Error: No active debug session. Is the game running?";
 	}
-	// TODO: Send pause to debugger.
-	return "Game paused (via debugger).";
+	debugger->debug_break();
+	return "Game pause command sent.";
 #else
 	return "Error: only available in editor builds.";
 #endif
@@ -82,12 +90,16 @@ Variant DebugTools::tool_pause_game(const Dictionary &p_args) {
 
 Variant DebugTools::tool_resume_game(const Dictionary &p_args) {
 #ifdef TOOLS_ENABLED
-	EditorDebuggerNode *debugger = EditorDebuggerNode::get_singleton();
-	if (!debugger || !debugger->is_session_active()) {
-		return "Error: No active debug session.";
+	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+	if (!debugger_node) {
+		return "Error: No debug session available.";
 	}
-	// TODO: Send continue to debugger.
-	return "Game resumed.";
+	ScriptEditorDebugger *debugger = debugger_node->get_default_debugger();
+	if (!debugger || !debugger->is_session_active()) {
+		return "Error: No active debug session. Is the game running?";
+	}
+	debugger->debug_continue();
+	return "Game resume command sent.";
 #else
 	return "Error: only available in editor builds.";
 #endif

@@ -13,6 +13,7 @@
 
 class AIChatPanel;
 class AISettingsPanel;
+class AIAgentConfig;
 
 class AIAgentPlugin : public EditorPlugin {
 	GDCLASS(AIAgentPlugin, EditorPlugin);
@@ -21,6 +22,7 @@ class AIAgentPlugin : public EditorPlugin {
 	AISettingsPanel *settings_panel = nullptr;
 	Button *status_button = nullptr;
 
+	void _on_config_changed(const Ref<AIAgentConfig> &p_config);
 	void _toggle_ai_panel();
 	void _update_status_indicator(bool p_connected);
 
@@ -32,7 +34,7 @@ public:
 	String get_plugin_name() const override { return "AI Agent"; }
 	bool has_main_screen() const override { return false; }
 
-	void _make_visible(bool p_visible) override;
+	void _make_visible(bool p_visible);
 
 	AIAgentPlugin();
 	~AIAgentPlugin();

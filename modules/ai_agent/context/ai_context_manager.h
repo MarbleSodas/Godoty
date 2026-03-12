@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "core/object/class_db.h"
 #include "core/object/object.h"
 #include "core/variant/dictionary.h"
 
@@ -33,6 +34,7 @@ private:
 	// Cached context data with invalidation timestamps.
 	Dictionary cached_context;
 	uint64_t cache_timestamp = 0;
+	int cache_flags = 0;
 	uint64_t cache_ttl_ms = 2000; // 2 second cache TTL.
 	int max_token_budget = 8000;
 

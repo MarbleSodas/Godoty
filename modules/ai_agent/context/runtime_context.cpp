@@ -8,11 +8,16 @@
 #include "runtime_context.h"
 
 #include "core/config/engine.h"
+#include "core/input/shortcut.h"
+#include "core/os/os.h"
+#include "main/performance.h"
 #include "core/os/os.h"
 #include "main/performance.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_editor_debugger.h"
+#include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #endif
 
@@ -37,18 +42,21 @@ Dictionary RuntimeContext::collect() {
 
 #ifdef TOOLS_ENABLED
 	// Debugger state.
-	EditorDebuggerNode *debugger = EditorDebuggerNode::get_singleton();
-	if (debugger) {
-		Dictionary debug_state;
-		debug_state["is_session_active"] = debugger->is_session_active();
-		debug_state["is_breaked"] = debugger->is_breaked();
-		context["debugger"] = debug_state;
+	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
+	if (debugger_node) {
+		ScriptEditorDebugger *debugger = debugger_node->get_default_debugger();
+		if (debugger) {
+			Dictionary debug_state;
+			debug_state["is_session_active"] = debugger->is_session_active();
+			debug_state["is_breaked"] = debugger->is_breaked();
+			context["debugger"] = debug_state;
+		}
 	}
 
 	// Check if game is running.
-	EditorNode *editor = EditorNode::get_singleton();
-	if (editor) {
-		context["is_playing"] = editor->is_playing();
+	EditorInterface *ei = EditorInterface::get_singleton();
+	if (ei) {
+		context["is_playing"] = ei->is_playing_scene();
 	}
 #endif
 

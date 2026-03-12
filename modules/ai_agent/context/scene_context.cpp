@@ -14,7 +14,7 @@
 #ifdef TOOLS_ENABLED
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
-#include "editor/gui/editor_scene_tabs.h"
+#include "editor/scene/editor_scene_tabs.h"
 #endif
 
 Dictionary SceneContext::collect() {
@@ -129,7 +129,7 @@ TypedArray<Dictionary> SceneContext::get_selected_nodes() {
 		return selected;
 	}
 
-	List<Node *> nodes = selection->get_selected_node_list();
+	List<Node *> nodes = selection->get_top_selected_node_list();
 	for (Node *node : nodes) {
 		Dictionary info;
 		info["name"] = node->get_name();

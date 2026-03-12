@@ -50,7 +50,7 @@ void SceneTools::register_tools() {
 		required.push_back("type");
 		required.push_back("name");
 		params["required"] = required;
-		reg->register_tool("create_node", "Create a new node in the scene tree", params, callable_mp_static(&SceneTools::tool_create_node));
+		reg->register_tool("create_node", "Create a new node in the scene tree", params, callable_mp_static(&SceneTools::tool_create_node), true);
 	}
 
 	// delete_node
@@ -87,7 +87,7 @@ void SceneTools::register_tools() {
 		required.push_back("node_path");
 		required.push_back("new_name");
 		params["required"] = required;
-		reg->register_tool("rename_node", "Rename a node in the scene tree", params, callable_mp_static(&SceneTools::tool_rename_node));
+		reg->register_tool("rename_node", "Rename a node in the scene tree", params, callable_mp_static(&SceneTools::tool_rename_node), true);
 	}
 
 	// set_node_property
@@ -112,7 +112,7 @@ void SceneTools::register_tools() {
 		required.push_back("property");
 		required.push_back("value");
 		params["required"] = required;
-		reg->register_tool("set_node_property", "Set a property on a node", params, callable_mp_static(&SceneTools::tool_set_node_property));
+		reg->register_tool("set_node_property", "Set a property on a node", params, callable_mp_static(&SceneTools::tool_set_node_property), true);
 	}
 
 	// get_node_property
@@ -146,7 +146,7 @@ void SceneTools::register_tools() {
 		path_prop["description"] = "Optional file path to save to (leave empty for current path)";
 		props["path"] = path_prop;
 		params["properties"] = props;
-		reg->register_tool("save_scene", "Save the current scene to disk", params, callable_mp_static(&SceneTools::tool_save_scene));
+		reg->register_tool("save_scene", "Save the current scene to disk", params, callable_mp_static(&SceneTools::tool_save_scene), true);
 	}
 
 	// create_scene
@@ -166,7 +166,7 @@ void SceneTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("root_type");
 		params["required"] = required;
-		reg->register_tool("create_scene", "Create a new scene with a specified root node type", params, callable_mp_static(&SceneTools::tool_create_scene));
+		reg->register_tool("create_scene", "Create a new scene with a specified root node type", params, callable_mp_static(&SceneTools::tool_create_scene), true);
 	}
 }
 

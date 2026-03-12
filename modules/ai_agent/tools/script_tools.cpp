@@ -15,8 +15,9 @@
 
 #ifdef TOOLS_ENABLED
 #include "editor/editor_interface.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/editor_undo_redo_manager.h"
-#include "editor/plugins/script_editor_plugin.h"
+#include "editor/script/script_editor_plugin.h"
 #endif
 
 void ScriptTools::_bind_methods() {
@@ -45,7 +46,7 @@ void ScriptTools::register_tools() {
 		required.push_back("path");
 		required.push_back("content");
 		params["required"] = required;
-		reg->register_tool("create_script", "Create a new script file with the specified content", params, callable_mp_static(&ScriptTools::tool_create_script));
+		reg->register_tool("create_script", "Create a new script file with the specified content", params, callable_mp_static(&ScriptTools::tool_create_script), true);
 	}
 
 	// edit_script
@@ -73,7 +74,7 @@ void ScriptTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("path");
 		params["required"] = required;
-		reg->register_tool("edit_script", "Edit an existing script — full replacement or find/replace", params, callable_mp_static(&ScriptTools::tool_edit_script));
+		reg->register_tool("edit_script", "Edit an existing script — full replacement or find/replace", params, callable_mp_static(&ScriptTools::tool_edit_script), true);
 	}
 
 	// attach_script
@@ -94,7 +95,7 @@ void ScriptTools::register_tools() {
 		required.push_back("node_path");
 		required.push_back("script_path");
 		params["required"] = required;
-		reg->register_tool("attach_script", "Attach a script to a node", params, callable_mp_static(&ScriptTools::tool_attach_script));
+		reg->register_tool("attach_script", "Attach a script to a node", params, callable_mp_static(&ScriptTools::tool_attach_script), true);
 	}
 
 	// get_script_content
