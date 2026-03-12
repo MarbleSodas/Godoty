@@ -100,7 +100,7 @@ Variant AIToolRegistry::execute_tool(const String &p_name, const Dictionary &p_a
 
 	Variant result;
 	Callable::CallError error;
-	const Variant *args[1] = { &p_arguments };
+	const Variant *args[1] = { (const Variant *)&p_arguments };
 	def.handler.callp(args, 1, result, error);
 
 	if (error.error != Callable::CallError::CALL_OK) {

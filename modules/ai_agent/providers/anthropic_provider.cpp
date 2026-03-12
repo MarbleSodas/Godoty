@@ -53,12 +53,12 @@ TypedArray<Dictionary> AnthropicProvider::_format_messages_anthropic(const Typed
 					}
 					TypedArray<Dictionary> tc = msg->get_tool_calls();
 					for (int j = 0; j < tc.size(); j++) {
-						Dictionary tool_call = tc[j];
+						Dictionary tool_call = (Dictionary)tc[j];
 						Dictionary tool_block;
 						tool_block["type"] = "tool_use";
-						tool_block["id"] = tool_call.get("id", "");
-						tool_block["name"] = tool_call.get("function", Dictionary()).get("name", "");
-						String args_str = tool_call.get("function", Dictionary()).get("arguments", "{}");
+						tool_block["id"] = tool_call.get("id", String());
+						tool_block["name"] = ((Dictionary)tool_call.get("function", Dictionary())).get("name", String());
+						String args_str = ((Dictionary)tool_call.get("function", Dictionary())).get("arguments", String("{}"));
 						JSON json;
 						json.parse(args_str);
 						tool_block["input"] = json.get_data();
@@ -90,14 +90,14 @@ TypedArray<Dictionary> AnthropicProvider::_format_messages_anthropic(const Typed
 TypedArray<Dictionary> AnthropicProvider::_convert_tools_to_anthropic(const TypedArray<Dictionary> &p_tools) const {
 	TypedArray<Dictionary> converted;
 	for (int i = 0; i < p_tools.size(); i++) {
-		Dictionary tool = p_tools[i];
+		Dictionary tool = (Dictionary)p_tools[i];
 		Dictionary anthropic_tool;
 		// OpenAI format: {type: "function", function: {name, description, parameters}}
 		// Anthropic format: {name, description, input_schema}
 		if (tool.has("function")) {
 			Dictionary func = tool["function"];
-			anthropic_tool["name"] = func.get("name", "");
-			anthropic_tool["description"] = func.get("description", "");
+			anthropic_tool["name"] = func.get("name", String());
+			anthropic_tool["description"] = func.get("description", String());
 			anthropic_tool["input_schema"] = func.get("parameters", Dictionary());
 		}
 		converted.push_back(anthropic_tool);
@@ -136,15 +136,15 @@ Ref<AIMessage> AnthropicProvider::parse_response(const Dictionary &p_response) c
 
 	for (int i = 0; i < content_blocks.size(); i++) {
 		Dictionary block = content_blocks[i];
-		String type = block.get("type", "");
+		String type = block.get("type", String());
 		if (type == "text") {
-			text_content += block.get("text", "");
+			text_content += String(block.get("text", String()));
 		} else if (type == "tool_use") {
 			// Convert Anthropic tool_use to OpenAI-compatible format.
 			Dictionary tc;
-			tc["id"] = block.get("id", "");
+			tc["id"] = block.get("id", String());
 			Dictionary func;
-			func["name"] = block.get("name", "");
+			func["name"] = block.get("name", String());
 			func["arguments"] = JSON::stringify(block.get("input", Dictionary()));
 			tc["function"] = func;
 			tc["type"] = "function";

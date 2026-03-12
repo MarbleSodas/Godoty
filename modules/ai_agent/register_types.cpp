@@ -34,6 +34,7 @@
 #include "ai_agent_session.h"
 #include "ai_message.h"
 #include "ai_tool_registry.h"
+#include "context/ai_context_manager.h"
 #include "providers/ai_provider.h"
 #include "providers/anthropic_provider.h"
 #include "providers/local_provider.h"
@@ -43,6 +44,7 @@
 #include "core/config/engine.h"
 
 static AIToolRegistry *ai_tool_registry_singleton = nullptr;
+static AIContextManager *ai_context_manager_singleton = nullptr;
 
 void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_CORE) {
@@ -65,6 +67,12 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 				Engine::Singleton("AIToolRegistry", AIToolRegistry::get_singleton()));
 		GDREGISTER_CLASS(AIToolRegistry);
 
+		// Register the context manager singleton.
+		ai_context_manager_singleton = memnew(AIContextManager);
+		Engine::get_singleton()->add_singleton(
+				Engine::Singleton("AIContextManager", AIContextManager::get_singleton()));
+		GDREGISTER_CLASS(AIContextManager);
+
 		// Register session management.
 		GDREGISTER_CLASS(AIAgentSession);
 	}
@@ -72,6 +80,11 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_ai_agent_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		if (ai_context_manager_singleton) {
+			Engine::get_singleton()->remove_singleton("AIContextManager");
+			memdelete(ai_context_manager_singleton);
+			ai_context_manager_singleton = nullptr;
+		}
 		if (ai_tool_registry_singleton) {
 			Engine::get_singleton()->remove_singleton("AIToolRegistry");
 			memdelete(ai_tool_registry_singleton);

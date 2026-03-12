@@ -88,7 +88,7 @@ Ref<AIMessage> OpenAIProvider::parse_response(const Dictionary &p_response) cons
 	TypedArray<Dictionary> tool_calls;
 
 	if (msg.has("tool_calls")) {
-		tool_calls = msg["tool_calls"];
+		tool_calls = (TypedArray<Dictionary>)msg["tool_calls"];
 	}
 
 	return AIMessage::create_assistant(content, tool_calls);
