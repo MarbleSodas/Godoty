@@ -40,6 +40,11 @@
 #include "providers/local_provider.h"
 #include "providers/minimax_provider.h"
 #include "providers/openai_provider.h"
+#include "tools/debug_tools.h"
+#include "tools/editor_tools.h"
+#include "tools/resource_tools.h"
+#include "tools/scene_tools.h"
+#include "tools/script_tools.h"
 
 #include "core/config/engine.h"
 
@@ -72,6 +77,20 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 		Engine::get_singleton()->add_singleton(
 				Engine::Singleton("AIContextManager", AIContextManager::get_singleton()));
 		GDREGISTER_CLASS(AIContextManager);
+
+		// Register tool classes.
+		GDREGISTER_CLASS(SceneTools);
+		GDREGISTER_CLASS(ScriptTools);
+		GDREGISTER_CLASS(ResourceTools);
+		GDREGISTER_CLASS(EditorTools);
+		GDREGISTER_CLASS(DebugTools);
+
+		// Auto-register all built-in tools.
+		SceneTools::register_tools();
+		ScriptTools::register_tools();
+		ResourceTools::register_tools();
+		EditorTools::register_tools();
+		DebugTools::register_tools();
 
 		// Register session management.
 		GDREGISTER_CLASS(AIAgentSession);
