@@ -48,6 +48,13 @@
 
 #include "core/config/engine.h"
 
+#ifdef TOOLS_ENABLED
+#include "editor/ai_agent_plugin.h"
+#include "editor/ai_chat_panel.h"
+#include "editor/ai_settings_panel.h"
+#include "editor/plugins/editor_plugin.h"
+#endif
+
 static AIToolRegistry *ai_tool_registry_singleton = nullptr;
 static AIContextManager *ai_context_manager_singleton = nullptr;
 
@@ -94,6 +101,14 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 
 		// Register session management.
 		GDREGISTER_CLASS(AIAgentSession);
+
+#ifdef TOOLS_ENABLED
+		// Register editor UI classes (only in editor builds).
+		GDREGISTER_CLASS(AIAgentPlugin);
+		GDREGISTER_CLASS(AIChatPanel);
+		GDREGISTER_CLASS(AISettingsPanel);
+		EditorPlugins::add_by_type<AIAgentPlugin>();
+#endif
 	}
 }
 
