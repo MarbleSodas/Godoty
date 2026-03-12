@@ -1,9 +1,9 @@
-short_name = "godot"
-name = "Godot Engine"
+short_name = "godoty"
+name = "Godoty"
 major = 4
 minor = 6
 patch = 1
 status = "stable"
-module_config = ""
-website = "https://godotengine.org"
+module_config = ".ai"
+website = "https://github.com/MarbleSodas/Godoty"
 docs = "4.6"
