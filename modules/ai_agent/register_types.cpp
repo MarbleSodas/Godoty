@@ -37,6 +37,7 @@
 #include "providers/ai_provider.h"
 #include "providers/anthropic_provider.h"
 #include "providers/local_provider.h"
+#include "providers/minimax_provider.h"
 #include "providers/openai_provider.h"
 
 #include "core/config/engine.h"
@@ -55,6 +56,7 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_ABSTRACT_CLASS(AIProvider);
 		GDREGISTER_CLASS(OpenAIProvider);
 		GDREGISTER_CLASS(AnthropicProvider);
+		GDREGISTER_CLASS(MiniMaxProvider);
 		GDREGISTER_CLASS(LocalLLMProvider);
 
 		// Register the tool registry singleton.

@@ -9,6 +9,7 @@
 #include "core/io/json.h"
 #include "providers/anthropic_provider.h"
 #include "providers/local_provider.h"
+#include "providers/minimax_provider.h"
 #include "providers/openai_provider.h"
 
 void AIAgentSession::_bind_methods() {
@@ -104,6 +105,11 @@ Ref<AIProvider> AIAgentSession::_create_provider_for_config() const {
 			Ref<AnthropicProvider> anthropic;
 			anthropic.instantiate();
 			p = anthropic;
+		} break;
+		case AIAgentConfig::PROVIDER_MINIMAX: {
+			Ref<MiniMaxProvider> minimax;
+			minimax.instantiate();
+			p = minimax;
 		} break;
 		case AIAgentConfig::PROVIDER_LOCAL: {
 			Ref<LocalLLMProvider> local;

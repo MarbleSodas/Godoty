@@ -13,6 +13,7 @@ def get_doc_classes():
         "AIMessage",
         "AIProvider",
         "AIToolRegistry",
+        "MiniMaxProvider",
     ]
 
 

@@ -29,7 +29,7 @@ void AIAgentConfig::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_effective_base_url"), &AIAgentConfig::get_effective_base_url);
 
 	ADD_GROUP("Provider", "");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "provider_type", PROPERTY_HINT_ENUM, "OpenAI,Anthropic,Local,Custom"), "set_provider_type", "get_provider_type");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "provider_type", PROPERTY_HINT_ENUM, "OpenAI,Anthropic,MiniMax,Local,Custom"), "set_provider_type", "get_provider_type");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "api_key", PROPERTY_HINT_PASSWORD), "set_api_key", "get_api_key");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "model_name"), "set_model_name", "get_model_name");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "base_url", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_DEFAULT), "set_base_url", "get_base_url");
@@ -47,6 +47,7 @@ void AIAgentConfig::_bind_methods() {
 
 	BIND_ENUM_CONSTANT(PROVIDER_OPENAI);
 	BIND_ENUM_CONSTANT(PROVIDER_ANTHROPIC);
+	BIND_ENUM_CONSTANT(PROVIDER_MINIMAX);
 	BIND_ENUM_CONSTANT(PROVIDER_LOCAL);
 	BIND_ENUM_CONSTANT(PROVIDER_CUSTOM);
 }
@@ -141,6 +142,8 @@ String AIAgentConfig::get_effective_base_url() const {
 			return "https://api.openai.com/v1";
 		case PROVIDER_ANTHROPIC:
 			return "https://api.anthropic.com/v1";
+		case PROVIDER_MINIMAX:
+			return "https://api.minimax.chat/v1";
 		case PROVIDER_LOCAL:
 			return "http://localhost:11434"; // Ollama default.
 		case PROVIDER_CUSTOM:
