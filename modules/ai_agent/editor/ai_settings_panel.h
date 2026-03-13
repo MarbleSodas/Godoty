@@ -9,42 +9,46 @@
 
 #ifdef TOOLS_ENABLED
 
+#include "core/templates/vector.h"
 #include "modules/ai_agent/ai_agent_config.h"
-#include "scene/gui/control.h"
-#include "scene/gui/container.h"
 #include "scene/gui/box_container.h"
-
 #include "scene/gui/line_edit.h"
+#include "scene/gui/menu_button.h"
 #include "scene/gui/option_button.h"
-#include "scene/gui/spin_box.h"
-#include "scene/gui/text_edit.h"
 #include "scene/gui/button.h"
-#include "scene/gui/check_box.h"
-#include "scene/gui/scroll_container.h"
+
+class Label;
 
 class AISettingsPanel : public VBoxContainer {
 	GDCLASS(AISettingsPanel, VBoxContainer);
 
+	Label *provider_summary_label = nullptr;
 	OptionButton *provider_select = nullptr;
+	HBoxContainer *api_key_row = nullptr;
 	LineEdit *api_key_input = nullptr;
+	Label *api_key_hint_label = nullptr;
 	LineEdit *model_input = nullptr;
+	MenuButton *model_preset_button = nullptr;
+	Label *model_hint_label = nullptr;
 	LineEdit *base_url_input = nullptr;
-	SpinBox *temperature_spin = nullptr;
-	SpinBox *max_tokens_spin = nullptr;
-	TextEdit *system_prompt_input = nullptr;
-	CheckBox *stream_responses_checkbox = nullptr;
-	CheckBox *allow_all_tools_checkbox = nullptr;
-	VBoxContainer *tool_list_container = nullptr;
 	Button *save_button = nullptr;
+	Vector<Button *> provider_cards;
+	HBoxContainer *base_url_container = nullptr;
+	Label *selected_model_label = nullptr;
+	int selected_provider_index = 0;
 
 	Ref<AIAgentConfig> config;
-	HashMap<String, CheckBox *> tool_checkboxes;
 
+	void _apply_theme();
 	void _on_provider_changed(int p_index);
-	void _on_allow_all_tools_toggled(bool p_pressed);
-	void _refresh_tool_list();
+	void _on_model_preset_selected(int p_index);
+	void _refresh_model_presets();
+	void _refresh_provider_ui();
 	void _save_config();
 	void _load_config();
+	void _create_provider_cards();
+	void _on_card_selected(int p_index);
+	void _update_base_url_visibility();
 
 protected:
 	static void _bind_methods();
