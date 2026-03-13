@@ -121,6 +121,9 @@
 #include "tests/core/variant/test_dictionary.h"
 #include "tests/core/variant/test_variant.h"
 #include "tests/core/variant/test_variant_utility.h"
+#ifdef MODULE_AI_AGENT_ENABLED
+#include "tests/modules/ai_agent/test_ai_agent_session.h"
+#endif
 #include "tests/scene/test_animation.h"
 #include "tests/scene/test_animation_blend_tree.h"
 #include "tests/scene/test_animation_player.h"
