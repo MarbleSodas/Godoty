@@ -290,7 +290,9 @@ AISettingsPanel::AISettingsPanel() {
 		row->add_child(selected_model_label);
 	}
 
-	base_url_container = memnew(VBoxContainer);
+	base_url_container = memnew(HBoxContainer);
+	base_url_container->add_theme_constant_override("separation", 10 * EDSCALE);
+	base_url_container->set_visible(false); // Hidden by default
 	setup_content->add_child(base_url_container);
 	{
 		HBoxContainer *row = memnew(HBoxContainer);
@@ -303,10 +305,15 @@ AISettingsPanel::AISettingsPanel() {
 		row->add_child(lbl);
 
 		base_url_input = memnew(LineEdit);
-		base_url_input->set_placeholder("Leave blank to use the provider default");
+		base_url_input->set_placeholder("https://api.example.com/v1");
 		base_url_input->set_h_size_flags(SIZE_EXPAND_FILL);
 		row->add_child(base_url_input);
 	}
+
+	// Set selected_provider_index before calling _update_base_url_visibility()
+	config.instantiate();
+	config->apply_provider_defaults(true, true);
+	selected_provider_index = (int)config->get_provider_type();
 
 	_update_base_url_visibility();
 
@@ -447,6 +454,10 @@ void AISettingsPanel::_load_config() {
 	}
 
 	config->apply_provider_defaults(config->get_model_name().is_empty(), false);
+
+	// Update selected_provider_index and refresh visibility based on loaded provider
+	selected_provider_index = (int)config->get_provider_type();
+	_update_base_url_visibility();
 
 	for (int i = 0; i < provider_select->get_item_count(); i++) {
 		if (provider_select->get_item_id(i) == (int)config->get_provider_type()) {
