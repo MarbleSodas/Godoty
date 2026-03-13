@@ -9,259 +9,402 @@
 
 #include "ai_settings_panel.h"
 
-#include "modules/ai_agent/ai_tool_registry.h"
+#include "editor/settings/editor_settings.h"
+#include "editor/themes/editor_scale.h"
 
 #include "scene/gui/button.h"
-#include "scene/gui/check_box.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
+#include "scene/gui/margin_container.h"
+#include "scene/gui/menu_button.h"
 #include "scene/gui/option_button.h"
-#include "scene/gui/scroll_container.h"
-#include "scene/gui/separator.h"
-#include "scene/gui/spin_box.h"
-#include "scene/gui/text_edit.h"
+#include "scene/gui/panel_container.h"
+#include "scene/gui/popup_menu.h"
 
-#include "editor/settings/editor_settings.h"
+namespace {
+
+static const char *AI_SETTING_PROVIDER_TYPE = "_ai_agent/provider_type";
+static const char *AI_SETTING_API_KEY = "_ai_agent/api_key";
+static const char *AI_SETTING_MODEL_NAME = "_ai_agent/model_name";
+static const char *AI_SETTING_BASE_URL = "_ai_agent/base_url";
+
+bool _has_global_provider_config(EditorSettings *p_settings) {
+	return p_settings->has_setting(AI_SETTING_PROVIDER_TYPE) ||
+			p_settings->has_setting(AI_SETTING_API_KEY) ||
+			p_settings->has_setting(AI_SETTING_MODEL_NAME) ||
+			p_settings->has_setting(AI_SETTING_BASE_URL);
+}
+
+void _save_global_provider_config(EditorSettings *p_settings, const Ref<AIAgentConfig> &p_config) {
+	p_settings->set(AI_SETTING_PROVIDER_TYPE, (int)p_config->get_provider_type());
+	p_settings->set(AI_SETTING_API_KEY, p_config->get_api_key());
+	p_settings->set(AI_SETTING_MODEL_NAME, p_config->get_model_name());
+	p_settings->set(AI_SETTING_BASE_URL, p_config->get_base_url());
+	EditorSettings::save();
+}
+
+bool _load_legacy_project_config(EditorSettings *p_settings, const Ref<AIAgentConfig> &p_config) {
+	const int legacy_provider = (int)p_settings->get_project_metadata("ai_agent", "provider_type", -1);
+	const String legacy_api_key = p_settings->get_project_metadata("ai_agent", "api_key", String());
+	const String legacy_model_name = p_settings->get_project_metadata("ai_agent", "model_name", String());
+	const String legacy_base_url = p_settings->get_project_metadata("ai_agent", "base_url", String());
+
+	const bool has_legacy_values = legacy_provider != -1 || !legacy_api_key.is_empty() || !legacy_model_name.is_empty() || !legacy_base_url.is_empty();
+	if (!has_legacy_values) {
+		return false;
+	}
+
+	if (legacy_provider != -1) {
+		p_config->set_provider_type((AIAgentConfig::ProviderType)legacy_provider);
+	}
+	p_config->set_api_key(legacy_api_key);
+	p_config->set_model_name(legacy_model_name);
+	p_config->set_base_url(legacy_base_url);
+	p_config->apply_provider_defaults(p_config->get_model_name().is_empty(), false);
+	_save_global_provider_config(p_settings, p_config);
+	return true;
+}
+
+} // namespace
 
 void AISettingsPanel::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("config_changed",
 			PropertyInfo(Variant::OBJECT, "config", PROPERTY_HINT_RESOURCE_TYPE, "AIAgentConfig", PROPERTY_USAGE_DEFAULT, "AIAgentConfig")));
 }
 
+void AISettingsPanel::_create_provider_cards() {
+	// Find the cards container (should be the VBoxContainer we created in constructor)
+	VBoxContainer *cards_container = nullptr;
+	for (int i = 0; i < get_child_count(); i++) {
+		Node *child = get_child(i);
+		if (child->get_class() == "PanelContainer") {
+			PanelContainer *pc = Object::cast_to<PanelContainer>(child);
+			if (pc && pc->get_child_count() > 0) {
+				MarginContainer *mc = Object::cast_to<MarginContainer>(pc->get_child(0));
+				if (mc && mc->get_child_count() > 0) {
+					VBoxContainer *vbc = Object::cast_to<VBoxContainer>(mc->get_child(0));
+					if (vbc && vbc->get_child_count() > 2) { // Has multiple children after title/subtitle
+						cards_container = vbc;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	if (!cards_container) {
+		return;
+	}
+
+	// Clear any existing cards
+	for (Button *btn : provider_cards) {
+		if (btn) {
+			btn->queue_free();
+		}
+	}
+	provider_cards.clear();
+
+	// Create card for each provider
+	for (int i = 0; i < 5; i++) {
+		Button *card = memnew(Button);
+		card->set_toggle_mode(true);
+		card->set_button_group(nullptr); // Manual selection management
+		card->connect("pressed", callable_mp(this, &AISettingsPanel::_on_card_selected).bind(i));
+		card->set_meta("provider_index", i);
+
+		// Card layout: HBox with icon, name, tagline
+		HBoxContainer *card_layout = memnew(HBoxContainer);
+		card_layout->add_theme_constant_override("separation", 12 * EDSCALE);
+		card->add_child(card_layout);
+
+		// Provider icon (colored rect)
+		PanelContainer *icon_bg = memnew(PanelContainer);
+		icon_bg->set_custom_minimum_size(Size2(24 * EDSCALE, 24 * EDSCALE));
+		card_layout->add_child(icon_bg);
+
+		Color provider_color;
+		String provider_letter;
+		switch (i) {
+			case 0: provider_color = Color(0.063, 0.635, 0.498); provider_letter = "O"; break; // OpenAI green
+			case 1: provider_color = Color(0.851, 0.467, 0.341); provider_letter = "A"; break; // Anthropic
+			case 2: provider_color = Color(0.976, 0.725, 0.188); provider_letter = "M"; break; // MiniMax
+			case 3: provider_color = Color(0.2, 0.2, 0.2); provider_letter = "L"; break; // Local
+			case 4: provider_color = Color(0.4, 0.4, 0.4); provider_letter = "C"; break; // Custom
+		}
+		icon_bg->add_theme_color_override("panel_color", provider_color);
+
+		Label *letter = memnew(Label);
+		letter->set_text(provider_letter);
+		letter->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		icon_bg->add_child(letter);
+
+		// Name and tagline
+		VBoxContainer *text_layout = memnew(VBoxContainer);
+		card_layout->add_child(text_layout);
+
+		Label *name = memnew(Label);
+		name->set_text(ai_agent_get_provider_descriptor((AIAgentConfig::ProviderType)i).name);
+		name->add_theme_font_size_override("font_size", int(14 * EDSCALE));
+		text_layout->add_child(name);
+
+		Label *tagline = memnew(Label);
+		tagline->set_text(ai_agent_get_provider_descriptor((AIAgentConfig::ProviderType)i).description);
+		tagline->add_theme_color_override("font_color", get_theme_color("font_placeholder_color", "Editor"));
+		tagline->add_theme_font_size_override("font_size", int(11 * EDSCALE));
+		text_layout->add_child(tagline);
+
+		// Add to container and tracking vector
+		cards_container->add_child(card);
+		provider_cards.push_back(card);
+	}
+}
+
+void AISettingsPanel::_on_card_selected(int p_index) {
+	selected_provider_index = p_index;
+	_refresh_provider_ui();
+}
+
 AISettingsPanel::AISettingsPanel() {
 	set_name("AISettings");
-	set_visible(false); // Hidden by default; toggled from chat panel.
+	set_visible(false);
+	set_h_size_flags(SIZE_EXPAND_FILL);
+	add_theme_constant_override("separation", 12 * EDSCALE);
 
 	Label *title = memnew(Label);
-	title->set_text("AI Agent Settings");
+	title->set_text("Connect a Provider");
+	title->set_theme_type_variation("HeaderSmall");
 	add_child(title);
 
-	add_child(memnew(HSeparator));
+	Label *subtitle = memnew(Label);
+	subtitle->set_text("Set a provider once. Godoty handles prompts, token budgets, and mode behavior automatically.");
+	subtitle->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	add_child(subtitle);
 
-	// --- Provider selection ---
+	PanelContainer *setup_card = memnew(PanelContainer);
+	add_child(setup_card);
+
+	MarginContainer *setup_margin = memnew(MarginContainer);
+	setup_margin->add_theme_constant_override("margin_left", 14 * EDSCALE);
+	setup_margin->add_theme_constant_override("margin_top", 14 * EDSCALE);
+	setup_margin->add_theme_constant_override("margin_right", 14 * EDSCALE);
+	setup_margin->add_theme_constant_override("margin_bottom", 14 * EDSCALE);
+	setup_card->add_child(setup_margin);
+
+	VBoxContainer *setup_content = memnew(VBoxContainer);
+	setup_content->add_theme_constant_override("separation", 10 * EDSCALE);
+	setup_margin->add_child(setup_content);
+
+	/*
 	{
 		HBoxContainer *row = memnew(HBoxContainer);
-		add_child(row);
+		row->add_theme_constant_override("separation", 10 * EDSCALE);
+		setup_content->add_child(row);
+
 		Label *lbl = memnew(Label);
-		lbl->set_text("Provider:");
-		lbl->set_custom_minimum_size(Size2(120, 0));
+		lbl->set_text("Provider");
+		lbl->set_custom_minimum_size(Size2(110 * EDSCALE, 0));
 		row->add_child(lbl);
+
 		provider_select = memnew(OptionButton);
+		provider_select->set_h_size_flags(SIZE_EXPAND_FILL);
 		provider_select->add_item("OpenAI", AIAgentConfig::PROVIDER_OPENAI);
 		provider_select->add_item("Anthropic", AIAgentConfig::PROVIDER_ANTHROPIC);
 		provider_select->add_item("MiniMax", AIAgentConfig::PROVIDER_MINIMAX);
 		provider_select->add_item("Local (Ollama)", AIAgentConfig::PROVIDER_LOCAL);
 		provider_select->add_item("Custom", AIAgentConfig::PROVIDER_CUSTOM);
-		provider_select->set_h_size_flags(SIZE_EXPAND_FILL);
 		provider_select->connect("item_selected", callable_mp(this, &AISettingsPanel::_on_provider_changed));
 		row->add_child(provider_select);
 	}
+	*/
 
-	// --- API Key ---
+	// Create provider cards container
+	VBoxContainer *cards_container = memnew(VBoxContainer);
+	cards_container->add_theme_constant_override("separation", 8 * EDSCALE);
+	setup_content->add_child(cards_container);
+
+	// Create provider cards
+	_create_provider_cards();
+
+	provider_summary_label = memnew(Label);
+	provider_summary_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	setup_content->add_child(provider_summary_label);
+
+	api_key_row = memnew(HBoxContainer);
+	api_key_row->add_theme_constant_override("separation", 10 * EDSCALE);
+	setup_content->add_child(api_key_row);
+
+	Label *api_key_label = memnew(Label);
+	api_key_label->set_text("API Key");
+	api_key_label->set_custom_minimum_size(Size2(110 * EDSCALE, 0));
+	api_key_row->add_child(api_key_label);
+
+	api_key_input = memnew(LineEdit);
+	api_key_input->set_secret(true);
+	api_key_input->set_h_size_flags(SIZE_EXPAND_FILL);
+	api_key_row->add_child(api_key_input);
+
+	api_key_hint_label = memnew(Label);
+	api_key_hint_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	setup_content->add_child(api_key_hint_label);
+
 	{
 		HBoxContainer *row = memnew(HBoxContainer);
-		add_child(row);
-		Label *lbl = memnew(Label);
-		lbl->set_text("API Key:");
-		lbl->set_custom_minimum_size(Size2(120, 0));
-		row->add_child(lbl);
-		api_key_input = memnew(LineEdit);
-		api_key_input->set_secret(true);
-		api_key_input->set_placeholder("Enter your API key...");
-		api_key_input->set_h_size_flags(SIZE_EXPAND_FILL);
-		row->add_child(api_key_input);
-	}
+		row->add_theme_constant_override("separation", 10 * EDSCALE);
+		setup_content->add_child(row);
 
-	// --- Model ---
-	{
-		HBoxContainer *row = memnew(HBoxContainer);
-		add_child(row);
 		Label *lbl = memnew(Label);
-		lbl->set_text("Model:");
-		lbl->set_custom_minimum_size(Size2(120, 0));
+		lbl->set_text("Model");
+		lbl->set_custom_minimum_size(Size2(110 * EDSCALE, 0));
 		row->add_child(lbl);
+
 		model_input = memnew(LineEdit);
-		model_input->set_placeholder("e.g., gpt-4o, claude-3.5-sonnet, MiniMax-M1");
 		model_input->set_h_size_flags(SIZE_EXPAND_FILL);
 		row->add_child(model_input);
+
+		model_preset_button = memnew(MenuButton);
+		model_preset_button->set_text("Browse");
+		model_preset_button->get_popup()->connect("id_pressed", callable_mp(this, &AISettingsPanel::_on_model_preset_selected));
+		row->add_child(model_preset_button);
 	}
 
-	// --- Base URL ---
+	model_hint_label = memnew(Label);
+	model_hint_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	setup_content->add_child(model_hint_label);
+
 	{
 		HBoxContainer *row = memnew(HBoxContainer);
-		add_child(row);
+		row->add_theme_constant_override("separation", 10 * EDSCALE);
+		setup_content->add_child(row);
+
 		Label *lbl = memnew(Label);
-		lbl->set_text("Base URL:");
-		lbl->set_custom_minimum_size(Size2(120, 0));
+		lbl->set_text("Base URL");
+		lbl->set_custom_minimum_size(Size2(110 * EDSCALE, 0));
 		row->add_child(lbl);
+
 		base_url_input = memnew(LineEdit);
-		base_url_input->set_placeholder("Leave empty for default");
+		base_url_input->set_placeholder("Leave blank to use the provider default");
 		base_url_input->set_h_size_flags(SIZE_EXPAND_FILL);
 		row->add_child(base_url_input);
 	}
 
-	// --- Temperature ---
-	{
-		HBoxContainer *row = memnew(HBoxContainer);
-		add_child(row);
-		Label *lbl = memnew(Label);
-		lbl->set_text("Temperature:");
-		lbl->set_custom_minimum_size(Size2(120, 0));
-		row->add_child(lbl);
-		temperature_spin = memnew(SpinBox);
-		temperature_spin->set_min(0.0);
-		temperature_spin->set_max(2.0);
-		temperature_spin->set_step(0.1);
-		temperature_spin->set_value(0.7);
-		temperature_spin->set_h_size_flags(SIZE_EXPAND_FILL);
-		row->add_child(temperature_spin);
-	}
+	HBoxContainer *action_row = memnew(HBoxContainer);
+	action_row->add_theme_constant_override("separation", 8 * EDSCALE);
+	setup_content->add_child(action_row);
 
-	// --- Max Tokens ---
-	{
-		HBoxContainer *row = memnew(HBoxContainer);
-		add_child(row);
-		Label *lbl = memnew(Label);
-		lbl->set_text("Max Tokens:");
-		lbl->set_custom_minimum_size(Size2(120, 0));
-		row->add_child(lbl);
-		max_tokens_spin = memnew(SpinBox);
-		max_tokens_spin->set_min(100);
-		max_tokens_spin->set_max(128000);
-		max_tokens_spin->set_step(100);
-		max_tokens_spin->set_value(4096);
-		max_tokens_spin->set_h_size_flags(SIZE_EXPAND_FILL);
-		row->add_child(max_tokens_spin);
-	}
-
-	add_child(memnew(HSeparator));
-
-	// --- System Prompt ---
-	{
-		Label *lbl = memnew(Label);
-		lbl->set_text("System Prompt:");
-		add_child(lbl);
-		system_prompt_input = memnew(TextEdit);
-		system_prompt_input->set_custom_minimum_size(Size2(0, 80));
-		system_prompt_input->set_placeholder("You are a helpful AI assistant integrated into the Godoty game engine editor...");
-		system_prompt_input->set_line_wrapping_mode(TextEdit::LineWrappingMode::LINE_WRAPPING_BOUNDARY);
-		add_child(system_prompt_input);
-	}
-
-	add_child(memnew(HSeparator));
-
-	stream_responses_checkbox = memnew(CheckBox);
-	stream_responses_checkbox->set_text("Stream responses");
-	stream_responses_checkbox->set_pressed(true);
-	add_child(stream_responses_checkbox);
-
-	allow_all_tools_checkbox = memnew(CheckBox);
-	allow_all_tools_checkbox->set_text("Allow all registered tools");
-	allow_all_tools_checkbox->set_pressed(true);
-	allow_all_tools_checkbox->connect("toggled", callable_mp(this, &AISettingsPanel::_on_allow_all_tools_toggled));
-	add_child(allow_all_tools_checkbox);
-
-	Label *tools_label = memnew(Label);
-	tools_label->set_text("Enabled Tools:");
-	add_child(tools_label);
-
-	ScrollContainer *tools_scroll = memnew(ScrollContainer);
-	tools_scroll->set_custom_minimum_size(Size2(0, 120));
-	tools_scroll->set_v_size_flags(SIZE_EXPAND_FILL);
-	add_child(tools_scroll);
-
-	tool_list_container = memnew(VBoxContainer);
-	tool_list_container->set_h_size_flags(SIZE_EXPAND_FILL);
-	tools_scroll->add_child(tool_list_container);
-
-	// --- Save button ---
 	save_button = memnew(Button);
-	save_button->set_text("Save Settings");
+	save_button->set_text("Save Connection");
 	save_button->connect("pressed", callable_mp(this, &AISettingsPanel::_save_config));
-	add_child(save_button);
+	action_row->add_child(save_button);
 
-	// Initialize config.
+	action_row->add_spacer();
+
+	Label *quick_note = memnew(Label);
+	quick_note->set_text("Saved globally for this editor install. Provider changes reset the model to that provider's default.");
+	quick_note->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	quick_note->set_h_size_flags(SIZE_EXPAND_FILL);
+	action_row->add_child(quick_note);
+
 	config.instantiate();
+	config->apply_provider_defaults(true, true);
+	_apply_theme();
 }
 
 void AISettingsPanel::_notification(int p_what) {
 	if (p_what == NOTIFICATION_ENTER_TREE) {
-		_refresh_tool_list();
 		_load_config();
 		emit_signal("config_changed", config);
+	} else if (p_what == NOTIFICATION_THEME_CHANGED) {
+		_apply_theme();
+	}
+}
+
+void AISettingsPanel::_apply_theme() {
+	Color accent = get_theme_color("accent_color", "Editor");
+	Color muted = get_theme_color("font_placeholder_color", "Editor");
+
+	if (provider_summary_label) {
+		provider_summary_label->add_theme_color_override("font_color", accent);
+	}
+	if (api_key_hint_label) {
+		api_key_hint_label->add_theme_color_override("font_color", muted);
+	}
+	if (model_hint_label) {
+		model_hint_label->add_theme_color_override("font_color", muted);
 	}
 }
 
 void AISettingsPanel::_on_provider_changed(int p_index) {
-	int provider = provider_select->get_item_id(p_index);
-	// Update model placeholder and default value based on provider.
-	switch (provider) {
-		case AIAgentConfig::PROVIDER_OPENAI:
-			model_input->set_placeholder("e.g., gpt-4o, gpt-4o-mini");
-			if (model_input->get_text().is_empty()) {
-				model_input->set_text("gpt-4o");
-			}
-			max_tokens_spin->set_value(4096);
-			break;
-		case AIAgentConfig::PROVIDER_ANTHROPIC:
-			model_input->set_placeholder("e.g., claude-sonnet-4-20250514, claude-3-5-sonnet");
-			if (model_input->get_text().is_empty()) {
-				model_input->set_text("claude-sonnet-4-20250514");
-			}
-			max_tokens_spin->set_value(4096);
-			break;
-		case AIAgentConfig::PROVIDER_MINIMAX:
-			model_input->set_placeholder("e.g., MiniMax-M1, MiniMax-Text-01");
-			if (model_input->get_text().is_empty()) {
-				model_input->set_text("MiniMax-M1");
-			}
-			max_tokens_spin->set_value(4096);
-			break;
-		case AIAgentConfig::PROVIDER_LOCAL:
-			model_input->set_placeholder("e.g., llama3, codellama, mistral");
-			max_tokens_spin->set_value(4096);
-			break;
-		default:
-			model_input->set_placeholder("Model identifier");
-			break;
+	if (config.is_valid()) {
+		config->set_provider_type((AIAgentConfig::ProviderType)provider_select->get_item_id(p_index));
+		config->apply_provider_defaults(true, true);
 	}
+
+	if (model_input) {
+		model_input->set_text(config->get_model_name());
+	}
+	if (base_url_input) {
+		base_url_input->set_text("");
+	}
+
+	_refresh_model_presets();
+	_refresh_provider_ui();
 }
 
-void AISettingsPanel::_on_allow_all_tools_toggled(bool p_pressed) {
-	for (const KeyValue<String, CheckBox *> &E : tool_checkboxes) {
-		if (E.value) {
-			E.value->set_disabled(p_pressed);
-		}
-	}
-}
-
-void AISettingsPanel::_refresh_tool_list() {
-	if (!tool_list_container) {
+void AISettingsPanel::_on_model_preset_selected(int p_index) {
+	if (!model_preset_button || !model_input) {
 		return;
 	}
 
-	for (const KeyValue<String, CheckBox *> &E : tool_checkboxes) {
-		if (E.value) {
-			E.value->queue_free();
-		}
-	}
-	tool_checkboxes.clear();
+	model_input->set_text(model_preset_button->get_popup()->get_item_text(p_index));
+}
 
-	AIToolRegistry *registry = AIToolRegistry::get_singleton();
-	if (!registry) {
+void AISettingsPanel::_refresh_model_presets() {
+	if (!model_preset_button || config.is_null()) {
 		return;
 	}
 
-	PackedStringArray tool_names = registry->get_tool_names();
-	for (int i = 0; i < tool_names.size(); i++) {
-		CheckBox *tool_checkbox = memnew(CheckBox);
-		tool_checkbox->set_text(tool_names[i]);
-		tool_checkbox->set_pressed(true);
-		tool_list_container->add_child(tool_checkbox);
-		tool_checkboxes[tool_names[i]] = tool_checkbox;
+	PopupMenu *popup = model_preset_button->get_popup();
+	popup->clear();
+
+	const PackedStringArray models = config->get_recommended_models();
+	for (int i = 0; i < models.size(); i++) {
+		popup->add_item(models[i], i);
+	}
+}
+
+void AISettingsPanel::_refresh_provider_ui() {
+	if (config.is_null()) {
+		return;
 	}
 
-	_on_allow_all_tools_toggled(allow_all_tools_checkbox && allow_all_tools_checkbox->is_pressed());
+	const String default_model = config->get_default_model_name();
+	const String effective_url = config->get_effective_base_url();
+
+	if (provider_summary_label) {
+		provider_summary_label->set_text(config->get_provider_description());
+	}
+	if (api_key_input) {
+		api_key_input->set_placeholder(config->get_api_key_placeholder());
+	}
+	if (api_key_hint_label) {
+		String hint = "Saved globally in the editor settings.";
+		if (!config->provider_requires_api_key()) {
+			hint += " Leave blank unless your local gateway requires authentication.";
+		}
+		api_key_hint_label->set_text(hint);
+	}
+	if (model_input) {
+		if (model_input->get_text().is_empty()) {
+			model_input->set_text(default_model);
+		}
+		model_input->set_placeholder(default_model);
+	}
+	if (model_hint_label) {
+		model_hint_label->set_text("Choose a recommended model or type any compatible model name. Built-in Ask, Edit, and Plan modes use their own hidden harness defaults.");
+	}
+	if (base_url_input) {
+		base_url_input->set_placeholder(effective_url.is_empty() ? "Required for custom providers" : effective_url);
+	}
 }
 
 void AISettingsPanel::_save_config() {
@@ -270,38 +413,17 @@ void AISettingsPanel::_save_config() {
 	}
 
 	config->set_provider_type((AIAgentConfig::ProviderType)provider_select->get_selected_id());
-	config->set_api_key(api_key_input->get_text());
-	config->set_model_name(model_input->get_text());
-	config->set_base_url(base_url_input->get_text());
-	config->set_temperature(temperature_spin->get_value());
-	config->set_max_tokens((int)max_tokens_spin->get_value());
-	config->set_system_prompt(system_prompt_input->get_text());
-	config->set_stream_responses(stream_responses_checkbox->is_pressed());
-
-	PackedStringArray enabled_tools;
-	if (!allow_all_tools_checkbox->is_pressed()) {
-		for (const KeyValue<String, CheckBox *> &E : tool_checkboxes) {
-			if (E.value && E.value->is_pressed()) {
-				enabled_tools.push_back(E.key);
-			}
-		}
-	}
-	config->set_enabled_tools(enabled_tools);
+	config->set_api_key(api_key_input->get_text().strip_edges());
+	config->set_model_name(model_input->get_text().strip_edges());
+	config->set_base_url(base_url_input->get_text().strip_edges());
+	config->apply_provider_defaults(config->get_model_name().is_empty(), false);
 
 	EditorSettings *settings = EditorSettings::get_singleton();
 	if (settings) {
-		settings->set_project_metadata("ai_agent", "provider_type", (int)config->get_provider_type());
-		settings->set_project_metadata("ai_agent", "api_key", config->get_api_key());
-		settings->set_project_metadata("ai_agent", "model_name", config->get_model_name());
-		settings->set_project_metadata("ai_agent", "base_url", config->get_base_url());
-		settings->set_project_metadata("ai_agent", "temperature", (double)config->get_temperature());
-		settings->set_project_metadata("ai_agent", "max_tokens", config->get_max_tokens());
-		settings->set_project_metadata("ai_agent", "system_prompt", config->get_system_prompt());
-		settings->set_project_metadata("ai_agent", "stream_responses", config->get_stream_responses());
-		settings->set_project_metadata("ai_agent", "enabled_tools", config->get_enabled_tools());
-		settings->save_project_metadata();
+		_save_global_provider_config(settings, config);
 	}
 
+	_refresh_provider_ui();
 	emit_signal("config_changed", config);
 }
 
@@ -315,36 +437,37 @@ void AISettingsPanel::_load_config() {
 		config.instantiate();
 	}
 
-	config->set_provider_type((AIAgentConfig::ProviderType)(int)settings->get_project_metadata("ai_agent", "provider_type", (int)AIAgentConfig::PROVIDER_OPENAI));
-	config->set_api_key(settings->get_project_metadata("ai_agent", "api_key", String()));
-	config->set_model_name(settings->get_project_metadata("ai_agent", "model_name", String("gpt-4o")));
-	config->set_base_url(settings->get_project_metadata("ai_agent", "base_url", String()));
-	config->set_temperature((float)(double)settings->get_project_metadata("ai_agent", "temperature", 0.7));
-	config->set_max_tokens((int)settings->get_project_metadata("ai_agent", "max_tokens", 4096));
-	config->set_system_prompt(settings->get_project_metadata("ai_agent", "system_prompt", String()));
-	config->set_stream_responses(settings->get_project_metadata("ai_agent", "stream_responses", true));
-	config->set_enabled_tools(settings->get_project_metadata("ai_agent", "enabled_tools", PackedStringArray()));
+	if (_has_global_provider_config(settings)) {
+		if (settings->has_setting(AI_SETTING_PROVIDER_TYPE)) {
+			config->set_provider_type((AIAgentConfig::ProviderType)(int)settings->get_setting(AI_SETTING_PROVIDER_TYPE));
+		}
+		if (settings->has_setting(AI_SETTING_API_KEY)) {
+			config->set_api_key((String)settings->get_setting(AI_SETTING_API_KEY));
+		}
+		if (settings->has_setting(AI_SETTING_MODEL_NAME)) {
+			config->set_model_name((String)settings->get_setting(AI_SETTING_MODEL_NAME));
+		}
+		if (settings->has_setting(AI_SETTING_BASE_URL)) {
+			config->set_base_url((String)settings->get_setting(AI_SETTING_BASE_URL));
+		}
+	} else {
+		_load_legacy_project_config(settings, config);
+	}
 
-	// Update UI fields from config.
-	provider_select->select(config->get_provider_type());
+	config->apply_provider_defaults(config->get_model_name().is_empty(), false);
+
+	for (int i = 0; i < provider_select->get_item_count(); i++) {
+		if (provider_select->get_item_id(i) == (int)config->get_provider_type()) {
+			provider_select->select(i);
+			break;
+		}
+	}
+
 	api_key_input->set_text(config->get_api_key());
 	model_input->set_text(config->get_model_name());
 	base_url_input->set_text(config->get_base_url());
-	temperature_spin->set_value(config->get_temperature());
-	max_tokens_spin->set_value(config->get_max_tokens());
-	system_prompt_input->set_text(config->get_system_prompt());
-	stream_responses_checkbox->set_pressed(config->get_stream_responses());
-	allow_all_tools_checkbox->set_pressed(config->get_enabled_tools().is_empty());
-
-	for (const KeyValue<String, CheckBox *> &E : tool_checkboxes) {
-		if (!E.value) {
-			continue;
-		}
-		E.value->set_pressed(config->get_enabled_tools().is_empty() || config->get_enabled_tools().has(E.key));
-	}
-
-	_on_allow_all_tools_toggled(allow_all_tools_checkbox->is_pressed());
-	_on_provider_changed(provider_select->get_selected());
+	_refresh_model_presets();
+	_refresh_provider_ui();
 }
 
 Ref<AIAgentConfig> AISettingsPanel::get_config() const {
