@@ -411,10 +411,10 @@ void AISettingsPanel::_save_config() {
 		config.instantiate();
 	}
 
-	config->set_provider_type((AIAgentConfig::ProviderType)provider_select->get_selected_id());
+	config->set_provider_type((AIAgentConfig::ProviderType)selected_provider_index);
 	config->set_api_key(api_key_input->get_text().strip_edges());
 	config->set_model_name(""); // Model is read-only, use provider default
-	config->set_base_url(base_url_input->get_text().strip_edges());
+	config->set_base_url(base_url_input ? base_url_input->get_text().strip_edges() : String());
 	config->apply_provider_defaults(true, false); // Force model to provider default
 
 	EditorSettings *settings = EditorSettings::get_singleton();
