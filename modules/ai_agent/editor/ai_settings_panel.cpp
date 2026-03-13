@@ -164,6 +164,18 @@ void AISettingsPanel::_on_card_selected(int p_index) {
 		}
 	}
 
+	// Add visual feedback for selected card
+	Color selected_color = get_theme_color("accent_color", "Editor");
+	for (int i = 0; i < provider_cards.size(); i++) {
+		if (provider_cards[i]) {
+			if (i == p_index) {
+				provider_cards[i]->add_theme_color_override("font_color", selected_color);
+			} else {
+				provider_cards[i]->remove_theme_color_override("font_color");
+			}
+		}
+	}
+
 	selected_provider_index = p_index;
 
 	// Update config
@@ -417,6 +429,11 @@ void AISettingsPanel::_load_config() {
 	for (int i = 0; i < provider_cards.size(); i++) {
 		if (provider_cards[i]) {
 			provider_cards[i]->set_pressed(i == selected_provider_index);
+			if (i == selected_provider_index) {
+				provider_cards[i]->add_theme_color_override("font_color", get_theme_color("accent_color", "Editor"));
+			} else {
+				provider_cards[i]->remove_theme_color_override("font_color");
+			}
 		}
 	}
 
