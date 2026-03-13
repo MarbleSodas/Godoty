@@ -176,10 +176,10 @@ void AISettingsPanel::_on_card_selected(int p_index) {
 	}
 
 	// Update UI
-	if (model_input) {
+	if (model_input && config.is_valid()) {
 		model_input->set_text(config->get_model_name());
 	}
-	if (selected_model_label) {
+	if (selected_model_label && config.is_valid()) {
 		selected_model_label->set_text(config->get_model_name());
 	}
 
@@ -254,7 +254,6 @@ AISettingsPanel::AISettingsPanel() {
 
 	// Create provider cards
 	_create_provider_cards();
-	_update_base_url_visibility();
 
 	provider_summary_label = memnew(Label);
 	provider_summary_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
@@ -319,6 +318,8 @@ AISettingsPanel::AISettingsPanel() {
 		base_url_input->set_h_size_flags(SIZE_EXPAND_FILL);
 		row->add_child(base_url_input);
 	}
+
+	_update_base_url_visibility();
 
 	HBoxContainer *action_row = memnew(HBoxContainer);
 	action_row->add_theme_constant_override("separation", 8 * EDSCALE);
