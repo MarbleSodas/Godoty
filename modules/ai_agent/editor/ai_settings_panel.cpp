@@ -9,6 +9,8 @@
 
 #include "ai_settings_panel.h"
 
+#include "modules/ai_agent/ai_agent_mode.h"
+
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 
@@ -343,7 +345,7 @@ void AISettingsPanel::_apply_theme() {
 		api_key_hint_label->add_theme_color_override("font_color", muted);
 	}
 	for (Button *card : provider_cards) {
-		if (card && card->get_pressed()) {
+		if (card && card->is_pressed()) {
 			card->add_theme_color_override("font_color", accent);
 		}
 	}
