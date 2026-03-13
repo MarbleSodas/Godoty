@@ -160,8 +160,38 @@ void AISettingsPanel::_create_provider_cards() {
 }
 
 void AISettingsPanel::_on_card_selected(int p_index) {
+	// Update visual selection state - set pressed for all cards
+	for (int i = 0; i < provider_cards.size(); i++) {
+		if (provider_cards[i]) {
+			provider_cards[i]->set_pressed(i == p_index);
+		}
+	}
+
 	selected_provider_index = p_index;
+
+	// Update config
+	if (config.is_valid()) {
+		config->set_provider_type((AIAgentConfig::ProviderType)p_index);
+		config->apply_provider_defaults(true, true); // Force model to default
+	}
+
+	// Update UI
+	if (model_input) {
+		model_input->set_text(config->get_model_name());
+	}
+	if (selected_model_label) {
+		selected_model_label->set_text(config->get_model_name());
+	}
+
 	_refresh_provider_ui();
+	_update_base_url_visibility();
+}
+
+void AISettingsPanel::_update_base_url_visibility() {
+	if (base_url_container) {
+		bool is_custom = (selected_provider_index == AIAgentConfig::PROVIDER_CUSTOM);
+		base_url_container->set_visible(is_custom);
+	}
 }
 
 AISettingsPanel::AISettingsPanel() {
@@ -224,6 +254,7 @@ AISettingsPanel::AISettingsPanel() {
 
 	// Create provider cards
 	_create_provider_cards();
+	_update_base_url_visibility();
 
 	provider_summary_label = memnew(Label);
 	provider_summary_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
@@ -271,10 +302,12 @@ AISettingsPanel::AISettingsPanel() {
 	model_hint_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	setup_content->add_child(model_hint_label);
 
+	base_url_container = memnew(VBoxContainer);
+	setup_content->add_child(base_url_container);
 	{
 		HBoxContainer *row = memnew(HBoxContainer);
 		row->add_theme_constant_override("separation", 10 * EDSCALE);
-		setup_content->add_child(row);
+		base_url_container->add_child(row);
 
 		Label *lbl = memnew(Label);
 		lbl->set_text("Base URL");
@@ -306,6 +339,7 @@ AISettingsPanel::AISettingsPanel() {
 
 	config.instantiate();
 	config->apply_provider_defaults(true, true);
+	selected_provider_index = (int)config->get_provider_type();
 	_apply_theme();
 }
 
