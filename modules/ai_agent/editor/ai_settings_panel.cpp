@@ -308,9 +308,6 @@ AISettingsPanel::AISettingsPanel() {
 	quick_note->set_h_size_flags(SIZE_EXPAND_FILL);
 	action_row->add_child(quick_note);
 
-	config.instantiate();
-	config->apply_provider_defaults(true, true);
-	selected_provider_index = (int)config->get_provider_type();
 	_apply_theme();
 }
 
