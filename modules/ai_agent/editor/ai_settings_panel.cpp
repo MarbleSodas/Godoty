@@ -218,29 +218,6 @@ AISettingsPanel::AISettingsPanel() {
 	setup_content->add_theme_constant_override("separation", 10 * EDSCALE);
 	setup_margin->add_child(setup_content);
 
-	/*
-	{
-		HBoxContainer *row = memnew(HBoxContainer);
-		row->add_theme_constant_override("separation", 10 * EDSCALE);
-		setup_content->add_child(row);
-
-		Label *lbl = memnew(Label);
-		lbl->set_text("Provider");
-		lbl->set_custom_minimum_size(Size2(110 * EDSCALE, 0));
-		row->add_child(lbl);
-
-		provider_select = memnew(OptionButton);
-		provider_select->set_h_size_flags(SIZE_EXPAND_FILL);
-		provider_select->add_item("OpenAI", AIAgentConfig::PROVIDER_OPENAI);
-		provider_select->add_item("Anthropic", AIAgentConfig::PROVIDER_ANTHROPIC);
-		provider_select->add_item("MiniMax", AIAgentConfig::PROVIDER_MINIMAX);
-		provider_select->add_item("Local (Ollama)", AIAgentConfig::PROVIDER_LOCAL);
-		provider_select->add_item("Custom", AIAgentConfig::PROVIDER_CUSTOM);
-		provider_select->connect("item_selected", callable_mp(this, &AISettingsPanel::_on_provider_changed));
-		row->add_child(provider_select);
-	}
-	*/
-
 	// Create provider cards container
 	VBoxContainer *cards_container = memnew(VBoxContainer);
 	cards_container->add_theme_constant_override("separation", 8 * EDSCALE);
