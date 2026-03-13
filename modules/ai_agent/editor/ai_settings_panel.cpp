@@ -342,6 +342,11 @@ void AISettingsPanel::_apply_theme() {
 	if (api_key_hint_label) {
 		api_key_hint_label->add_theme_color_override("font_color", muted);
 	}
+	for (Button *card : provider_cards) {
+		if (card && card->get_pressed()) {
+			card->add_theme_color_override("font_color", accent);
+		}
+	}
 }
 
 void AISettingsPanel::_refresh_provider_ui() {
