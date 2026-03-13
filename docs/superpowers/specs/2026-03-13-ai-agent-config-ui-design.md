@@ -1,25 +1,25 @@
 # AI Agent Configuration UI Redesign - Design Spec
 
 **Date:** 2026-03-13
-**Status:** Draft
+**Status:** Revised (Phase 1: Settings Panel Approved)
 **Author:** Claude
 
 ## 1. Overview
 
 Redesign the AI Agent configuration UI to improve user experience by:
-- Simplifying the settings panel with card-based provider selection
+- Simplifying the settings panel with card-based provider selection (Phase 1)
 - Auto-selecting provider defaults (model) without user configuration
 - Hiding advanced options (temperature, max tokens, system prompts) from users
-- Adding collapsible thinking display in chat panel
+- Adding collapsible thinking display in chat panel (Phase 2 - deferred)
 - Optimizing layout for vertical right panel (Inspector panel context)
 
 ## 2. Goals
 
-1. **Simplify Configuration** - Users only need to configure: Provider, API Key, and optionally Model
+1. **Simplify Configuration** - Users only need to configure: Provider, API Key. Model is auto-selected.
 2. **Auto-detect Sensible Defaults** - Temperature, max tokens, and system prompts are handled per-mode internally
 3. **Modern Visual Design** - Card-based provider selection matching Kilo Code/Copilot aesthetics
 4. **Vertical Panel Optimization** - Layout optimized for narrow vertical right panel
-5. **Thinking Display** - Collapsible thinking blocks in chat panel
+5. **Thinking Display (Phase 2)** - Collapsible thinking blocks in chat panel (deferred)
 
 ## 3. Current State Analysis
 
@@ -35,13 +35,22 @@ Redesign the AI Agent configuration UI to improve user experience by:
 - Model auto-switches when provider changes (via `apply_provider_defaults(true, true)`)
 - Temperature and max_tokens are already hidden (handled per-mode internally)
 - System prompts are hidden (stored in `harness_prompt`, not exposed in UI)
+- Recommended models are available via `config->get_recommended_models()`
 
 ### What Needs Changes
 
-1. Settings Panel UI - Card-based provider selection
-2. Chat Panel UI - Collapsible thinking display
-3. Remove temperature/max_tokens fields from UI (already handled internally)
-4. Simplify to only show: Provider, API Key, Model (read-only default), Base URL (Custom only)
+1. **Phase 1 - Settings Panel UI:**
+   - Card-based provider selection (replace dropdown)
+   - Model display as read-only label (no edit capability)
+   - Base URL field hidden by default, shown only for Custom provider
+   - Auto-apply model change on provider selection
+   - Keep explicit "Connect" button for saving
+
+2. **Phase 2 - Thinking Display (Deferred):**
+   - Requires provider infrastructure updates
+   - AIMessage enhancements for thinking_content
+   - New signals in AIAgentSession
+   - Will be specified in separate document
 
 ## 4. UI/UX Specification
 
@@ -81,6 +90,8 @@ Redesign the AI Agent configuration UI to improve user experience by:
 │  Model: gpt-5-mini         │
 │  (auto-selected)           │
 │                             │
+│  [Base URL (optional)]     │  <- Only shown for Custom
+│                             │
 │  [Connect]                 │
 └─────────────────────────────┘
 ```
@@ -89,13 +100,14 @@ Redesign the AI Agent configuration UI to improve user experience by:
 
 | Component | Type | Behavior |
 |-----------|------|----------|
-| Provider Cards | Custom PanelContainer | Stacked vertically, click to select, shows checkmark on selected |
-| Provider Icon | ColorRect + Emoji | Visual indicator per provider |
+| Provider Cards | Button (toggle_mode) | Stacked vertically, click to select, shows checkmark on selected |
+| Provider Icon | ColorRect | Visual indicator per provider (colored background) |
 | Provider Name | Label | Bold, provider name |
 | Provider Tagline | Label | Small, muted text (1 line max) |
 | API Key Input | LineEdit (secret) | Full width, placeholder shows "sk-..." etc. |
-| Model Display | Label | Shows current default model, read-only |
-| Connect Button | Button | Primary action, bottom of panel |
+| Model Display | Label | Shows current default model, **read-only - user cannot edit** |
+| Base URL Input | LineEdit | Hidden by default, shown only when Custom provider selected |
+| Connect Button | Button | Primary action, saves config to EditorSettings |
 
 **Provider Icons:**
 - OpenAI: Green (#10A37F) - "G" or 🟢
@@ -104,9 +116,15 @@ Redesign the AI Agent configuration UI to improve user experience by:
 - Local: Dark - "Ollama" or 🐳
 - Custom: Gray - ⚙️
 
-### 4.2 Chat Panel Layout
+### 4.2 Chat Panel Layout (Phase 2 - Deferred)
 
-**Container:** Vertical right panel with message list
+> **Note:** This section is deferred to Phase 2. It requires:
+> - Provider infrastructure updates to extract thinking content from API responses
+> - AIMessage class enhancement with thinking_content field
+> - New signals in AIAgentSession for thinking state
+> - Will be specified in a separate design document
+
+~~**Container:** Vertical right panel with message list~~
 
 ```
 ┌─────────────────────────────┐
@@ -153,10 +171,11 @@ Redesign the AI Agent configuration UI to improve user experience by:
 
 **Provider Selection:**
 1. User clicks provider card
-2. Card shows checkmark indicator
-3. Model label updates to new provider's default
-4. API Key placeholder updates
-5. No save needed - auto-applied
+2. Card shows checkmark indicator (visual selection state)
+3. Model label updates to new provider's default (read-only display)
+4. API Key placeholder updates to provider-specific hint
+5. Base URL field shows/hides based on provider (Custom only)
+6. User must click "Connect" to save configuration
 
 **Connect Flow:**
 1. User enters API Key
@@ -174,34 +193,33 @@ Redesign the AI Agent configuration UI to improve user experience by:
 
 ## 5. Technical Specification
 
-### 5.1 Files to Modify
+### 5.1 Files to Modify (Phase 1 Only)
 
 | File | Changes |
 |------|---------|
 | `modules/ai_agent/editor/ai_settings_panel.cpp` | Complete UI redesign - card-based provider selection |
 | `modules/ai_agent/editor/ai_settings_panel.h` | Add new widget members |
+
+### 5.2 Files for Phase 2 (Deferred)
+
+| File | Changes |
+|------|---------|
 | `modules/ai_agent/editor/ai_chat_panel.cpp` | Add thinking display components |
 | `modules/ai_agent/editor/ai_chat_panel.h` | Add thinking-related members |
-| `modules/ai_agent/ai_agent_mode.cpp` | Add thinking-related provider flags if needed |
-| `modules/ai_agent/providers/*.cpp` | Ensure thinking content extraction |
+| `modules/ai_agent/ai_agent_mode.cpp` | Add thinking-related provider flags |
+| `modules/ai_agent/ai_message.h` | Add thinking_content field |
+| `modules/ai_agent/providers/*.cpp` | Extract thinking content from API responses |
 
-### 5.2 New Components
+### 5.2 New Components (Phase 1)
 
 **AISettingsPanel:**
-- `Vector<PanelContainer*> provider_cards` - Card widgets
+- `Vector<Button*> provider_cards` - Toggle buttons for each provider
 - `Label *selected_model_label` - Shows current model (read-only)
+- `HBoxContainer *base_url_container` - Hidden unless Custom provider
+- `LineEdit *base_url_input` - Custom endpoint URL
 - `void _create_provider_cards()` - Build card UI
 - `void _on_card_selected(int p_index)` - Handle selection
-
-**AIChatPanel:**
-- `PanelContainer *thinking_container` - Collapsible thinking block
-- `RichTextLabel *thinking_content` - Thinking text display
-- `Label *thinking_header` - "Thinking (Xs)" with collapse toggle
-- `bool thinking_expanded` - Track collapse state
-- `void _on_thinking_started()` - Show thinking block
-- `void _on_thinking_chunk(String p_content)` - Stream thinking
-- `void _on_thinking_complete()` - Update duration, auto-collapse
-- `void _toggle_thinking()` - Manual collapse toggle
+- `void _update_base_url_visibility()` - Show/hide based on provider
 
 ### 5.3 Data Flow
 
@@ -214,31 +232,13 @@ config->set_provider_type((ProviderType)index)
 config->apply_provider_defaults(true, true)  // Force model to default
         ↓
 Update UI:
-  - provider_cards[i]->set_selected(index)
+  - provider_cards[i]->set_pressed(true) for selected
   - selected_model_label->set_text(config->get_model_name())
   - api_key_input->set_placeholder(config->get_api_key_placeholder())
+  - base_url_container->set_visible(index == PROVIDER_CUSTOM)
         ↓
-No explicit save needed - changes apply immediately
+User clicks "Connect" to save → _save_config()
 ```
-
-### 5.4 Message Handling for Thinking
-
-**AIMessage Enhancement (if needed):**
-```cpp
-struct AIMessage {
-    String role;
-    String content;
-    String thinking_content;  // New: reasoning/thinking text
-    int thinking_duration_ms; // New: time spent thinking
-    // ...
-};
-```
-
-**Provider Updates:**
-- OpenAI: `reasoning_content` field in responses (o1, o3 models)
-- Anthropic: `thinking` block in messages (Claude 3.5+)
-- MiniMax: Already has thinking support
-- Local: Depends on model (Llama 3.1 has reasoning)
 
 ## 6. Compatibility Notes
 
@@ -247,28 +247,31 @@ struct AIMessage {
 - If config exists, load and display current state
 - Provider change still triggers model auto-switch
 
-### Provider Descriptor Updates
-- Add `supports_thinking` flag to `AIProviderDescriptor`
-- Add `thinking_color` for UI theming
-- Default thinking to collapsed for providers that support it
-
 ## 7. Acceptance Criteria
 
+### Phase 1: Settings Panel Redesign
+
 1. [ ] Settings panel shows provider cards instead of dropdown
-2. [ ] Clicking a card selects provider and auto-updates model
-3. [ ] Only API Key is required input; Model shows as read-only label
+2. [ ] Clicking a card selects provider and auto-updates model (read-only)
+3. [ ] Only API Key is required input; Model shows as read-only label (no edit capability)
 4. [ ] Base URL field hidden unless "Custom" provider selected
 5. [ ] Temperature and max_tokens NOT shown in UI (already handled internally)
 6. [ ] System prompt NOT shown in UI (already hidden)
-7. [ ] Chat panel shows collapsible thinking block
-8. [ ] Thinking shows duration and can be collapsed/expanded
-9. [ ] Layout works in narrow vertical panel (~300px width)
-10. [ ] Visual design matches modern card-based aesthetic
+7. [ ] User must click "Connect" button to save configuration
+8. [ ] Layout works in narrow vertical panel (~300px width)
+9. [ ] Visual design matches modern card-based aesthetic
+
+### Phase 2: Thinking Display (Deferred)
+
+10. [ ] Chat panel shows collapsible thinking block
+11. [ ] Thinking shows duration and can be collapsed/expanded
+12. [ ] Provider infrastructure updated to extract thinking content
+13. [ ] AIMessage enhanced with thinking_content field
 
 ## 8. Future Considerations (Out of Scope)
 
 - Provider-specific model recommendations dropdown
 - Custom temperature/max_tokens for advanced users (behind toggle)
-- Thinking streaming directly to UI
+- **Thinking display** - See Phase 2 spec (separate document)
 - Multiple simultaneous provider configurations
 - Per-project provider overrides
