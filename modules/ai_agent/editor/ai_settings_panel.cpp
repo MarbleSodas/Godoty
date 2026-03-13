@@ -16,10 +16,7 @@
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/margin_container.h"
-#include "scene/gui/menu_button.h"
-#include "scene/gui/option_button.h"
 #include "scene/gui/panel_container.h"
-#include "scene/gui/popup_menu.h"
 
 namespace {
 
@@ -361,22 +358,6 @@ void AISettingsPanel::_apply_theme() {
 	}
 }
 
-void AISettingsPanel::_on_provider_changed(int p_index) {
-	if (config.is_valid()) {
-		config->set_provider_type((AIAgentConfig::ProviderType)provider_select->get_item_id(p_index));
-		config->apply_provider_defaults(true, true);
-	}
-
-	if (selected_model_label) {
-		selected_model_label->set_text(config->get_model_name());
-	}
-	if (base_url_input) {
-		base_url_input->set_text("");
-	}
-
-	_refresh_provider_ui();
-}
-
 void AISettingsPanel::_refresh_provider_ui() {
 	if (config.is_null()) {
 		return;
@@ -459,10 +440,9 @@ void AISettingsPanel::_load_config() {
 	selected_provider_index = (int)config->get_provider_type();
 	_update_base_url_visibility();
 
-	for (int i = 0; i < provider_select->get_item_count(); i++) {
-		if (provider_select->get_item_id(i) == (int)config->get_provider_type()) {
-			provider_select->select(i);
-			break;
+	for (int i = 0; i < provider_cards.size(); i++) {
+		if (provider_cards[i]) {
+			provider_cards[i]->set_pressed(i == selected_provider_index);
 		}
 	}
 

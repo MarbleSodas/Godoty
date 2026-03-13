@@ -13,7 +13,6 @@
 #include "modules/ai_agent/ai_agent_config.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/line_edit.h"
-#include "scene/gui/option_button.h"
 #include "scene/gui/button.h"
 
 class Label;
@@ -22,7 +21,6 @@ class AISettingsPanel : public VBoxContainer {
 	GDCLASS(AISettingsPanel, VBoxContainer);
 
 	Label *provider_summary_label = nullptr;
-	OptionButton *provider_select = nullptr;
 	HBoxContainer *api_key_row = nullptr;
 	LineEdit *api_key_input = nullptr;
 	Label *api_key_hint_label = nullptr;
@@ -36,7 +34,6 @@ class AISettingsPanel : public VBoxContainer {
 	Ref<AIAgentConfig> config;
 
 	void _apply_theme();
-	void _on_provider_changed(int p_index);
 	void _refresh_provider_ui();
 	void _save_config();
 	void _load_config();
