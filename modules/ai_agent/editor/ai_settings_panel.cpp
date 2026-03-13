@@ -176,9 +176,6 @@ void AISettingsPanel::_on_card_selected(int p_index) {
 	}
 
 	// Update UI
-	if (model_input && config.is_valid()) {
-		model_input->set_text(config->get_model_name());
-	}
 	if (selected_model_label && config.is_valid()) {
 		selected_model_label->set_text(config->get_model_name());
 	}
@@ -287,19 +284,11 @@ AISettingsPanel::AISettingsPanel() {
 		lbl->set_custom_minimum_size(Size2(110 * EDSCALE, 0));
 		row->add_child(lbl);
 
-		model_input = memnew(LineEdit);
-		model_input->set_h_size_flags(SIZE_EXPAND_FILL);
-		row->add_child(model_input);
-
-		model_preset_button = memnew(MenuButton);
-		model_preset_button->set_text("Browse");
-		model_preset_button->get_popup()->connect("id_pressed", callable_mp(this, &AISettingsPanel::_on_model_preset_selected));
-		row->add_child(model_preset_button);
+		selected_model_label = memnew(Label);
+		selected_model_label->set_h_size_flags(SIZE_EXPAND_FILL);
+		selected_model_label->set_text(config.is_valid() ? config->get_model_name() : "gpt-5-mini");
+		row->add_child(selected_model_label);
 	}
-
-	model_hint_label = memnew(Label);
-	model_hint_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	setup_content->add_child(model_hint_label);
 
 	base_url_container = memnew(VBoxContainer);
 	setup_content->add_child(base_url_container);
@@ -363,9 +352,6 @@ void AISettingsPanel::_apply_theme() {
 	if (api_key_hint_label) {
 		api_key_hint_label->add_theme_color_override("font_color", muted);
 	}
-	if (model_hint_label) {
-		model_hint_label->add_theme_color_override("font_color", muted);
-	}
 }
 
 void AISettingsPanel::_on_provider_changed(int p_index) {
@@ -374,37 +360,14 @@ void AISettingsPanel::_on_provider_changed(int p_index) {
 		config->apply_provider_defaults(true, true);
 	}
 
-	if (model_input) {
-		model_input->set_text(config->get_model_name());
+	if (selected_model_label) {
+		selected_model_label->set_text(config->get_model_name());
 	}
 	if (base_url_input) {
 		base_url_input->set_text("");
 	}
 
-	_refresh_model_presets();
 	_refresh_provider_ui();
-}
-
-void AISettingsPanel::_on_model_preset_selected(int p_index) {
-	if (!model_preset_button || !model_input) {
-		return;
-	}
-
-	model_input->set_text(model_preset_button->get_popup()->get_item_text(p_index));
-}
-
-void AISettingsPanel::_refresh_model_presets() {
-	if (!model_preset_button || config.is_null()) {
-		return;
-	}
-
-	PopupMenu *popup = model_preset_button->get_popup();
-	popup->clear();
-
-	const PackedStringArray models = config->get_recommended_models();
-	for (int i = 0; i < models.size(); i++) {
-		popup->add_item(models[i], i);
-	}
 }
 
 void AISettingsPanel::_refresh_provider_ui() {
@@ -428,14 +391,8 @@ void AISettingsPanel::_refresh_provider_ui() {
 		}
 		api_key_hint_label->set_text(hint);
 	}
-	if (model_input) {
-		if (model_input->get_text().is_empty()) {
-			model_input->set_text(default_model);
-		}
-		model_input->set_placeholder(default_model);
-	}
-	if (model_hint_label) {
-		model_hint_label->set_text("Choose a recommended model or type any compatible model name. Built-in Ask, Edit, and Plan modes use their own hidden harness defaults.");
+	if (selected_model_label) {
+		selected_model_label->set_text(default_model);
 	}
 	if (base_url_input) {
 		base_url_input->set_placeholder(effective_url.is_empty() ? "Required for custom providers" : effective_url);
@@ -449,9 +406,9 @@ void AISettingsPanel::_save_config() {
 
 	config->set_provider_type((AIAgentConfig::ProviderType)provider_select->get_selected_id());
 	config->set_api_key(api_key_input->get_text().strip_edges());
-	config->set_model_name(model_input->get_text().strip_edges());
+	config->set_model_name(""); // Model is read-only, use provider default
 	config->set_base_url(base_url_input->get_text().strip_edges());
-	config->apply_provider_defaults(config->get_model_name().is_empty(), false);
+	config->apply_provider_defaults(true, false); // Force model to provider default
 
 	EditorSettings *settings = EditorSettings::get_singleton();
 	if (settings) {
@@ -499,9 +456,7 @@ void AISettingsPanel::_load_config() {
 	}
 
 	api_key_input->set_text(config->get_api_key());
-	model_input->set_text(config->get_model_name());
 	base_url_input->set_text(config->get_base_url());
-	_refresh_model_presets();
 	_refresh_provider_ui();
 }
 
