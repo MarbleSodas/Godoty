@@ -165,8 +165,16 @@ String extract_error_message(const String &p_response_text, int p_code) {
 void AnthropicProvider::_bind_methods() {
 }
 
+bool AnthropicProvider::supports_model_discovery() const {
+	return true;
+}
+
+Error AnthropicProvider::request_available_models(const Callable &p_callback) {
+	return AIProvider::request_available_models(p_callback);
+}
+
 AnthropicProvider::AnthropicProvider() {
-	model_name = "claude-sonnet-4-20250514";
+	model_name = "claude-sonnet-4-5-20250929";
 	base_url = "https://api.anthropic.com/v1";
 }
 
@@ -174,6 +182,49 @@ AnthropicProvider::~AnthropicProvider() {
 	cancel_requested.set();
 	_wait_for_thread();
 	_cleanup_request();
+}
+
+String AnthropicProvider::_get_model_discovery_url() const {
+	return base_url.trim_suffix("/") + "/models";
+}
+
+PackedStringArray AnthropicProvider::_get_model_discovery_headers() const {
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	if (!api_key.is_empty()) {
+		headers.push_back("x-api-key: " + api_key);
+	}
+	headers.push_back("anthropic-version: 2023-06-01");
+	return headers;
+}
+
+PackedStringArray AnthropicProvider::_parse_model_discovery_response(const Variant &p_response) const {
+	PackedStringArray models = AIProvider::_parse_model_discovery_response(p_response);
+	if (!models.is_empty()) {
+		return models;
+	}
+	if (p_response.get_type() != Variant::DICTIONARY) {
+		return models;
+	}
+
+	const Dictionary response = p_response;
+	if (!response.has("models")) {
+		return models;
+	}
+
+	const Array data = response["models"];
+	for (int i = 0; i < data.size(); i++) {
+		if (data[i].get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		const Dictionary model = data[i];
+		const String model_id = model.get("id", model.get("name", String()));
+		if (model_id.is_empty() || models.has(model_id)) {
+			continue;
+		}
+		models.push_back(model_id);
+	}
+	return models;
 }
 
 String AnthropicProvider::_extract_system_prompt(const TypedArray<Ref<AIMessage>> &p_messages) const {
@@ -267,7 +318,9 @@ Dictionary AnthropicProvider::format_request(
 		const TypedArray<Dictionary> &p_tools) const {
 	Dictionary request;
 	request["model"] = model_name;
-	request["max_tokens"] = max_tokens;
+	if (has_max_tokens_override()) {
+		request["max_tokens"] = max_tokens;
+	}
 	request["messages"] = _format_messages_anthropic(p_messages);
 
 	String system = _extract_system_prompt(p_messages);

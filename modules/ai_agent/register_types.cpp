@@ -42,6 +42,7 @@
 #include "providers/openai_provider.h"
 #include "tools/debug_tools.h"
 #include "tools/editor_tools.h"
+#include "tools/reference_tools.h"
 #include "tools/resource_tools.h"
 #include "tools/scene_tools.h"
 #include "tools/script_tools.h"
@@ -91,6 +92,7 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(ResourceTools);
 		GDREGISTER_CLASS(EditorTools);
 		GDREGISTER_CLASS(DebugTools);
+		GDREGISTER_CLASS(ReferenceTools);
 
 		// Auto-register all built-in tools.
 		SceneTools::register_tools();
@@ -98,6 +100,7 @@ void initialize_ai_agent_module(ModuleInitializationLevel p_level) {
 		ResourceTools::register_tools();
 		EditorTools::register_tools();
 		DebugTools::register_tools();
+		ReferenceTools::register_tools();
 
 		// Register session management.
 		GDREGISTER_CLASS(AIAgentSession);

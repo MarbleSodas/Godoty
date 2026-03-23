@@ -24,7 +24,8 @@ public:
 		CONTEXT_EDITOR_STATE = 1 << 3,
 		CONTEXT_RUNTIME = 1 << 4,
 		CONTEXT_PROJECT = 1 << 5,
-		CONTEXT_ALL = CONTEXT_SCENE | CONTEXT_SCRIPTS | CONTEXT_ASSETS | CONTEXT_EDITOR_STATE | CONTEXT_RUNTIME | CONTEXT_PROJECT,
+		CONTEXT_REFERENCE = 1 << 6,
+		CONTEXT_ALL = CONTEXT_SCENE | CONTEXT_SCRIPTS | CONTEXT_ASSETS | CONTEXT_EDITOR_STATE | CONTEXT_RUNTIME | CONTEXT_PROJECT | CONTEXT_REFERENCE,
 	};
 
 protected:
@@ -57,6 +58,7 @@ public:
 	Dictionary get_editor_context();
 	Dictionary get_runtime_context();
 	Dictionary get_project_context();
+	Dictionary get_reference_context();
 
 	// Cache management.
 	void invalidate_cache();

@@ -182,6 +182,7 @@ protected:
 
 public:
 	void add_message(const String &p_msg, MessageType p_type = MSG_TYPE_STD);
+	PackedStringArray get_recent_messages(int p_max_lines = 100) const;
 	void register_undo_redo(UndoRedo *p_undo_redo);
 	void deinit();
 

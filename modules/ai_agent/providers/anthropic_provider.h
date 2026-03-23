@@ -32,6 +32,8 @@ public:
 			const Callable &p_complete_callback) override;
 
 	void cancel() override;
+	bool supports_model_discovery() const override;
+	Error request_available_models(const Callable &p_callback) override;
 
 	Dictionary format_request(
 			const TypedArray<Ref<AIMessage>> &p_messages,
@@ -40,6 +42,9 @@ public:
 	Ref<AIMessage> parse_response(const Dictionary &p_response) const override;
 
 private:
+	String _get_model_discovery_url() const override;
+	PackedStringArray _get_model_discovery_headers() const override;
+	PackedStringArray _parse_model_discovery_response(const Variant &p_response) const override;
 	String _extract_system_prompt(const TypedArray<Ref<AIMessage>> &p_messages) const;
 	TypedArray<Dictionary> _format_messages_anthropic(const TypedArray<Ref<AIMessage>> &p_messages) const;
 	TypedArray<Dictionary> _convert_tools_to_anthropic(const TypedArray<Dictionary> &p_tools) const;

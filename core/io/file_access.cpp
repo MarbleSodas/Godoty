@@ -281,9 +281,9 @@ String FileAccess::fix_path(const String &p_path) const {
 			if (r_path.begins_with("user://")) {
 				String data_dir = OS::get_singleton()->get_user_data_dir();
 				if (!data_dir.is_empty()) {
-					return r_path.replace("user:/", data_dir);
+					return OS::normalize_existing_path_case(r_path.replace("user:/", data_dir));
 				}
-				return r_path.replace("user://", "");
+				return OS::normalize_existing_path_case(r_path.replace("user://", ""));
 			}
 
 		} break;

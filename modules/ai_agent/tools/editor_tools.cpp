@@ -39,7 +39,9 @@ void EditorTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("node_paths");
 		params["required"] = required;
-		reg->register_tool("select_nodes", "Select nodes in the editor by their paths", params, callable_mp_static(&EditorTools::tool_select_nodes));
+		reg->register_tool("select_nodes", "Select nodes in the editor by their paths", params, callable_mp_static(&EditorTools::tool_select_nodes), false, AIToolRegistry::EXECUTION_MUTATING_EDITOR, false,
+				"Use when highlighting the relevant nodes in the editor will help confirm focus or guide the next action.",
+				"a confirmation string with the number of selected nodes");
 	}
 
 	// set_project_setting
@@ -59,7 +61,7 @@ void EditorTools::register_tools() {
 		required.push_back("key");
 		required.push_back("value");
 		params["required"] = required;
-		reg->register_tool("set_project_setting", "Modify a project setting", params, callable_mp_static(&EditorTools::tool_set_project_setting), true);
+		reg->register_tool("set_project_setting", "Modify a project setting", params, callable_mp_static(&EditorTools::tool_set_project_setting), true, AIToolRegistry::EXECUTION_MUTATING_EDITOR);
 	}
 
 	// undo
@@ -67,7 +69,7 @@ void EditorTools::register_tools() {
 		Dictionary params;
 		params["type"] = "object";
 		params["properties"] = Dictionary();
-		reg->register_tool("undo", "Undo the last action in the editor", params, callable_mp_static(&EditorTools::tool_undo));
+		reg->register_tool("undo", "Undo the last action in the editor", params, callable_mp_static(&EditorTools::tool_undo), false, AIToolRegistry::EXECUTION_MUTATING_EDITOR);
 	}
 
 	// redo
@@ -75,7 +77,7 @@ void EditorTools::register_tools() {
 		Dictionary params;
 		params["type"] = "object";
 		params["properties"] = Dictionary();
-		reg->register_tool("redo", "Redo the previously undone action", params, callable_mp_static(&EditorTools::tool_redo));
+		reg->register_tool("redo", "Redo the previously undone action", params, callable_mp_static(&EditorTools::tool_redo), false, AIToolRegistry::EXECUTION_MUTATING_EDITOR);
 	}
 
 	// run_project
@@ -83,7 +85,7 @@ void EditorTools::register_tools() {
 		Dictionary params;
 		params["type"] = "object";
 		params["properties"] = Dictionary();
-		reg->register_tool("run_project", "Run the project (equivalent to pressing F5)", params, callable_mp_static(&EditorTools::tool_run_project));
+		reg->register_tool("run_project", "Run the project (equivalent to pressing F5)", params, callable_mp_static(&EditorTools::tool_run_project), false, AIToolRegistry::EXECUTION_MUTATING_EDITOR);
 	}
 
 	// stop_project
@@ -91,7 +93,7 @@ void EditorTools::register_tools() {
 		Dictionary params;
 		params["type"] = "object";
 		params["properties"] = Dictionary();
-		reg->register_tool("stop_project", "Stop the running project", params, callable_mp_static(&EditorTools::tool_stop_project));
+		reg->register_tool("stop_project", "Stop the running project", params, callable_mp_static(&EditorTools::tool_stop_project), false, AIToolRegistry::EXECUTION_MUTATING_EDITOR);
 	}
 
 	// show_notification
@@ -107,7 +109,7 @@ void EditorTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("message");
 		params["required"] = required;
-		reg->register_tool("show_notification", "Show a toast notification in the editor", params, callable_mp_static(&EditorTools::tool_show_notification));
+		reg->register_tool("show_notification", "Show a toast notification in the editor", params, callable_mp_static(&EditorTools::tool_show_notification), false, AIToolRegistry::EXECUTION_MUTATING_EDITOR);
 	}
 }
 

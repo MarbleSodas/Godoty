@@ -131,6 +131,7 @@ public:
 	typedef int64_t ProcessID;
 
 	static OS *get_singleton();
+	static String normalize_existing_path_case(const String &p_path);
 
 	static bool prefer_meta_over_ctrl();
 

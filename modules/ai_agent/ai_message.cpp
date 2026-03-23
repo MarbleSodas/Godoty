@@ -12,6 +12,8 @@ void AIMessage::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_role"), &AIMessage::get_role);
 	ClassDB::bind_method(D_METHOD("set_content", "content"), &AIMessage::set_content);
 	ClassDB::bind_method(D_METHOD("get_content"), &AIMessage::get_content);
+	ClassDB::bind_method(D_METHOD("set_thinking_content", "thinking_content"), &AIMessage::set_thinking_content);
+	ClassDB::bind_method(D_METHOD("get_thinking_content"), &AIMessage::get_thinking_content);
 	ClassDB::bind_method(D_METHOD("set_tool_calls", "tool_calls"), &AIMessage::set_tool_calls);
 	ClassDB::bind_method(D_METHOD("get_tool_calls"), &AIMessage::get_tool_calls);
 	ClassDB::bind_method(D_METHOD("set_tool_call_id", "id"), &AIMessage::set_tool_call_id);
@@ -23,11 +25,12 @@ void AIMessage::_bind_methods() {
 	ClassDB::bind_static_method("AIMessage", D_METHOD("from_dict", "dict"), &AIMessage::from_dict);
 	ClassDB::bind_static_method("AIMessage", D_METHOD("create_system", "content"), &AIMessage::create_system);
 	ClassDB::bind_static_method("AIMessage", D_METHOD("create_user", "content"), &AIMessage::create_user);
-	ClassDB::bind_static_method("AIMessage", D_METHOD("create_assistant", "content", "tool_calls"), &AIMessage::create_assistant, DEFVAL(TypedArray<Dictionary>()));
+	ClassDB::bind_static_method("AIMessage", D_METHOD("create_assistant", "content", "tool_calls", "thinking_content"), &AIMessage::create_assistant, DEFVAL(TypedArray<Dictionary>()), DEFVAL(String()));
 	ClassDB::bind_static_method("AIMessage", D_METHOD("create_tool_result", "tool_call_id", "content"), &AIMessage::create_tool_result);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "role", PROPERTY_HINT_ENUM, "System,User,Assistant,Tool"), "set_role", "get_role");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "content", PROPERTY_HINT_MULTILINE_TEXT), "set_content", "get_content");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "thinking_content", PROPERTY_HINT_MULTILINE_TEXT), "set_thinking_content", "get_thinking_content");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "tool_calls", PROPERTY_HINT_ARRAY_TYPE, vformat("%s/%s:%s", Variant::DICTIONARY, PROPERTY_HINT_NONE, "")), "set_tool_calls", "get_tool_calls");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "tool_call_id"), "set_tool_call_id", "get_tool_call_id");
 	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "metadata"), "set_metadata", "get_metadata");
@@ -52,6 +55,14 @@ void AIMessage::set_content(const String &p_content) {
 
 String AIMessage::get_content() const {
 	return content;
+}
+
+void AIMessage::set_thinking_content(const String &p_thinking_content) {
+	thinking_content = p_thinking_content;
+}
+
+String AIMessage::get_thinking_content() const {
+	return thinking_content;
 }
 
 void AIMessage::set_tool_calls(const TypedArray<Dictionary> &p_tool_calls) {
@@ -99,6 +110,9 @@ Dictionary AIMessage::to_dict() const {
 			break;
 	}
 	dict["content"] = content;
+	if (!thinking_content.is_empty()) {
+		dict["thinking_content"] = thinking_content;
+	}
 	if (tool_calls.size() > 0) {
 		dict["tool_calls"] = tool_calls;
 	}
@@ -125,6 +139,9 @@ Ref<AIMessage> AIMessage::from_dict(const Dictionary &p_dict) {
 		msg->set_role(ROLE_TOOL);
 	}
 	msg->set_content(p_dict.get("content", ""));
+	if (p_dict.has("thinking_content")) {
+		msg->set_thinking_content(p_dict["thinking_content"]);
+	}
 	if (p_dict.has("tool_calls")) {
 		msg->set_tool_calls(p_dict["tool_calls"]);
 	}
@@ -153,12 +170,13 @@ Ref<AIMessage> AIMessage::create_user(const String &p_content) {
 	return msg;
 }
 
-Ref<AIMessage> AIMessage::create_assistant(const String &p_content, const TypedArray<Dictionary> &p_tool_calls) {
+Ref<AIMessage> AIMessage::create_assistant(const String &p_content, const TypedArray<Dictionary> &p_tool_calls, const String &p_thinking_content) {
 	Ref<AIMessage> msg;
 	msg.instantiate();
 	msg->set_role(ROLE_ASSISTANT);
 	msg->set_content(p_content);
 	msg->set_tool_calls(p_tool_calls);
+	msg->set_thinking_content(p_thinking_content);
 	return msg;
 }
 

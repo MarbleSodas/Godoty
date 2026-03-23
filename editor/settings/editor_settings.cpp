@@ -95,7 +95,14 @@ bool EditorSettings::_set_only(const StringName &p_name, const Variant &p_value)
 		Array arr = p_value;
 		for (int i = 0; i < arr.size(); i++) {
 			Dictionary dict = arr[i];
+			if (!dict.has("name") || !dict.has("shortcuts")) {
+				continue;
+			}
+
 			String shortcut_name = dict["name"];
+			if (shortcut_name.is_empty()) {
+				continue;
+			}
 
 			Array shortcut_events = dict["shortcuts"];
 
@@ -110,8 +117,14 @@ bool EditorSettings::_set_only(const StringName &p_name, const Variant &p_value)
 		Array actions_arr = p_value;
 		for (int i = 0; i < actions_arr.size(); i++) {
 			Dictionary action_dict = actions_arr[i];
+			if (!action_dict.has("name") || !action_dict.has("events")) {
+				continue;
+			}
 
 			String action_name = action_dict["name"];
+			if (action_name.is_empty()) {
+				continue;
+			}
 			Array events = action_dict["events"];
 
 			InputMap *im = InputMap::get_singleton();

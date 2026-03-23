@@ -70,6 +70,53 @@
 
 using CameraOverride = EditorDebuggerNode::CameraOverride;
 
+namespace {
+
+Dictionary _source_location_from_meta(const Variant &p_meta) {
+	Dictionary location;
+	if (p_meta.get_type() != Variant::ARRAY) {
+		return location;
+	}
+
+	Array meta = p_meta;
+	if (meta.size() < 2) {
+		return location;
+	}
+
+	location["file"] = meta[0];
+	location["line"] = meta[1];
+	return location;
+}
+
+Dictionary _stack_frame_from_item(const TreeItem *p_item) {
+	Dictionary frame;
+	if (!p_item) {
+		return frame;
+	}
+
+	Variant meta = p_item->get_metadata(0);
+	if (meta.get_type() == Variant::DICTIONARY) {
+		frame = meta;
+	}
+	frame["label"] = p_item->get_text(0);
+	return frame;
+}
+
+String _error_kind_for_item(const TreeItem *p_item) {
+	if (!p_item) {
+		return "unknown";
+	}
+	if (p_item->has_meta("_is_warning")) {
+		return "warning";
+	}
+	if (p_item->has_meta("_is_error")) {
+		return "error";
+	}
+	return "unknown";
+}
+
+} // namespace
+
 void ScriptEditorDebugger::_put_msg(const String &p_message, const Array &p_data, uint64_t p_thread_id) {
 	ERR_FAIL_COND(p_thread_id == Thread::UNASSIGNED_ID);
 	if (is_session_active()) {
@@ -694,6 +741,7 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 	if (!oe.error_descr.is_empty()) {
 		// Add item for C++ error condition.
 		TreeItem *cpp_cond = error_tree->create_item(error);
+		cpp_cond->set_meta("_kind", "condition");
 		// TRANSLATORS: %s is the name of a language, e.g. C++.
 		cpp_cond->set_text(0, "<" + vformat(TTR("%s Error"), source_language_name) + ">");
 		cpp_cond->set_text(1, oe.error);
@@ -716,6 +764,7 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 	}
 
 	TreeItem *cpp_source = error_tree->create_item(error);
+	cpp_source->set_meta("_kind", "source");
 	// TRANSLATORS: %s is the name of a language, e.g. C++.
 	cpp_source->set_text(0, "<" + vformat(TTR("%s Source"), source_language_name) + ">");
 	cpp_source->set_text(1, source_txt);
@@ -734,6 +783,7 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 	const ScriptLanguage::StackInfo *infos = oe.callstack.ptr();
 	for (unsigned int i = 0; i < (unsigned int)oe.callstack.size(); i++) {
 		TreeItem *stack_trace = error_tree->create_item(error);
+		stack_trace->set_meta("_kind", "stack_frame");
 
 		Array meta = { infos[i].file, infos[i].line };
 		stack_trace->set_metadata(0, meta);
@@ -1536,6 +1586,26 @@ void ScriptEditorDebugger::set_move_to_foreground(const bool &p_move_to_foregrou
 	move_to_foreground = p_move_to_foreground;
 }
 
+Dictionary ScriptEditorDebugger::get_session_snapshot() const {
+	Dictionary snapshot;
+	snapshot["is_session_active"] = is_session_active();
+	snapshot["is_breaked"] = is_breaked();
+	snapshot["is_debuggable"] = is_debuggable();
+	snapshot["remote_pid"] = get_remote_pid();
+	snapshot["error_count"] = get_error_count();
+	snapshot["warning_count"] = get_warning_count();
+	snapshot["current_debugger_tab"] = get_current_debugger_tab();
+	snapshot["thread_count"] = threads_debugged.size();
+	snapshot["debugging_thread_id"] = debugging_thread_id == Thread::UNASSIGNED_ID ? -1 : (int64_t)debugging_thread_id;
+
+	Dictionary selected_frame = _stack_frame_from_item(stack_dump ? stack_dump->get_selected() : nullptr);
+	if (!selected_frame.is_empty()) {
+		snapshot["current_stack_frame"] = selected_frame;
+	}
+
+	return snapshot;
+}
+
 String ScriptEditorDebugger::get_stack_script_file() const {
 	TreeItem *ti = stack_dump->get_selected();
 	if (!ti) {
@@ -1569,6 +1639,153 @@ bool ScriptEditorDebugger::request_stack_dump(const int &p_frame) {
 	Array msg = { p_frame };
 	_put_msg("get_stack_frame_vars", msg, debugging_thread_id);
 	return true;
+}
+
+Dictionary ScriptEditorDebugger::get_stack_snapshot(int p_max_frames) const {
+	Dictionary snapshot = get_session_snapshot();
+	const int max_frames = CLAMP(p_max_frames, 1, 200);
+	snapshot["max_frames"] = max_frames;
+
+	Array frames;
+	TreeItem *root = stack_dump ? stack_dump->get_root() : nullptr;
+	TreeItem *selected = stack_dump ? stack_dump->get_selected() : nullptr;
+	int total_frames = 0;
+	int selected_frame = -1;
+
+	if (root) {
+		for (TreeItem *item = root->get_first_child(); item; item = item->get_next()) {
+			Dictionary frame = _stack_frame_from_item(item);
+			if (item == selected) {
+				selected_frame = (int)frame.get("frame", -1);
+			}
+			if (frames.size() < max_frames) {
+				frames.push_back(frame);
+			}
+			total_frames++;
+		}
+	}
+
+	snapshot["selected_frame"] = selected_frame;
+	snapshot["frame_count"] = total_frames;
+	snapshot["frames"] = frames;
+	snapshot["truncated"] = total_frames > max_frames;
+	return snapshot;
+}
+
+Dictionary ScriptEditorDebugger::get_error_snapshot(int p_max_items) const {
+	Dictionary snapshot = get_session_snapshot();
+	const int max_items = CLAMP(p_max_items, 1, 200);
+	snapshot["max_items"] = max_items;
+
+	Array items;
+	TreeItem *root = error_tree ? error_tree->get_root() : nullptr;
+	int total_items = 0;
+
+	if (root) {
+		for (TreeItem *item = root->get_first_child(); item; item = item->get_next()) {
+			Dictionary entry;
+			entry["kind"] = _error_kind_for_item(item);
+			entry["time"] = item->get_text(0);
+			entry["summary"] = item->get_text(1);
+			entry["source_location"] = _source_location_from_meta(item->get_metadata(0));
+			entry["tooltip"] = item->get_tooltip_text(1);
+
+			String source_summary;
+			String condition;
+			Array stack_trace_summary;
+			for (TreeItem *child = item->get_first_child(); child; child = child->get_next()) {
+				const String kind = child->get_meta("_kind", "");
+				if (kind == "source") {
+					source_summary = child->get_text(1);
+				} else if (kind == "condition") {
+					condition = child->get_text(1);
+				} else if (kind == "stack_frame") {
+					Dictionary frame;
+					frame["text"] = child->get_text(1);
+					Dictionary location = _source_location_from_meta(child->get_metadata(0));
+					if (!location.is_empty()) {
+						frame["location"] = location;
+					}
+					stack_trace_summary.push_back(frame);
+				}
+			}
+
+			if (!source_summary.is_empty()) {
+				entry["source_summary"] = source_summary;
+			}
+			if (!condition.is_empty()) {
+				entry["condition"] = condition;
+			}
+			entry["stack_trace_summary"] = stack_trace_summary;
+
+			if (items.size() < max_items) {
+				items.push_back(entry);
+			}
+			total_items++;
+		}
+	}
+
+	snapshot["item_count"] = total_items;
+	snapshot["items"] = items;
+	snapshot["truncated"] = total_items > max_items;
+	return snapshot;
+}
+
+Dictionary ScriptEditorDebugger::get_remote_scene_snapshot(int p_max_nodes, const TypedArray<uint64_t> &p_selected_ids) const {
+	Dictionary snapshot = get_session_snapshot();
+	const int max_nodes = CLAMP(p_max_nodes, 1, 500);
+	snapshot["max_nodes"] = max_nodes;
+	snapshot["selected_object_ids"] = p_selected_ids.duplicate();
+
+	Array nodes;
+	int total_nodes = 0;
+	struct PathState {
+		String path;
+		int remaining_children = 0;
+	};
+	Vector<PathState> ancestry;
+
+	for (const SceneDebuggerTree::RemoteNode &node : scene_tree->nodes) {
+		while (!ancestry.is_empty() && ancestry[ancestry.size() - 1].remaining_children <= 0) {
+			ancestry.remove_at(ancestry.size() - 1);
+		}
+
+		String path = "/" + node.name;
+		if (!ancestry.is_empty()) {
+			PathState &parent = ancestry.write[ancestry.size() - 1];
+			path = parent.path + "/" + node.name;
+			parent.remaining_children--;
+		}
+
+		if (nodes.size() < max_nodes) {
+			Dictionary entry;
+			entry["path"] = path;
+			entry["name"] = node.name;
+			entry["type_name"] = node.type_name;
+			entry["object_id"] = (uint64_t)node.id;
+			entry["child_count"] = node.child_count;
+			entry["scene_file_path"] = node.scene_file_path;
+			entry["view_flags"] = node.view_flags;
+			entry["is_visible"] = bool(node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_VISIBLE);
+			entry["is_visible_in_tree"] = bool(node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_VISIBLE_IN_TREE);
+			entry["has_visible_method"] = bool(node.view_flags & SceneDebuggerTree::RemoteNode::VIEW_HAS_VISIBLE_METHOD);
+			nodes.push_back(entry);
+		}
+
+		if (node.child_count > 0) {
+			PathState current;
+			current.path = path;
+			current.remaining_children = node.child_count;
+			ancestry.push_back(current);
+		}
+
+		total_nodes++;
+	}
+
+	snapshot["node_count"] = total_nodes;
+	snapshot["nodes"] = nodes;
+	snapshot["truncated"] = total_nodes > max_nodes;
+	return snapshot;
 }
 
 void ScriptEditorDebugger::set_live_debugging(bool p_enable) {

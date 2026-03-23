@@ -330,7 +330,7 @@ public:
 	void debug_continue();
 	bool is_breaked() const { return threads_debugged.size() > 0; }
 	bool is_debuggable() const { return threads_debugged.size() > 0 && threads_debugged[debugging_thread_id].can_debug; }
-	bool is_session_active() { return peer.is_valid() && peer->is_peer_connected(); }
+	bool is_session_active() const { return peer.is_valid() && peer->is_peer_connected(); }
 	int get_remote_pid() const { return remote_pid; }
 
 	bool is_move_to_foreground() const;
@@ -364,6 +364,11 @@ public:
 
 	EditorDebuggerNode::CameraOverride get_camera_override() const;
 	void set_camera_override(EditorDebuggerNode::CameraOverride p_override);
+
+	Dictionary get_session_snapshot() const;
+	Dictionary get_stack_snapshot(int p_max_frames = 20) const;
+	Dictionary get_error_snapshot(int p_max_items = 20) const;
+	Dictionary get_remote_scene_snapshot(int p_max_nodes = 100, const TypedArray<uint64_t> &p_selected_ids = TypedArray<uint64_t>()) const;
 
 	void set_breakpoint(const String &p_path, int p_line, bool p_enabled);
 

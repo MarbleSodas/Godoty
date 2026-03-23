@@ -287,6 +287,23 @@ void EditorLog::add_message(const String &p_msg, MessageType p_type) {
 	}
 }
 
+PackedStringArray EditorLog::get_recent_messages(int p_max_lines) const {
+	PackedStringArray result;
+	const int max_lines = CLAMP(p_max_lines, 1, 500);
+	int remaining = max_lines;
+
+	for (int i = messages.size() - 1; i >= 0 && remaining > 0; i--) {
+		const LogMessage &msg = messages[i];
+		int repeats = collapse ? 1 : msg.count;
+		for (int j = repeats - 1; j >= 0 && remaining > 0; j--) {
+			result.insert(0, msg.text);
+			remaining--;
+		}
+	}
+
+	return result;
+}
+
 void EditorLog::_set_dock_tab_icon(Ref<Texture2D> p_icon) {
 	set_dock_icon(p_icon);
 	set_force_show_icon(p_icon.is_valid());

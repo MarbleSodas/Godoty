@@ -32,6 +32,8 @@ public:
 			const Callable &p_complete_callback) override;
 
 	void cancel() override;
+	bool supports_model_discovery() const override;
+	Error request_available_models(const Callable &p_callback) override;
 
 	Dictionary format_request(
 			const TypedArray<Ref<AIMessage>> &p_messages,
@@ -40,6 +42,8 @@ public:
 	Ref<AIMessage> parse_response(const Dictionary &p_response) const override;
 
 private:
+	String _get_model_discovery_url() const override;
+	PackedStringArray _get_model_discovery_headers() const override;
 	// Convert AIMessage role enum to OpenAI role string.
 	String _role_to_string(AIMessage::Role p_role) const;
 	// Convert messages array to OpenAI format.

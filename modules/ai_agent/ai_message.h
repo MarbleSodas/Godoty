@@ -28,6 +28,7 @@ protected:
 private:
 	Role role = ROLE_USER;
 	String content;
+	String thinking_content;
 	TypedArray<Dictionary> tool_calls; // Array of {id, name, arguments} dicts.
 	String tool_call_id; // For ROLE_TOOL responses.
 	Dictionary metadata;
@@ -38,6 +39,9 @@ public:
 
 	void set_content(const String &p_content);
 	String get_content() const;
+
+	void set_thinking_content(const String &p_thinking_content);
+	String get_thinking_content() const;
 
 	void set_tool_calls(const TypedArray<Dictionary> &p_tool_calls);
 	TypedArray<Dictionary> get_tool_calls() const;
@@ -54,7 +58,7 @@ public:
 	static Ref<AIMessage> from_dict(const Dictionary &p_dict);
 	static Ref<AIMessage> create_system(const String &p_content);
 	static Ref<AIMessage> create_user(const String &p_content);
-	static Ref<AIMessage> create_assistant(const String &p_content, const TypedArray<Dictionary> &p_tool_calls = TypedArray<Dictionary>());
+	static Ref<AIMessage> create_assistant(const String &p_content, const TypedArray<Dictionary> &p_tool_calls = TypedArray<Dictionary>(), const String &p_thinking_content = "");
 	static Ref<AIMessage> create_tool_result(const String &p_tool_call_id, const String &p_content);
 
 	AIMessage() {}

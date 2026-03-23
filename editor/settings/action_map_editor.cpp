@@ -30,6 +30,7 @@
 
 #include "action_map_editor.h"
 
+#include "core/input/input_map.h"
 #include "editor/editor_string_names.h"
 #include "editor/settings/editor_event_search_bar.h"
 #include "editor/settings/editor_settings.h"
@@ -56,7 +57,7 @@ void ActionMapEditor::_event_config_confirmed() {
 	Ref<InputEvent> ev = event_config_dialog->get_event();
 
 	Dictionary new_action = current_action.duplicate();
-	Array events = new_action["events"].duplicate();
+	Array events = new_action.has("events") ? ((Array)new_action["events"]).duplicate() : Array();
 
 	if (current_action_event_index == -1) {
 		// Add new event
@@ -196,7 +197,7 @@ void ActionMapEditor::_tree_button_pressed(Object *p_item, int p_column, int p_i
 
 			int event_index = item->get_meta("__index");
 
-			Array events = action["events"].duplicate();
+			Array events = action.has("events") ? ((Array)action["events"]).duplicate() : Array();
 			events.remove_at(event_index);
 			action["events"] = events;
 
@@ -335,7 +336,7 @@ void ActionMapEditor::drop_data_fw(const Point2 &p_point, const Variant &p_data,
 		// Construct new events array.
 		Dictionary new_action = selected->get_parent()->get_meta("__action");
 
-		Array events = new_action["events"];
+		Array events = new_action.has("events") ? (Array)new_action["events"] : Array();
 		Array new_events;
 
 		// The following method was used to perform the array changes since `remove` followed by `insert` was not working properly at time of writing.
@@ -445,7 +446,7 @@ void ActionMapEditor::update_action_list(const Vector<ActionInfo> &p_action_info
 	root = action_tree->create_item();
 
 	for (const ActionInfo &action_info : actions_cache) {
-		const Array events = action_info.action["events"];
+		const Array events = action_info.action.has("events") ? (Array)action_info.action["events"] : Array();
 		if (!_should_display_action(action_info.name, events)) {
 			continue;
 		}
@@ -454,7 +455,7 @@ void ActionMapEditor::update_action_list(const Vector<ActionInfo> &p_action_info
 			continue;
 		}
 
-		const Variant deadzone = action_info.action["deadzone"];
+		const Variant deadzone = action_info.action.has("deadzone") ? action_info.action["deadzone"] : Variant(InputMap::DEFAULT_TOGGLE_DEADZONE);
 
 		// Update Tree...
 
@@ -479,8 +480,10 @@ void ActionMapEditor::update_action_list(const Vector<ActionInfo> &p_action_info
 
 		// Third column - buttons
 		if (action_info.has_initial) {
-			bool deadzone_eq = action_info.action_initial["deadzone"] == action_info.action["deadzone"];
-			bool events_eq = Shortcut::is_event_array_equal(action_info.action_initial["events"], action_info.action["events"]);
+			const Variant initial_deadzone = action_info.action_initial.has("deadzone") ? action_info.action_initial["deadzone"] : Variant(InputMap::DEFAULT_TOGGLE_DEADZONE);
+			const Array initial_events = action_info.action_initial.has("events") ? (Array)action_info.action_initial["events"] : Array();
+			bool deadzone_eq = initial_deadzone == deadzone;
+			bool events_eq = Shortcut::is_event_array_equal(initial_events, events);
 			bool action_eq = deadzone_eq && events_eq;
 			action_item->set_meta("__action_initial", action_info.action_initial);
 			action_item->add_button(2, get_editor_theme_icon(SNAME("ReloadSmall")), BUTTON_REVERT_ACTION, action_eq, action_eq ? TTRC("Cannot Revert - Action is same as initial") : TTRC("Revert Action"));

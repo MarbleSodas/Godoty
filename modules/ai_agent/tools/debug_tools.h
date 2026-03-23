@@ -23,6 +23,11 @@ public:
 	static Variant tool_pause_game(const Dictionary &p_args);
 	static Variant tool_resume_game(const Dictionary &p_args);
 	static Variant tool_get_performance_metrics(const Dictionary &p_args);
+	static Variant tool_show_debugger_panel(const Dictionary &p_args);
+	static Variant tool_get_debugger_state(const Dictionary &p_args);
+	static Variant tool_get_debugger_stack(const Dictionary &p_args);
+	static Variant tool_get_debugger_errors(const Dictionary &p_args);
+	static Variant tool_get_debugger_remote_scene(const Dictionary &p_args);
 
 	DebugTools() {}
 };

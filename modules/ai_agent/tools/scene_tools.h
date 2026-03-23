@@ -10,6 +10,8 @@
 #include "core/object/object.h"
 #include "core/variant/dictionary.h"
 
+class Node;
+
 class SceneTools : public Object {
 	GDCLASS(SceneTools, Object);
 
@@ -19,6 +21,8 @@ protected:
 public:
 	// Register all scene tools with the AIToolRegistry.
 	static void register_tools();
+	static String sanitize_ai_node_name(const String &p_requested_name, const String &p_type_name);
+	static String resolve_ai_node_name(Node *p_parent, Node *p_candidate, const String &p_requested_name, const String &p_type_name);
 
 	// Tool implementations — all return result strings.
 	static Variant tool_create_node(const Dictionary &p_args);

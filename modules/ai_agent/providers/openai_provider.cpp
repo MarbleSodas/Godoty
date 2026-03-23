@@ -183,8 +183,16 @@ void OpenAIProvider::_bind_methods() {
 	// No additional methods beyond the base class for now.
 }
 
+bool OpenAIProvider::supports_model_discovery() const {
+	return true;
+}
+
+Error OpenAIProvider::request_available_models(const Callable &p_callback) {
+	return AIProvider::request_available_models(p_callback);
+}
+
 OpenAIProvider::OpenAIProvider() {
-	model_name = "gpt-4o";
+	model_name = "gpt-5-mini";
 	base_url = "https://api.openai.com/v1";
 }
 
@@ -192,6 +200,19 @@ OpenAIProvider::~OpenAIProvider() {
 	cancel_requested.set();
 	_wait_for_thread();
 	_cleanup_request();
+}
+
+String OpenAIProvider::_get_model_discovery_url() const {
+	return base_url.trim_suffix("/") + "/models";
+}
+
+PackedStringArray OpenAIProvider::_get_model_discovery_headers() const {
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	if (!api_key.is_empty()) {
+		headers.push_back("Authorization: Bearer " + api_key);
+	}
+	return headers;
 }
 
 String OpenAIProvider::_role_to_string(AIMessage::Role p_role) const {
@@ -236,8 +257,12 @@ Dictionary OpenAIProvider::format_request(
 	Dictionary request;
 	request["model"] = model_name;
 	request["messages"] = _format_messages(p_messages);
-	request["temperature"] = temperature;
-	request["max_tokens"] = max_tokens;
+	if (has_temperature_override()) {
+		request["temperature"] = temperature;
+	}
+	if (has_max_tokens_override()) {
+		request["max_tokens"] = max_tokens;
+	}
 
 	if (p_tools.size() > 0) {
 		request["tools"] = p_tools;

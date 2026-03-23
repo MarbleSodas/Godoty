@@ -33,6 +33,8 @@ public:
 			const Callable &p_complete_callback) override;
 
 	void cancel() override;
+	bool supports_model_discovery() const override;
+	Error request_available_models(const Callable &p_callback) override;
 
 	Dictionary format_request(
 			const TypedArray<Ref<AIMessage>> &p_messages,
@@ -50,6 +52,9 @@ public:
 	~LocalLLMProvider();
 
 private:
+	String _get_model_discovery_url() const override;
+	PackedStringArray _get_model_discovery_headers() const override;
+	PackedStringArray _parse_model_discovery_response(const Variant &p_response) const override;
 	Ref<AIMessage> _parse_stream_chunk(const String &p_chunk) const;
 	void _on_request_completed(int p_result, int p_code,
 			const PackedStringArray &p_headers, const PackedByteArray &p_body);

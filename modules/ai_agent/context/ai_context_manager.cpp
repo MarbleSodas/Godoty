@@ -9,6 +9,7 @@
 #include "asset_context.h"
 #include "editor_context.h"
 #include "project_context.h"
+#include "reference_context.h"
 #include "runtime_context.h"
 #include "scene_context.h"
 #include "script_context.h"
@@ -27,6 +28,7 @@ void AIContextManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_editor_context"), &AIContextManager::get_editor_context);
 	ClassDB::bind_method(D_METHOD("get_runtime_context"), &AIContextManager::get_runtime_context);
 	ClassDB::bind_method(D_METHOD("get_project_context"), &AIContextManager::get_project_context);
+	ClassDB::bind_method(D_METHOD("get_reference_context"), &AIContextManager::get_reference_context);
 	ClassDB::bind_method(D_METHOD("invalidate_cache"), &AIContextManager::invalidate_cache);
 	ClassDB::bind_method(D_METHOD("set_cache_ttl_ms", "ttl"), &AIContextManager::set_cache_ttl_ms);
 	ClassDB::bind_method(D_METHOD("get_cache_ttl_ms"), &AIContextManager::get_cache_ttl_ms);
@@ -45,6 +47,7 @@ void AIContextManager::_bind_methods() {
 	BIND_ENUM_CONSTANT(CONTEXT_EDITOR_STATE);
 	BIND_ENUM_CONSTANT(CONTEXT_RUNTIME);
 	BIND_ENUM_CONSTANT(CONTEXT_PROJECT);
+	BIND_ENUM_CONSTANT(CONTEXT_REFERENCE);
 	BIND_ENUM_CONSTANT(CONTEXT_ALL);
 }
 
@@ -96,6 +99,9 @@ Dictionary AIContextManager::collect_context(int p_flags) {
 		if ((p_flags & CONTEXT_PROJECT) && cached_context.has("project")) {
 			context["project"] = cached_context["project"];
 		}
+		if ((p_flags & CONTEXT_REFERENCE) && cached_context.has("reference")) {
+			context["reference"] = cached_context["reference"];
+		}
 		return context;
 	}
 
@@ -118,6 +124,9 @@ Dictionary AIContextManager::collect_context(int p_flags) {
 	}
 	if (p_flags & CONTEXT_PROJECT) {
 		context["project"] = get_project_context();
+	}
+	if (p_flags & CONTEXT_REFERENCE) {
+		context["reference"] = get_reference_context();
 	}
 
 	cached_context = context;
@@ -144,6 +153,7 @@ Dictionary AIContextManager::collect_context_budgeted(int p_flags, int p_max_tok
 	trim_order.push_back("scripts");
 	trim_order.push_back("scene");
 	trim_order.push_back("project");
+	trim_order.push_back("reference");
 
 	for (int i = 0; i < trim_order.size() && estimate_tokens(trimmed) > p_max_tokens; i++) {
 		if (trimmed.has(trim_order[i])) {
@@ -182,6 +192,10 @@ Dictionary AIContextManager::get_runtime_context() {
 
 Dictionary AIContextManager::get_project_context() {
 	return ProjectContext::collect();
+}
+
+Dictionary AIContextManager::get_reference_context() {
+	return ReferenceContext::collect();
 }
 
 void AIContextManager::invalidate_cache() {

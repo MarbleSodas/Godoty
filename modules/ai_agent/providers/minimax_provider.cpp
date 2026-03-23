@@ -183,15 +183,36 @@ void MiniMaxProvider::_bind_methods() {
 	// MiniMax uses OpenAI-compatible format, no additional methods needed.
 }
 
+bool MiniMaxProvider::supports_model_discovery() const {
+	return true;
+}
+
+Error MiniMaxProvider::request_available_models(const Callable &p_callback) {
+	return AIProvider::request_available_models(p_callback);
+}
+
 MiniMaxProvider::MiniMaxProvider() {
-	model_name = "MiniMax-M2.5";
-	base_url = "https://api.minimax.chat/v1";
+	model_name = "MiniMax-M2.7";
+	base_url = "https://api.minimax.io/v1";
 }
 
 MiniMaxProvider::~MiniMaxProvider() {
 	cancel_requested.set();
 	_wait_for_thread();
 	_cleanup_request();
+}
+
+String MiniMaxProvider::_get_model_discovery_url() const {
+	return base_url.trim_suffix("/") + "/models";
+}
+
+PackedStringArray MiniMaxProvider::_get_model_discovery_headers() const {
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	if (!api_key.is_empty()) {
+		headers.push_back("Authorization: Bearer " + api_key);
+	}
+	return headers;
 }
 
 String MiniMaxProvider::_role_to_string(AIMessage::Role p_role) const {
@@ -210,11 +231,22 @@ String MiniMaxProvider::_role_to_string(AIMessage::Role p_role) const {
 
 TypedArray<Dictionary> MiniMaxProvider::_format_messages(const TypedArray<Ref<AIMessage>> &p_messages) const {
 	TypedArray<Dictionary> formatted;
+	String merged_system_content;
+
 	for (int i = 0; i < p_messages.size(); i++) {
 		Ref<AIMessage> msg = p_messages[i];
 		if (msg.is_null()) {
 			continue;
 		}
+
+		if (msg->get_role() == AIMessage::ROLE_SYSTEM) {
+			if (!merged_system_content.is_empty()) {
+				merged_system_content += "\n\n";
+			}
+			merged_system_content += msg->get_content();
+			continue;
+		}
+
 		Dictionary msg_dict;
 		msg_dict["role"] = _role_to_string(msg->get_role());
 		msg_dict["content"] = msg->get_content();
@@ -227,6 +259,14 @@ TypedArray<Dictionary> MiniMaxProvider::_format_messages(const TypedArray<Ref<AI
 		}
 		formatted.push_back(msg_dict);
 	}
+
+	if (!merged_system_content.is_empty()) {
+		Dictionary system_message;
+		system_message["role"] = "system";
+		system_message["content"] = merged_system_content;
+		formatted.push_front(system_message);
+	}
+
 	return formatted;
 }
 
@@ -239,7 +279,9 @@ Dictionary MiniMaxProvider::format_request(
 	request["messages"] = _format_messages(p_messages);
 
 	// MiniMax accepts temperature overrides directly.
-	request["temperature"] = temperature;
+	if (has_temperature_override()) {
+		request["temperature"] = temperature;
+	}
 
 	if (p_tools.size() > 0) {
 		request["tools"] = p_tools;

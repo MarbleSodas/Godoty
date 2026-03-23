@@ -46,7 +46,9 @@ void ScriptTools::register_tools() {
 		required.push_back("path");
 		required.push_back("content");
 		params["required"] = required;
-		reg->register_tool("create_script", "Create a new script file with the specified content", params, callable_mp_static(&ScriptTools::tool_create_script), true);
+		reg->register_tool("create_script", "Create a new script file with the specified content", params, callable_mp_static(&ScriptTools::tool_create_script), true, AIToolRegistry::EXECUTION_MUTATING_FILE, false,
+				"Use when a new script file should be created from scratch at a known project path.",
+				"a confirmation string with the created script path");
 	}
 
 	// edit_script
@@ -74,7 +76,9 @@ void ScriptTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("path");
 		params["required"] = required;
-		reg->register_tool("edit_script", "Edit an existing script — full replacement or find/replace", params, callable_mp_static(&ScriptTools::tool_edit_script), true);
+		reg->register_tool("edit_script", "Edit an existing script — full replacement or find/replace", params, callable_mp_static(&ScriptTools::tool_edit_script), true, AIToolRegistry::EXECUTION_MUTATING_FILE, false,
+				"Use after get_script_reference or get_script_content confirms the current script surface you want to change.",
+				"a confirmation string with the updated script path");
 	}
 
 	// attach_script
@@ -95,7 +99,27 @@ void ScriptTools::register_tools() {
 		required.push_back("node_path");
 		required.push_back("script_path");
 		params["required"] = required;
-		reg->register_tool("attach_script", "Attach a script to a node", params, callable_mp_static(&ScriptTools::tool_attach_script), true);
+		reg->register_tool("attach_script", "Attach a script to a node", params, callable_mp_static(&ScriptTools::tool_attach_script), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when a node should start using an existing script resource.",
+				"a confirmation string with the script path and target node");
+	}
+
+	// detach_script
+	{
+		Dictionary params;
+		params["type"] = "object";
+		Dictionary props;
+		Dictionary node_prop;
+		node_prop["type"] = "string";
+		node_prop["description"] = "NodePath of the node to detach the script from.";
+		props["node_path"] = node_prop;
+		params["properties"] = props;
+		PackedStringArray required;
+		required.push_back("node_path");
+		params["required"] = required;
+		reg->register_tool("detach_script", "Detach the current script from a node", params, callable_mp_static(&ScriptTools::tool_detach_script), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when a node should no longer have an attached script.",
+				"a confirmation string with the target node path");
 	}
 
 	// get_script_content
@@ -111,7 +135,9 @@ void ScriptTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("path");
 		params["required"] = required;
-		reg->register_tool("get_script_content", "Read the full source code of a script file", params, callable_mp_static(&ScriptTools::tool_get_script_content));
+		reg->register_tool("get_script_content", "Read the full source code of a script file", params, callable_mp_static(&ScriptTools::tool_get_script_content), false, AIToolRegistry::EXECUTION_READ_ONLY, true,
+				"Use when you need the exact current source code of a script before editing or explaining it.",
+				"the full script source as plain text");
 	}
 
 	// open_script
@@ -127,7 +153,9 @@ void ScriptTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("path");
 		params["required"] = required;
-		reg->register_tool("open_script", "Open a script file in the script editor", params, callable_mp_static(&ScriptTools::tool_open_script));
+		reg->register_tool("open_script", "Open a script file in the script editor", params, callable_mp_static(&ScriptTools::tool_open_script), false, AIToolRegistry::EXECUTION_MUTATING_EDITOR, false,
+				"Use when surfacing a relevant script in the editor would help the user or the next step in the workflow.",
+				"a confirmation string with the opened script path");
 	}
 }
 

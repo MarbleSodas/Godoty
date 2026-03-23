@@ -318,7 +318,10 @@ void InputMap::load_from_project_settings() {
 
 		Dictionary action = GLOBAL_GET(pi.name);
 		float deadzone = action.has("deadzone") ? (float)action["deadzone"] : DEFAULT_DEADZONE;
-		Array events = action["events"];
+		Array events;
+		if (action.has("events")) {
+			events = action["events"];
+		}
 
 		add_action(name, deadzone);
 		for (int i = 0; i < events.size(); i++) {

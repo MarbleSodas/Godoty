@@ -11,8 +11,6 @@
 #include "core/input/shortcut.h"
 #include "core/os/os.h"
 #include "main/performance.h"
-#include "core/os/os.h"
-#include "main/performance.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/debugger/editor_debugger_node.h"
@@ -44,11 +42,24 @@ Dictionary RuntimeContext::collect() {
 	// Debugger state.
 	EditorDebuggerNode *debugger_node = EditorDebuggerNode::get_singleton();
 	if (debugger_node) {
-		ScriptEditorDebugger *debugger = debugger_node->get_default_debugger();
+		ScriptEditorDebugger *debugger = debugger_node->get_current_debugger();
 		if (debugger) {
 			Dictionary debug_state;
+			debug_state["selected_session_index"] = debugger_node->get_current_debugger_index();
+			debug_state["session_count"] = debugger_node->get_debugger_count();
 			debug_state["is_session_active"] = debugger->is_session_active();
 			debug_state["is_breaked"] = debugger->is_breaked();
+			debug_state["is_debuggable"] = debugger->is_debuggable();
+			debug_state["error_count"] = debugger->get_error_count();
+			debug_state["warning_count"] = debugger->get_warning_count();
+			debug_state["remote_pid"] = debugger->get_remote_pid();
+			if (debugger->is_breaked()) {
+				Dictionary stack_location;
+				stack_location["frame"] = debugger->get_stack_script_frame();
+				stack_location["file"] = debugger->get_stack_script_file();
+				stack_location["line"] = debugger->get_stack_script_line();
+				debug_state["current_stack_location"] = stack_location;
+			}
 			context["debugger"] = debug_state;
 		}
 	}

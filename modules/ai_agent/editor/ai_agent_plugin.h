@@ -25,6 +25,7 @@ class AIAgentPlugin : public EditorPlugin {
 	void _on_config_changed(const Ref<AIAgentConfig> &p_config);
 	void _toggle_ai_panel();
 	void _update_status_indicator(bool p_connected);
+	void _refresh_ui_icons();
 
 protected:
 	static void _bind_methods();

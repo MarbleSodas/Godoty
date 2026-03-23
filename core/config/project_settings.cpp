@@ -273,9 +273,9 @@ String ProjectSettings::globalize_path(const String &p_path) const {
 	} else if (p_path.begins_with("user://")) {
 		String data_dir = OS::get_singleton()->get_user_data_dir();
 		if (!data_dir.is_empty()) {
-			return p_path.replace("user:/", data_dir);
+			return OS::normalize_existing_path_case(p_path.replace("user:/", data_dir));
 		}
-		return p_path.replace("user://", "");
+		return OS::normalize_existing_path_case(p_path.replace("user://", ""));
 	}
 
 	return p_path;

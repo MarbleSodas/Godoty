@@ -55,6 +55,56 @@ OS *OS::get_singleton() {
 	return singleton;
 }
 
+String OS::normalize_existing_path_case(const String &p_path) {
+	String normalized = p_path.replace_char('\\', '/');
+	if (normalized.is_empty()) {
+		return normalized;
+	}
+
+	const bool is_absolute = normalized.begins_with("/");
+	PackedStringArray parts = normalized.split("/", false);
+	String current_path;
+	int part_index = 0;
+
+	if (!parts.is_empty() && parts[0].ends_with(":")) {
+		current_path = parts[0];
+		part_index = 1;
+	} else if (is_absolute) {
+		current_path = "/";
+	}
+
+	for (int i = part_index; i < parts.size(); i++) {
+		const String requested_name = parts[i];
+		if (requested_name.is_empty() || requested_name == ".") {
+			continue;
+		}
+
+		String resolved_name = requested_name;
+		if (!current_path.is_empty()) {
+			Ref<DirAccess> dir = DirAccess::open(current_path);
+			if (dir.is_valid() && dir->list_dir_begin() == OK) {
+				for (String item = dir->get_next(); !item.is_empty(); item = dir->get_next()) {
+					if (item.nocasecmp_to(requested_name) == 0) {
+						resolved_name = item;
+						break;
+					}
+				}
+				dir->list_dir_end();
+			}
+		}
+
+		if (current_path.is_empty()) {
+			current_path = resolved_name;
+		} else if (current_path == "/") {
+			current_path += resolved_name;
+		} else {
+			current_path = current_path.path_join(resolved_name);
+		}
+	}
+
+	return current_path.is_empty() ? normalized : current_path;
+}
+
 bool OS::prefer_meta_over_ctrl() {
 #if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
 	return true;
@@ -331,7 +381,7 @@ String OS::get_bundle_icon_name() const {
 
 // OS specific path for user://
 String OS::get_user_data_dir(const String &p_user_dir) const {
-	return ".";
+	return normalize_existing_path_case(get_data_path().path_join(p_user_dir).replace_char('\\', '/'));
 }
 
 String OS::get_user_data_dir() const {

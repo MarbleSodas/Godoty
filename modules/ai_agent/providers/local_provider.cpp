@@ -226,6 +226,14 @@ void LocalLLMProvider::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_ollama_format"), "set_use_ollama_format", "get_use_ollama_format");
 }
 
+bool LocalLLMProvider::supports_model_discovery() const {
+	return true;
+}
+
+Error LocalLLMProvider::request_available_models(const Callable &p_callback) {
+	return AIProvider::request_available_models(p_callback);
+}
+
 LocalLLMProvider::LocalLLMProvider() {
 	model_name = "llama3.1";
 	base_url = "http://localhost:11434"; // Default Ollama URL
@@ -235,6 +243,50 @@ LocalLLMProvider::~LocalLLMProvider() {
 	cancel_requested.set();
 	_wait_for_thread();
 	_cleanup_request();
+}
+
+String LocalLLMProvider::_get_model_discovery_url() const {
+	const String trimmed_base = base_url.trim_suffix("/");
+	return use_ollama_format ? trimmed_base + "/api/tags" : trimmed_base + "/v1/models";
+}
+
+PackedStringArray LocalLLMProvider::_get_model_discovery_headers() const {
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	if (!api_key.is_empty()) {
+		headers.push_back("Authorization: Bearer " + api_key);
+	}
+	return headers;
+}
+
+PackedStringArray LocalLLMProvider::_parse_model_discovery_response(const Variant &p_response) const {
+	if (!use_ollama_format) {
+		return AIProvider::_parse_model_discovery_response(p_response);
+	}
+
+	PackedStringArray models;
+	if (p_response.get_type() != Variant::DICTIONARY) {
+		return models;
+	}
+
+	const Dictionary response = p_response;
+	if (!response.has("models")) {
+		return models;
+	}
+
+	const Array available_models = response["models"];
+	for (int i = 0; i < available_models.size(); i++) {
+		if (available_models[i].get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+		const Dictionary model = available_models[i];
+		const String model_name_value = model.get("name", model.get("model", String()));
+		if (model_name_value.is_empty() || models.has(model_name_value)) {
+			continue;
+		}
+		models.push_back(model_name_value);
+	}
+	return models;
 }
 
 void LocalLLMProvider::set_use_ollama_format(bool p_ollama) {
@@ -260,8 +312,12 @@ Dictionary LocalLLMProvider::format_request(
 		request["model"] = model_name;
 
 		Dictionary options;
-		options["temperature"] = temperature;
-		options["num_predict"] = max_tokens;
+		if (has_temperature_override()) {
+			options["temperature"] = temperature;
+		}
+		if (has_max_tokens_override()) {
+			options["num_predict"] = max_tokens;
+		}
 		request["options"] = options;
 
 		TypedArray<Dictionary> msgs;
@@ -295,8 +351,12 @@ Dictionary LocalLLMProvider::format_request(
 	} else {
 		// llama.cpp / OpenAI-compatible
 		request["model"] = model_name;
-		request["temperature"] = temperature;
-		request["max_tokens"] = max_tokens;
+		if (has_temperature_override()) {
+			request["temperature"] = temperature;
+		}
+		if (has_max_tokens_override()) {
+			request["max_tokens"] = max_tokens;
+		}
 		TypedArray<Dictionary> msgs;
 		for (int i = 0; i < p_messages.size(); i++) {
 			Ref<AIMessage> msg = p_messages[i];

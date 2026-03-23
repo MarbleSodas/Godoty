@@ -20,8 +20,47 @@
 #include "editor/editor_undo_redo_manager.h"
 #endif
 
+namespace {
+
+} // namespace
+
 void SceneTools::_bind_methods() {
 	ClassDB::bind_static_method("SceneTools", D_METHOD("register_tools"), &SceneTools::register_tools);
+}
+
+String SceneTools::sanitize_ai_node_name(const String &p_requested_name, const String &p_type_name) {
+	String resolved_name = p_requested_name.strip_edges();
+	if (resolved_name.is_empty()) {
+		resolved_name = p_type_name.strip_edges();
+	}
+	if (resolved_name.is_empty()) {
+		resolved_name = "Node";
+	}
+
+	resolved_name = Node::adjust_name_casing(resolved_name);
+	resolved_name = resolved_name.validate_node_name().strip_edges();
+	if (resolved_name.is_empty()) {
+		resolved_name = p_type_name.strip_edges();
+		resolved_name = Node::adjust_name_casing(resolved_name);
+		resolved_name = resolved_name.validate_node_name().strip_edges();
+	}
+	if (resolved_name.is_empty()) {
+		resolved_name = "Node";
+	}
+
+	return resolved_name;
+}
+
+String SceneTools::resolve_ai_node_name(Node *p_parent, Node *p_candidate, const String &p_requested_name, const String &p_type_name) {
+	String resolved_name = sanitize_ai_node_name(p_requested_name, p_type_name);
+	if (p_parent && p_candidate) {
+		resolved_name = p_parent->prevalidate_child_name(p_candidate, StringName(resolved_name));
+		resolved_name = sanitize_ai_node_name(resolved_name, p_type_name);
+	}
+	if (resolved_name.is_empty()) {
+		resolved_name = "Node";
+	}
+	return resolved_name;
 }
 
 void SceneTools::register_tools() {
@@ -48,9 +87,10 @@ void SceneTools::register_tools() {
 		params["properties"] = props;
 		PackedStringArray required;
 		required.push_back("type");
-		required.push_back("name");
 		params["required"] = required;
-		reg->register_tool("create_node", "Create a new node in the scene tree", params, callable_mp_static(&SceneTools::tool_create_node), true);
+		reg->register_tool("create_node", "Create a new node in the scene tree", params, callable_mp_static(&SceneTools::tool_create_node), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use after inspecting the target scene and parent node when you need to add a new node of a known type.",
+				"a confirmation string with the created node type, resolved name, and parent path");
 	}
 
 	// delete_node
@@ -66,7 +106,7 @@ void SceneTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("node_path");
 		params["required"] = required;
-		reg->register_tool("delete_node", "Delete a node from the scene tree", params, callable_mp_static(&SceneTools::tool_delete_node), true);
+		reg->register_tool("delete_node", "Delete a node from the scene tree", params, callable_mp_static(&SceneTools::tool_delete_node), true, AIToolRegistry::EXECUTION_MUTATING_SCENE);
 	}
 
 	// rename_node
@@ -87,7 +127,48 @@ void SceneTools::register_tools() {
 		required.push_back("node_path");
 		required.push_back("new_name");
 		params["required"] = required;
-		reg->register_tool("rename_node", "Rename a node in the scene tree", params, callable_mp_static(&SceneTools::tool_rename_node), true);
+		reg->register_tool("rename_node", "Rename a node in the scene tree", params, callable_mp_static(&SceneTools::tool_rename_node), true, AIToolRegistry::EXECUTION_MUTATING_SCENE);
+	}
+
+	// reparent_node
+	{
+		Dictionary params;
+		params["type"] = "object";
+		Dictionary props;
+		Dictionary node_prop;
+		node_prop["type"] = "string";
+		node_prop["description"] = "NodePath of the node to move.";
+		props["node_path"] = node_prop;
+		Dictionary parent_prop;
+		parent_prop["type"] = "string";
+		parent_prop["description"] = "NodePath of the new parent.";
+		props["new_parent_path"] = parent_prop;
+		params["properties"] = props;
+		PackedStringArray required;
+		required.push_back("node_path");
+		required.push_back("new_parent_path");
+		params["required"] = required;
+		reg->register_tool("reparent_node", "Move a node under a different parent in the scene tree", params, callable_mp_static(&SceneTools::tool_reparent_node), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when the scene structure is correct except for which parent currently owns a node.",
+				"a confirmation string with the moved node and its new parent path");
+	}
+
+	// duplicate_node
+	{
+		Dictionary params;
+		params["type"] = "object";
+		Dictionary props;
+		Dictionary node_prop;
+		node_prop["type"] = "string";
+		node_prop["description"] = "NodePath of the node to duplicate.";
+		props["node_path"] = node_prop;
+		params["properties"] = props;
+		PackedStringArray required;
+		required.push_back("node_path");
+		params["required"] = required;
+		reg->register_tool("duplicate_node", "Duplicate a node in the scene tree", params, callable_mp_static(&SceneTools::tool_duplicate_node), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when you need a copy of an existing node hierarchy as a starting point.",
+				"a confirmation string with the original node and the duplicate name");
 	}
 
 	// set_node_property
@@ -112,7 +193,9 @@ void SceneTools::register_tools() {
 		required.push_back("property");
 		required.push_back("value");
 		params["required"] = required;
-		reg->register_tool("set_node_property", "Set a property on a node", params, callable_mp_static(&SceneTools::tool_set_node_property), true);
+		reg->register_tool("set_node_property", "Set a property on a node", params, callable_mp_static(&SceneTools::tool_set_node_property), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use after inspect_node or get_class_reference confirms the property name and expected value type.",
+				"a confirmation string with the property, value, and target node");
 	}
 
 	// get_node_property
@@ -133,7 +216,98 @@ void SceneTools::register_tools() {
 		required.push_back("node_path");
 		required.push_back("property");
 		params["required"] = required;
-		reg->register_tool("get_node_property", "Get the value of a property on a node", params, callable_mp_static(&SceneTools::tool_get_node_property));
+		reg->register_tool("get_node_property", "Get the value of a property on a node", params, callable_mp_static(&SceneTools::tool_get_node_property), false, AIToolRegistry::EXECUTION_READ_ONLY, true,
+				"Use for a quick value check when you already know the property name and only need the current live value.",
+				"a short string containing the property name and current value");
+	}
+
+	// connect_signal
+	{
+		Dictionary params;
+		params["type"] = "object";
+		Dictionary props;
+		Dictionary source_prop;
+		source_prop["type"] = "string";
+		source_prop["description"] = "NodePath of the signal source node.";
+		props["source_path"] = source_prop;
+		Dictionary signal_prop;
+		signal_prop["type"] = "string";
+		signal_prop["description"] = "Signal name to connect.";
+		props["signal_name"] = signal_prop;
+		Dictionary target_prop;
+		target_prop["type"] = "string";
+		target_prop["description"] = "NodePath of the target node.";
+		props["target_path"] = target_prop;
+		Dictionary method_prop;
+		method_prop["type"] = "string";
+		method_prop["description"] = "Method name to call on the target node.";
+		props["method_name"] = method_prop;
+		params["properties"] = props;
+		PackedStringArray required;
+		required.push_back("source_path");
+		required.push_back("signal_name");
+		required.push_back("target_path");
+		required.push_back("method_name");
+		params["required"] = required;
+		reg->register_tool("connect_signal", "Connect a signal between nodes in the edited scene", params, callable_mp_static(&SceneTools::tool_connect_signal), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use after get_class_reference or inspect_node confirms the signal and target method you want to wire together.",
+				"a confirmation string describing the created connection");
+	}
+
+	// disconnect_signal
+	{
+		Dictionary params;
+		params["type"] = "object";
+		Dictionary props;
+		Dictionary source_prop;
+		source_prop["type"] = "string";
+		source_prop["description"] = "NodePath of the signal source node.";
+		props["source_path"] = source_prop;
+		Dictionary signal_prop;
+		signal_prop["type"] = "string";
+		signal_prop["description"] = "Signal name to disconnect.";
+		props["signal_name"] = signal_prop;
+		Dictionary target_prop;
+		target_prop["type"] = "string";
+		target_prop["description"] = "NodePath of the target node.";
+		props["target_path"] = target_prop;
+		Dictionary method_prop;
+		method_prop["type"] = "string";
+		method_prop["description"] = "Method name previously connected on the target node.";
+		props["method_name"] = method_prop;
+		params["properties"] = props;
+		PackedStringArray required;
+		required.push_back("source_path");
+		required.push_back("signal_name");
+		required.push_back("target_path");
+		required.push_back("method_name");
+		params["required"] = required;
+		reg->register_tool("disconnect_signal", "Disconnect a signal between nodes in the edited scene", params, callable_mp_static(&SceneTools::tool_disconnect_signal), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when a signal connection exists but should be removed or replaced.",
+				"a confirmation string describing the removed connection");
+	}
+
+	// add_to_group
+	{
+		Dictionary params;
+		params["type"] = "object";
+		Dictionary props;
+		Dictionary node_prop;
+		node_prop["type"] = "string";
+		node_prop["description"] = "NodePath of the node to add to a group.";
+		props["node_path"] = node_prop;
+		Dictionary group_prop;
+		group_prop["type"] = "string";
+		group_prop["description"] = "Group name to add to the node.";
+		props["group_name"] = group_prop;
+		params["properties"] = props;
+		PackedStringArray required;
+		required.push_back("node_path");
+		required.push_back("group_name");
+		params["required"] = required;
+		reg->register_tool("add_to_group", "Add a node to a persistent group", params, callable_mp_static(&SceneTools::tool_add_to_group), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when a node should participate in a known persistent group-based system.",
+				"a confirmation string with the node and group name");
 	}
 
 	// save_scene
@@ -146,7 +320,9 @@ void SceneTools::register_tools() {
 		path_prop["description"] = "Optional file path to save to (leave empty for current path)";
 		props["path"] = path_prop;
 		params["properties"] = props;
-		reg->register_tool("save_scene", "Save the current scene to disk", params, callable_mp_static(&SceneTools::tool_save_scene), true);
+		reg->register_tool("save_scene", "Save the current scene to disk", params, callable_mp_static(&SceneTools::tool_save_scene), true, AIToolRegistry::EXECUTION_MUTATING_FILE, false,
+				"Use after scene mutations when you need to persist the current edited scene to its existing path or a new path.",
+				"a confirmation string with the saved scene path");
 	}
 
 	// create_scene
@@ -166,7 +342,31 @@ void SceneTools::register_tools() {
 		PackedStringArray required;
 		required.push_back("root_type");
 		params["required"] = required;
-		reg->register_tool("create_scene", "Create a new scene with a specified root node type", params, callable_mp_static(&SceneTools::tool_create_scene), true);
+		reg->register_tool("create_scene", "Create a new scene with a specified root node type", params, callable_mp_static(&SceneTools::tool_create_scene), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when starting a brand-new scene rooted at a known node type.",
+				"a confirmation string with the root type and resolved root name");
+	}
+
+	// instantiate_scene
+	{
+		Dictionary params;
+		params["type"] = "object";
+		Dictionary props;
+		Dictionary scene_prop;
+		scene_prop["type"] = "string";
+		scene_prop["description"] = "Path of the scene resource to instantiate.";
+		props["scene_path"] = scene_prop;
+		Dictionary parent_prop;
+		parent_prop["type"] = "string";
+		parent_prop["description"] = "Optional parent NodePath for the new instance (default: '.').";
+		props["parent_path"] = parent_prop;
+		params["properties"] = props;
+		PackedStringArray required;
+		required.push_back("scene_path");
+		params["required"] = required;
+		reg->register_tool("instantiate_scene", "Instantiate a packed scene into the edited scene tree", params, callable_mp_static(&SceneTools::tool_instantiate_scene), true, AIToolRegistry::EXECUTION_MUTATING_SCENE, false,
+				"Use when you want to add a reusable scene instance under a chosen parent in the current edited scene.",
+				"a confirmation string with the instantiated scene path and parent path");
 	}
 }
 
@@ -201,18 +401,19 @@ Variant SceneTools::tool_create_node(const Dictionary &p_args) {
 		return "Error: '" + type + "' is not a valid Node type.";
 	}
 
-	new_node->set_name(name);
+	String resolved_name = resolve_ai_node_name(parent, new_node, name, type);
+	new_node->set_name(resolved_name);
 
 	// Use UndoRedo for editor integration.
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action("AI: Create " + type + " '" + name + "'");
+	undo_redo->create_action("AI: Create " + type + " '" + resolved_name + "'");
 	undo_redo->add_do_method(parent, "add_child", new_node, true);
 	undo_redo->add_do_method(new_node, "set_owner", edited_root);
 	undo_redo->add_undo_method(parent, "remove_child", new_node);
 	undo_redo->add_do_reference(new_node);
 	undo_redo->commit_action();
 
-	return "Created " + type + " '" + name + "' as child of " + String(parent->get_path());
+	return "Created " + type + " '" + resolved_name + "' as child of " + String(parent->get_path());
 #else
 	return "Error: Scene tools are only available in editor builds.";
 #endif
@@ -258,6 +459,9 @@ Variant SceneTools::tool_rename_node(const Dictionary &p_args) {
 #ifdef TOOLS_ENABLED
 	String node_path = p_args.get("node_path", "");
 	String new_name = p_args.get("new_name", "");
+	if (new_name.strip_edges().is_empty()) {
+		return "Error: 'new_name' must not be empty.";
+	}
 
 	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
 	if (!root) {
@@ -269,14 +473,20 @@ Variant SceneTools::tool_rename_node(const Dictionary &p_args) {
 		return "Error: Node not found at path: " + node_path;
 	}
 
+	Node *parent = node->get_parent();
+	if (!parent) {
+		return "Error: Cannot rename a node without a parent.";
+	}
+
+	const String resolved_name = resolve_ai_node_name(parent, node, new_name, node->get_class());
 	String old_name = node->get_name();
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action("AI: Rename '" + old_name + "' to '" + new_name + "'");
-	undo_redo->add_do_method(node, "set_name", new_name);
+	undo_redo->create_action("AI: Rename '" + old_name + "' to '" + resolved_name + "'");
+	undo_redo->add_do_method(node, "set_name", resolved_name);
 	undo_redo->add_undo_method(node, "set_name", old_name);
 	undo_redo->commit_action();
 
-	return "Renamed '" + old_name + "' to '" + new_name + "'";
+	return "Renamed '" + old_name + "' to '" + resolved_name + "'";
 #else
 	return "Error: Scene tools are only available in editor builds.";
 #endif
@@ -544,10 +754,11 @@ Variant SceneTools::tool_create_scene(const Dictionary &p_args) {
 		}
 		return "Error: '" + root_type + "' is not a valid Node type.";
 	}
-	root->set_name(root_name);
+	String resolved_name = sanitize_ai_node_name(root_name, root_type);
+	root->set_name(resolved_name);
 
 	EditorInterface::get_singleton()->edit_node(root);
-	return "Created new scene with " + root_type + " root named '" + root_name + "'";
+	return "Created new scene with " + root_type + " root named '" + resolved_name + "'";
 #else
 	return "Error: only available in editor builds.";
 #endif

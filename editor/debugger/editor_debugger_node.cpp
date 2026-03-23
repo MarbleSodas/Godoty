@@ -242,6 +242,27 @@ ScriptEditorDebugger *EditorDebuggerNode::get_debugger(int p_id) const {
 	return Object::cast_to<ScriptEditorDebugger>(tabs->get_tab_control(p_id));
 }
 
+int EditorDebuggerNode::get_debugger_count() const {
+	return tabs ? tabs->get_tab_count() : 0;
+}
+
+int EditorDebuggerNode::get_current_debugger_index() const {
+	return tabs ? tabs->get_current_tab() : -1;
+}
+
+void EditorDebuggerNode::switch_to_debugger_session(int p_debugger) {
+	ERR_FAIL_COND(!tabs);
+	ERR_FAIL_INDEX(p_debugger, tabs->get_tab_count());
+	tabs->set_current_tab(p_debugger);
+}
+
+TypedArray<uint64_t> EditorDebuggerNode::get_remote_tree_selection() const {
+	if (!remote_scene_tree) {
+		return TypedArray<uint64_t>();
+	}
+	return remote_scene_tree->get_selection();
+}
+
 ScriptEditorDebugger *EditorDebuggerNode::get_previous_debugger() const {
 	return Object::cast_to<ScriptEditorDebugger>(tabs->get_tab_control(tabs->get_previous_tab()));
 }
