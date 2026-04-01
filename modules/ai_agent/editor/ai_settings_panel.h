@@ -15,6 +15,7 @@
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/line_edit.h"
+#include "scene/gui/option_button.h"
 
 class Label;
 class PanelContainer;
@@ -28,7 +29,7 @@ class AISettingsPanel : public VBoxContainer {
 	struct ModeOverrideRow {
 		AIAgentModeId mode = AI_AGENT_MODE_ASK;
 		Label *label = nullptr;
-		LineEdit *input = nullptr;
+		OptionButton *input = nullptr;
 	};
 
 	struct ModelSuggestionState {
@@ -81,6 +82,7 @@ class AISettingsPanel : public VBoxContainer {
 	void _load_mode_overrides_into_fields();
 	void _commit_mode_overrides_to_config();
 	void _apply_selected_provider_state();
+	void _populate_mode_override_dropdowns();
 	void _create_provider_cards();
 	void _create_mode_override_rows(VBoxContainer *p_parent);
 	void _set_approval_policy(AIAgentConfig::ApprovalPolicy p_policy, bool p_persist = true);

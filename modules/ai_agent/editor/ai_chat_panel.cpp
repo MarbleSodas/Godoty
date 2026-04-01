@@ -33,6 +33,7 @@
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/text_edit.h"
+#include "scene/gui/texture_rect.h"
 #include "scene/resources/style_box_flat.h"
 #include "scene/resources/style_box_line.h"
 #include "scene/resources/text_paragraph.h"
@@ -415,16 +416,11 @@ AIChatPanel::AIChatPanel() {
 	empty_state_margin->add_theme_constant_override("margin_bottom", 16 * EDSCALE);
 	empty_state_card->add_child(empty_state_margin);
 
-	empty_state = memnew(RichTextLabel);
-	empty_state->set_h_size_flags(SIZE_EXPAND_FILL);
-	empty_state->set_custom_minimum_size(Size2(340 * EDSCALE, 56 * EDSCALE));
-	empty_state->set_fit_content(true);
-	empty_state->set_scroll_active(false);
-	empty_state->set_selection_enabled(false);
-	empty_state->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	empty_state->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	empty_state->set_use_bbcode(true);
-	empty_state_margin->add_child(empty_state);
+	empty_logo = memnew(TextureRect);
+	empty_logo->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	empty_logo->set_custom_minimum_size(Size2(160 * EDSCALE, 160 * EDSCALE));
+	empty_logo->set_modulate(Color(1, 1, 1, 0.1f));
+	empty_state_margin->add_child(empty_logo);
 
 	approval_card = memnew(PanelContainer);
 	approval_card->set_h_size_flags(SIZE_EXPAND_FILL);
@@ -536,10 +532,10 @@ AIChatPanel::AIChatPanel() {
 	mode_button->set_theme_type_variation("FlatMenuButton");
 	mode_button->set_text("Ask");
 	mode_button->set_expand_icon(false);
-	mode_button->set_clip_text(true);
+	mode_button->set_clip_text(false);
 	mode_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	mode_button->set_icon_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	mode_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	mode_button->set_text_overrun_behavior(TextServer::OVERRUN_NO_TRIMMING);
 	mode_button->set_switch_on_hover(false);
 	mode_button->set_tooltip_text("Select mode");
 	mode_button->get_popup()->connect("id_pressed", callable_mp(this, &AIChatPanel::_on_mode_menu_id_pressed));
@@ -550,10 +546,10 @@ AIChatPanel::AIChatPanel() {
 	model_button->set_theme_type_variation("FlatMenuButton");
 	model_button->set_text("Model");
 	model_button->set_expand_icon(false);
-	model_button->set_clip_text(true);
+	model_button->set_clip_text(false);
 	model_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	model_button->set_icon_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	model_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	model_button->set_text_overrun_behavior(TextServer::OVERRUN_NO_TRIMMING);
 	model_button->set_switch_on_hover(false);
 	model_button->set_tooltip_text("Select model");
 	model_button->get_popup()->connect("id_pressed", callable_mp(this, &AIChatPanel::_on_model_menu_id_pressed));
@@ -738,11 +734,11 @@ void AIChatPanel::_apply_theme() {
 	const Color approval_fill = background.lerp(surface, 0.28f);
 	const Color approval_border = accent.lerp(surface, 0.5f);
 	const Color composer_fill = background.lerp(surface, 0.24f);
-	const Color composer_border = strong.lerp(surface, 0.92f);
+	const Color composer_border = strong.lerp(surface, 0.96f);
 	const Color send_fill = background.lerp(accent, 0.16f);
 	const Color send_hover = background.lerp(accent, 0.23f);
 	const int thin_border = 1;
-	const int medium_radius = (int)Math::round(9.0f * EDSCALE);
+	const int medium_radius = (int)Math::round(8.0f * EDSCALE);
 	const int large_radius = (int)Math::round(12.0f * EDSCALE);
 	const int chip_padding_h = (int)Math::round(10.0f * EDSCALE);
 	const int chip_padding_v = (int)Math::round(5.0f * EDSCALE);
@@ -832,10 +828,10 @@ void AIChatPanel::_apply_theme() {
 		}
 	}
 	if (mode_button) {
-		mode_button->set_custom_minimum_size(Size2((int)Math::round(84.0f * EDSCALE), 30 * EDSCALE));
+		mode_button->set_custom_minimum_size(Size2(0, 30 * EDSCALE));
 	}
 	if (model_button) {
-		model_button->set_custom_minimum_size(Size2((int)Math::round(144.0f * EDSCALE), 30 * EDSCALE));
+		model_button->set_custom_minimum_size(Size2(0, 30 * EDSCALE));
 	}
 	if (mode_button) {
 		_apply_popup_theme(mode_button->get_popup());
@@ -919,17 +915,17 @@ void AIChatPanel::_apply_theme() {
 	}
 
 	if (input_field) {
-		Ref<StyleBoxFlat> input_normal = make_surface_style(background.lerp(surface, 0.12f), strong.lerp(surface, 0.93f), medium_radius);
-		input_normal->set_content_margin(SIDE_LEFT, 9 * EDSCALE);
-		input_normal->set_content_margin(SIDE_TOP, 6 * EDSCALE);
-		input_normal->set_content_margin(SIDE_RIGHT, 9 * EDSCALE);
-		input_normal->set_content_margin(SIDE_BOTTOM, 6 * EDSCALE);
+		Ref<StyleBoxFlat> input_normal = make_surface_style(background.lerp(surface, 0.12f), strong.lerp(surface, 0.95f), medium_radius);
+		input_normal->set_content_margin(SIDE_LEFT, 12 * EDSCALE);
+		input_normal->set_content_margin(SIDE_TOP, 8 * EDSCALE);
+		input_normal->set_content_margin(SIDE_RIGHT, 12 * EDSCALE);
+		input_normal->set_content_margin(SIDE_BOTTOM, 8 * EDSCALE);
 
-		Ref<StyleBoxFlat> input_focus = make_surface_style(background.lerp(surface, 0.12f), strong.lerp(surface, 0.93f), medium_radius);
-		input_focus->set_content_margin(SIDE_LEFT, 9 * EDSCALE);
-		input_focus->set_content_margin(SIDE_TOP, 6 * EDSCALE);
-		input_focus->set_content_margin(SIDE_RIGHT, 9 * EDSCALE);
-		input_focus->set_content_margin(SIDE_BOTTOM, 6 * EDSCALE);
+		Ref<StyleBoxFlat> input_focus = make_surface_style(background.lerp(surface, 0.12f), accent.lerp(surface, 0.25f), medium_radius);
+		input_focus->set_content_margin(SIDE_LEFT, 12 * EDSCALE);
+		input_focus->set_content_margin(SIDE_TOP, 8 * EDSCALE);
+		input_focus->set_content_margin(SIDE_RIGHT, 12 * EDSCALE);
+		input_focus->set_content_margin(SIDE_BOTTOM, 8 * EDSCALE);
 
 		input_field->add_theme_style_override("normal", input_normal);
 		input_field->add_theme_style_override("read_only", input_normal);
@@ -1072,7 +1068,6 @@ void AIChatPanel::_on_mode_menu_about_to_popup() {
 	_apply_popup_theme(popup);
 	const Point2i target_position = popup->get_position();
 	popup->set_position(target_position + Point2i(0, (int)Math::round(POPUP_REVEAL_OFFSET_Y * EDSCALE)));
-	callable_mp(this, &AIChatPanel::_animate_popup_menu_open).call_deferred(popup, target_position);
 }
 
 void AIChatPanel::_on_model_menu_about_to_popup() {
@@ -1088,7 +1083,6 @@ void AIChatPanel::_on_model_menu_about_to_popup() {
 	_apply_popup_theme(popup);
 	const Point2i target_position = popup->get_position();
 	popup->set_position(target_position + Point2i(0, (int)Math::round(POPUP_REVEAL_OFFSET_Y * EDSCALE)));
-	callable_mp(this, &AIChatPanel::_animate_popup_menu_open).call_deferred(popup, target_position);
 }
 
 void AIChatPanel::_position_menu_popup_above(MenuButton *p_button) {
@@ -1767,7 +1761,7 @@ void AIChatPanel::_restore_transcript_from_session_history() {
 }
 
 void AIChatPanel::_rebuild_timeline() {
-	if (!timeline_list || !empty_state || !empty_state_wrap) {
+	if (!timeline_list || !empty_logo || !empty_state_wrap) {
 		return;
 	}
 
@@ -1786,33 +1780,17 @@ void AIChatPanel::_rebuild_timeline() {
 }
 
 void AIChatPanel::_refresh_empty_state() {
-	if (!empty_state || !empty_state_wrap) {
+	if (!empty_logo || !empty_state_wrap) {
 		return;
 	}
 
-	const Color muted = get_theme_color("font_placeholder_color", EditorStringName(Editor));
 	if (!transcript.is_empty()) {
 		empty_state_wrap->set_visible(false);
 		_refresh_scroll_to_latest_button();
 		return;
 	}
 
-	Ref<AIAgentConfig> cfg;
-	if (session.is_valid()) {
-		cfg = session->get_config();
-	} else if (settings_panel) {
-		cfg = settings_panel->get_config();
-	}
-
-	String text = "[center][color=#" + muted.to_html(false) + "]Start a conversation[/color][/center]\n";
-	if (cfg.is_valid() && cfg->is_configured()) {
-		const String model_name = cfg->get_model_name().is_empty() ? cfg->get_default_model_name() : cfg->get_model_name();
-		text += "[center][color=#" + muted.to_html(false) + "]Using " + _escape_bbcode(model_name) + " on " + _escape_bbcode(cfg->get_provider_name()) + ".[/color][/center]";
-	} else {
-		text += "[center][color=#" + muted.to_html(false) + "]Open Settings to connect a provider and save credentials.[/color][/center]";
-	}
-
-	empty_state->set_text(text);
+	empty_logo->set_texture(get_theme_icon(SNAME("Logo"), EditorStringName(EditorIcons)));
 	empty_state_wrap->set_visible(true);
 	_refresh_scroll_to_latest_button();
 }
@@ -2216,9 +2194,10 @@ void AIChatPanel::_update_entry_visuals(int p_index) {
 	const Color muted = get_theme_color("font_placeholder_color", EditorStringName(Editor));
 	const Color background = get_theme_color("dark_color_1", EditorStringName(Editor));
 	const Color surface = get_theme_color("dark_color_2", EditorStringName(Editor));
+	const Color accent = get_theme_color("accent_color", EditorStringName(Editor));
 	const Color error = get_theme_color("error_color", EditorStringName(Editor));
-	const int small_radius = (int)Math::round(9.0f * EDSCALE);
-	const int medium_radius = (int)Math::round(11.0f * EDSCALE);
+	const int small_radius = (int)Math::round(8.0f * EDSCALE);
+	const int medium_radius = (int)Math::round(12.0f * EDSCALE);
 	const uint64_t now = OS::get_singleton()->get_ticks_msec();
 
 	auto make_style = [&](const Color &p_fill, const Color &p_border, int p_radius) {
@@ -2234,7 +2213,10 @@ void AIChatPanel::_update_entry_visuals(int p_index) {
 	switch (entry.kind) {
 		case TimelineEntry::KIND_USER: {
 			if (entry.panel) {
-				entry.panel->add_theme_style_override("panel", make_style(background.lerp(surface, 0.36f), strong.lerp(surface, 0.92f), medium_radius));
+				Ref<StyleBoxFlat> bubble_style = make_style(background.lerp(accent, 0.15f), Color(0, 0, 0, 0), medium_radius);
+				// Make the top-right corner sharper for a chat bubble look (optional, but requested in plan)
+				bubble_style->set_corner_radius(CORNER_TOP_RIGHT, (int)Math::round(4.0f * EDSCALE));
+				entry.panel->add_theme_style_override("panel", bubble_style);
 			}
 			if (entry.content_label) {
 				entry.content_label->set_text("[color=#" + strong.to_html(false) + "]" + _escape_bbcode(entry.content) + "[/color]");
@@ -2255,7 +2237,7 @@ void AIChatPanel::_update_entry_visuals(int p_index) {
 			}
 			if (entry.content_panel) {
 				entry.content_panel->set_visible(has_content || has_stream_preview || show_pending_placeholder);
-				entry.content_panel->add_theme_style_override("panel", make_style(background.lerp(surface, 0.22f), strong.lerp(surface, 0.93f), small_radius));
+				entry.content_panel->add_theme_style_override("panel", make_style(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0));
 			}
 			if (entry.stream_preview) {
 				Ref<Font> preview_font = entry.content_label ? entry.content_label->get_theme_font(SNAME("normal_font")) : get_theme_font(SNAME("normal_font"), SNAME("RichTextLabel"));
@@ -2286,7 +2268,7 @@ void AIChatPanel::_update_entry_visuals(int p_index) {
 
 		case TimelineEntry::KIND_TOOL_CARD: {
 			if (entry.panel) {
-				entry.panel->add_theme_style_override("panel", make_style(background.lerp(surface, 0.26f), strong.lerp(surface, 0.92f), small_radius));
+				entry.panel->add_theme_style_override("panel", make_style(background.lerp(surface, 0.22f), strong.lerp(surface, 0.95f), medium_radius));
 			}
 			if (entry.title_label) {
 				entry.title_label->set_text(entry.title);

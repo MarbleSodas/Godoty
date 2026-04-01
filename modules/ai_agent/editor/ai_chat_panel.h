@@ -17,6 +17,7 @@
 #include "scene/gui/control.h"
 
 class RichTextLabel;
+class TextureRect;
 class TextEdit;
 class Button;
 class Label;
@@ -93,7 +94,7 @@ class AIChatPanel : public VBoxContainer {
 	Button *scroll_to_latest_button = nullptr;
 	Control *empty_state_wrap = nullptr;
 	PanelContainer *empty_state_card = nullptr;
-	RichTextLabel *empty_state = nullptr;
+	TextureRect *empty_logo = nullptr;
 	TextEdit *input_field = nullptr;
 	MenuButton *mode_button = nullptr;
 	MenuButton *model_button = nullptr;

@@ -250,11 +250,7 @@ void AISettingsPanel::_load_mode_overrides_into_fields() {
 	}
 
 	loading_provider_fields = true;
-	for (int i = 0; i < mode_override_rows.size(); i++) {
-		if (mode_override_rows[i].input) {
-			mode_override_rows.write[i].input->set_text(config->get_mode_model_override((int)mode_override_rows[i].mode));
-		}
-	}
+	_populate_mode_override_dropdowns();
 	loading_provider_fields = false;
 }
 
@@ -264,7 +260,13 @@ void AISettingsPanel::_commit_mode_overrides_to_config() {
 	}
 
 	for (int i = 0; i < mode_override_rows.size(); i++) {
-		const String model_name = mode_override_rows[i].input ? mode_override_rows[i].input->get_text().strip_edges() : String();
+		String model_name = "";
+		if (mode_override_rows[i].input && mode_override_rows[i].input->get_item_count() > 0) {
+			const int selected = mode_override_rows[i].input->get_selected();
+			if (selected > 0) {
+				model_name = mode_override_rows[i].input->get_item_metadata(selected);
+			}
+		}
 		config->set_mode_model_override((int)mode_override_rows[i].mode, model_name);
 	}
 }
@@ -277,6 +279,45 @@ void AISettingsPanel::_apply_selected_provider_state() {
 	for (int i = 0; i < provider_cards.size(); i++) {
 		if (provider_cards[i]) {
 			provider_cards[i]->set_pressed(i == selected_provider_index);
+		}
+	}
+}
+
+void AISettingsPanel::_populate_mode_override_dropdowns() {
+	const AIAgentConfig::ProviderType provider = (AIAgentConfig::ProviderType)selected_provider_index;
+	const PackedStringArray suggestions = _get_merged_model_suggestions(provider);
+	for (int i = 0; i < mode_override_rows.size(); i++) {
+		OptionButton *ob = mode_override_rows[i].input;
+		if (!ob) continue;
+
+		String current_selection;
+		if (ob->get_item_count() > 0 && ob->get_selected() > 0) {
+			current_selection = ob->get_item_metadata(ob->get_selected());
+		} else if (config.is_valid()) {
+			current_selection = config->get_mode_model_override((int)mode_override_rows[i].mode);
+		}
+		
+		ob->clear();
+		ob->add_item("Use provider default");
+		ob->set_item_metadata(0, "");
+
+		bool found = false;
+		for (int j = 0; j < suggestions.size(); j++) {
+			if (suggestions[j].is_empty()) continue;
+			ob->add_item(suggestions[j]);
+			ob->set_item_metadata(ob->get_item_count() - 1, suggestions[j]);
+			if (suggestions[j] == current_selection) {
+				ob->select(ob->get_item_count() - 1);
+				found = true;
+			}
+		}
+
+		if (!found && !current_selection.is_empty()) {
+			ob->add_item(current_selection);
+			ob->set_item_metadata(ob->get_item_count() - 1, current_selection);
+			ob->select(ob->get_item_count() - 1);
+		} else if (current_selection.is_empty()) {
+			ob->select(0);
 		}
 	}
 }
@@ -308,10 +349,10 @@ void AISettingsPanel::_create_mode_override_rows(VBoxContainer *p_parent) {
 		mode_row.label->set_custom_minimum_size(Size2(104 * EDSCALE, 0));
 		row->add_child(mode_row.label);
 
-		mode_row.input = memnew(LineEdit);
+		mode_row.input = memnew(OptionButton);
 		mode_row.input->set_h_size_flags(SIZE_EXPAND_FILL);
 		mode_row.input->set_custom_minimum_size(Size2(0, 36 * EDSCALE));
-		mode_row.input->set_placeholder("Use provider default");
+		mode_row.input->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 		row->add_child(mode_row.input);
 
 		mode_override_rows.push_back(mode_row);
@@ -474,6 +515,7 @@ void AISettingsPanel::_refresh_model_suggestion_chips() {
 		model_suggestions_status_label->set_text("Showing curated suggestions.");
 	}
 
+	_populate_mode_override_dropdowns();
 	_apply_theme();
 }
 
@@ -844,9 +886,9 @@ void AISettingsPanel::_apply_theme() {
 	const Color primary_fill = background.lerp(accent, 0.14f);
 	const Color primary_fill_hover = background.lerp(accent, 0.2f);
 	const Color primary_fill_pressed = background.lerp(accent, 0.24f);
-	const int field_radius = (int)Math::round(10.0f * EDSCALE);
+	const int field_radius = (int)Math::round(8.0f * EDSCALE);
 	const int card_radius = (int)Math::round(12.0f * EDSCALE);
-	const int chip_radius = (int)Math::round(9.0f * EDSCALE);
+	const int chip_radius = (int)Math::round(8.0f * EDSCALE);
 
 	auto make_style = [&](const Color &p_fill, const Color &p_border, int p_radius, int p_padding_h = 0, int p_padding_v = 0) {
 		Ref<StyleBoxFlat> style;
@@ -867,8 +909,8 @@ void AISettingsPanel::_apply_theme() {
 			return;
 		}
 		p_input->set_custom_minimum_size(Size2(0, 36 * EDSCALE));
-		p_input->add_theme_style_override("normal", make_style(field_fill, field_border, field_radius, 11 * EDSCALE, 7 * EDSCALE));
-		p_input->add_theme_style_override("focus", make_style(field_fill, field_focus_border, field_radius, 11 * EDSCALE, 7 * EDSCALE));
+		p_input->add_theme_style_override("normal", make_style(field_fill, strong.lerp(surface, 0.95f), field_radius, 12 * EDSCALE, 8 * EDSCALE));
+		p_input->add_theme_style_override("focus", make_style(field_fill, field_focus_border, field_radius, 12 * EDSCALE, 8 * EDSCALE));
 		p_input->add_theme_color_override("font_color", strong);
 		p_input->add_theme_color_override("font_placeholder_color", muted);
 	};
@@ -907,9 +949,6 @@ void AISettingsPanel::_apply_theme() {
 		if (mode_override_rows[i].label) {
 			mode_override_rows[i].label->add_theme_color_override("font_color", strong);
 		}
-		if (mode_override_rows[i].input) {
-			apply_field_theme(mode_override_rows[i].input);
-		}
 	}
 
 	for (int i = 0; i < provider_cards.size(); i++) {
@@ -936,13 +975,6 @@ void AISettingsPanel::_apply_theme() {
 	}
 	if (save_button) {
 		save_button->set_custom_minimum_size(Size2(0, 36 * EDSCALE));
-		save_button->add_theme_color_override("font_color", strong);
-		save_button->add_theme_color_override("font_hover_color", strong);
-		save_button->add_theme_color_override("font_pressed_color", strong);
-		save_button->add_theme_style_override("normal", make_style(primary_fill, card_border_active, card_radius, 12 * EDSCALE, 8 * EDSCALE));
-		save_button->add_theme_style_override("hover", make_style(primary_fill_hover, card_border_active, card_radius, 12 * EDSCALE, 8 * EDSCALE));
-		save_button->add_theme_style_override("pressed", make_style(primary_fill_pressed, accent.lerp(surface, 0.34f), card_radius, 12 * EDSCALE, 8 * EDSCALE));
-		save_button->add_theme_style_override("hover_pressed", make_style(primary_fill_pressed, accent.lerp(surface, 0.34f), card_radius, 12 * EDSCALE, 8 * EDSCALE));
 	}
 	auto apply_toggle_button_theme = [&](Button *p_button, bool p_active) {
 		if (!p_button) {
@@ -1040,11 +1072,6 @@ void AISettingsPanel::_refresh_provider_ui() {
 	}
 	if (base_url_input) {
 		base_url_input->set_placeholder(effective_url.is_empty() ? "Required for custom providers" : effective_url);
-	}
-	for (int i = 0; i < mode_override_rows.size(); i++) {
-		if (mode_override_rows[i].input) {
-			mode_override_rows.write[i].input->set_placeholder(vformat("%s default", ai_agent_mode_get_name(mode_override_rows[i].mode)));
-		}
 	}
 }
 
